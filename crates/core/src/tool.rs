@@ -26,6 +26,8 @@ pub struct ToolContext {
     pub project_path: std::path::PathBuf,
     pub cwd: std::path::PathBuf,
     pub user_id: Option<String>,
+    /// The agent ID that is executing the tool
+    pub agent: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -6,14 +6,18 @@ use std::time::Duration;
 use parking_lot::RwLock;
 use tokio::time::timeout;
 
-use opencode_core::{Tool, ToolInfo, ToolContext, ToolResult, error::{Result, OpenCodeError}};
+use opencode_core::{Tool, ToolInfo, ToolContext, ToolResult, PermissionConfig, error::{Result, OpenCodeError}};
 use super::validator::ToolValidator;
+
+type AnyhowResult<T> = anyhow::Result<T>;
 
 const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 300;
 
 pub struct ToolRegistryService {
     tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
     default_timeout: Duration,
+    permission_config: Option<PermissionConfig>,
+    command_registry: RwLock<Option<Arc<super::command_registry::CommandRegistry>>>,
 }
 
 impl ToolRegistryService {
@@ -21,6 +25,8 @@ impl ToolRegistryService {
         let registry = Self {
             tools: RwLock::new(HashMap::new()),
             default_timeout: Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS),
+            permission_config: None,
+            command_registry: RwLock::new(None),
         };
         registry.register_defaults();
         registry
@@ -30,6 +36,20 @@ impl ToolRegistryService {
         let registry = Self {
             tools: RwLock::new(HashMap::new()),
             default_timeout: Duration::from_secs(timeout_secs),
+            permission_config: None,
+            command_registry: RwLock::new(None),
+        };
+        registry.register_defaults();
+        registry
+    }
+    
+    /// Create a registry with permission configuration for TaskTool
+    pub fn with_permission_config(permission_config: PermissionConfig) -> Self {
+        let registry = Self {
+            tools: RwLock::new(HashMap::new()),
+            default_timeout: Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS),
+            permission_config: Some(permission_config),
+            command_registry: RwLock::new(None),
         };
         registry.register_defaults();
         registry
@@ -37,12 +57,21 @@ impl ToolRegistryService {
     
     fn register_defaults(&self) {
         self.register(Arc::new(super::bash::BashTool::new()));
+        self.register(Arc::new(super::question::QuestionTool::new()));
         self.register(Arc::new(super::read::ReadTool::new()));
         self.register(Arc::new(super::write::WriteTool::new()));
         self.register(Arc::new(super::edit::EditTool::new()));
         self.register(Arc::new(super::glob::GlobTool::new()));
         self.register(Arc::new(super::grep::GrepTool::new()));
-        self.register(Arc::new(super::task::TaskTool::new()));
+        
+        // Register TaskTool with permission config if provided
+        if let Some(ref config) = self.permission_config {
+            self.register(Arc::new(super::task::TaskTool::with_permission_config(config.clone())));
+        } else {
+            self.register(Arc::new(super::task::TaskTool::new()));
+        }
+        
+        self.register(Arc::new(super::plan::PlanTool::new()));
     }
     
     pub fn register(&self, tool: Arc<dyn Tool>) {
@@ -62,6 +91,38 @@ impl ToolRegistryService {
                 description: t.description().to_string(),
             })
             .collect()
+    }
+
+    /// Initialize and register the slash command tool with discovered commands
+    pub async fn register_slash_commands(&self) -> AnyhowResult<()> {
+        // Create command registry if not already created
+        let registry = {
+            let mut guard = self.command_registry.write();
+            if guard.is_none() {
+                *guard = Some(Arc::new(super::command_registry::CommandRegistry::new()));
+            }
+            guard.as_ref().unwrap().clone()
+        };
+
+        // Discover commands
+        let discovery = super::command_discovery::CommandDiscovery::new();
+        let commands = discovery.discover_commands().await?;
+
+        // Register discovered commands
+        for cmd in commands {
+            registry.register(cmd);
+        }
+
+        // Create and register the slash command tool
+        let tool = Arc::new(super::slash_command_tool::SlashCommandTool::new(registry));
+        self.register(tool);
+
+        Ok(())
+    }
+
+    /// Get a clone of the command registry if it exists
+    pub fn get_command_registry(&self) -> Option<Arc<super::command_registry::CommandRegistry>> {
+        self.command_registry.read().clone()
     }
     
     pub async fn execute(

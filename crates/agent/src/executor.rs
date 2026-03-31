@@ -283,6 +283,7 @@ impl AgentExecutor {
                 project_path: ctx.project_path.clone(),
                 cwd: ctx.cwd.clone(),
                 user_id: ctx.user_id.clone(),
+                agent: self.agent.id().to_string(),
             }).await {
                 Ok(result) => {
                     info!("Tool {} executed successfully", name);

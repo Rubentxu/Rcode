@@ -155,32 +155,28 @@ impl PermissionConfig {
 /// Permission check result with context
 #[derive(Debug, Clone)]
 pub struct PermissionCheckResult {
-    pub allowed: bool,
-    pub requires_confirmation: bool,
+    pub permission: Permission,
     pub reason: String,
 }
 
 impl PermissionCheckResult {
     pub fn allow(reason: impl Into<String>) -> Self {
         Self {
-            allowed: true,
-            requires_confirmation: false,
+            permission: Permission::Allow,
             reason: reason.into(),
         }
     }
 
     pub fn deny(reason: impl Into<String>) -> Self {
         Self {
-            allowed: false,
-            requires_confirmation: false,
+            permission: Permission::Deny,
             reason: reason.into(),
         }
     }
 
     pub fn ask(reason: impl Into<String>) -> Self {
         Self {
-            allowed: false,
-            requires_confirmation: true,
+            permission: Permission::Ask,
             reason: reason.into(),
         }
     }
@@ -236,6 +232,40 @@ impl PermissionChecker {
             "Delegation allowed at depth {}/{}",
             current_depth, self.config.max_delegation_depth
         ))
+    }
+
+    /// Check permission for a resource with optional subagent type
+    ///
+    /// This is the main entry point for permission checking used by TaskTool.
+    ///
+    /// - `agent`: The agent ID attempting the action
+    /// - `resource`: The resource being accessed (e.g., "task")
+    /// - `subagent_type`: Optional subagent type being invoked
+    pub fn check(
+        &self,
+        agent: &str,
+        resource: &str,
+        subagent_type: Option<&str>,
+    ) -> PermissionCheckResult {
+        // Use the agent itself as the agent_type for the check
+        let agent_type = agent;
+
+        if self.config.is_tool_allowed(agent_type, resource) {
+            PermissionCheckResult::allow(format!(
+                "Agent {} allowed to access {} with subagent type {:?}",
+                agent, resource, subagent_type
+            ))
+        } else if self.config.should_ask(agent_type, resource) {
+            PermissionCheckResult::ask(format!(
+                "Agent {} requests {} with subagent type {:?} - requires confirmation",
+                agent, resource, subagent_type
+            ))
+        } else {
+            PermissionCheckResult::deny(format!(
+                "Agent {} is not allowed to access {} with subagent type {:?}",
+                agent, resource, subagent_type
+            ))
+        }
     }
 
     /// Get the underlying config
@@ -325,8 +355,7 @@ mod tests {
         let checker = PermissionChecker::new(config);
 
         let result = checker.check_tool("general", "read");
-        assert!(result.allowed);
-        assert!(!result.requires_confirmation);
+        assert_eq!(result.permission, Permission::Allow);
     }
 
     #[test]
@@ -335,12 +364,12 @@ mod tests {
         let checker = PermissionChecker::new(config);
 
         // Depth 0, 1, 2 should be allowed (max is 3)
-        assert!(checker.check_delegation(0).allowed);
-        assert!(checker.check_delegation(1).allowed);
-        assert!(checker.check_delegation(2).allowed);
+        assert_eq!(checker.check_delegation(0).permission, Permission::Allow);
+        assert_eq!(checker.check_delegation(1).permission, Permission::Allow);
+        assert_eq!(checker.check_delegation(2).permission, Permission::Allow);
 
         // Depth 3 should be denied
         let result = checker.check_delegation(3);
-        assert!(!result.allowed);
+        assert_eq!(result.permission, Permission::Deny);
     }
 }

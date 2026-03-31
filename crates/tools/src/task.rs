@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use parking_lot::RwLock;
 
-use opencode_core::{Tool, ToolContext, ToolResult, error::{Result, OpenCodeError}};
+use opencode_core::{Tool, ToolContext, ToolResult, PermissionChecker, PermissionConfig, Permission, error::{Result, OpenCodeError}};
 
 /// Agent ID type for identifying subagents
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -86,6 +86,8 @@ pub struct TaskTool {
     pub agent_types: Vec<String>,
     /// Shared state for task sessions
     pub state: Arc<TaskToolState>,
+    /// Permission checker for validating subagent invocations
+    permission_checker: Option<Arc<PermissionChecker>>,
 }
 
 impl TaskTool {
@@ -98,6 +100,7 @@ impl TaskTool {
                 "debug".to_string(),
             ],
             state: Arc::new(TaskToolState::new()),
+            permission_checker: None,
         }
     }
     
@@ -110,6 +113,21 @@ impl TaskTool {
                 "debug".to_string(),
             ],
             state,
+            permission_checker: None,
+        }
+    }
+    
+    /// Create a TaskTool with permission checking enabled
+    pub fn with_permission_config(permission_config: PermissionConfig) -> Self {
+        Self {
+            agent_types: vec![
+                "general".to_string(),
+                "explore".to_string(),
+                "refactor".to_string(),
+                "debug".to_string(),
+            ],
+            state: Arc::new(TaskToolState::new()),
+            permission_checker: Some(Arc::new(PermissionChecker::new(permission_config))),
         }
     }
     
@@ -184,6 +202,37 @@ impl Tool for TaskTool {
                 "Agent type '{}' is not allowed. Available types: {:?}",
                 agent_type, self.agent_types
             )));
+        }
+        
+        // Check permission before launching subagent
+        if let Some(ref checker) = self.permission_checker {
+            let check_result = checker.check(&context.agent, "task", Some(agent_type));
+            
+            match check_result.permission {
+                Permission::Allow => { /* proceed */ }
+                Permission::Deny => {
+                    return Err(OpenCodeError::Permission(format!(
+                        "Agent {} denied to invoke {} subagent: {}",
+                        context.agent, agent_type, check_result.reason
+                    )));
+                }
+                Permission::Ask => {
+                    // Return pending response for ask permission
+                    return Ok(ToolResult {
+                        title: "Permission Required".to_string(),
+                        content: format!(
+                            "Permission required to invoke {} from {}. Awaiting approval.\n\nReason: {}",
+                            agent_type, context.agent, check_result.reason
+                        ),
+                        metadata: Some(serde_json::json!({
+                            "agent_type": agent_type,
+                            "task_id": task_id,
+                            "permission_pending": true,
+                        })),
+                        attachments: vec![],
+                    });
+                }
+            }
         }
         
         let result_content = if let Some(existing_task_id) = task_id {

@@ -105,6 +105,7 @@ mod tests {
             project_path: std::path::PathBuf::from("/tmp"),
             cwd: std::path::PathBuf::from("/tmp"),
             user_id: None,
+            agent: "test-agent".to_string(),
         }
     }
 
