@@ -1,0 +1,56 @@
+[package]
+name = "opencode-web"
+version.workspace = true
+edition.workspace = true
+
+[build-dependencies]
+tauri-build = "2"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[dependencies]
+# Tauri
+tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-store = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-http = "2"
+tauri-plugin-clipboard-manager = "2"
+
+# Leptos
+leptos = "0.7"
+leptos_router = "0.7"
+leptos_axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
+axum-extra = { version = "0.9", features = ["typed-header", "cookie"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "fs"] }
+
+# Web Sys
+web-sys = { version = "0.3", features = ["Window", "Location", "HtmlTextAreaElement", "KeyboardEvent"] }
+
+# HTTP Client
+reqwest = { version = "0.12", features = ["json"] }
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Utils
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { workspace = true, features = ["full"] }
+futures = "0.3"
+async-trait = "0.1"
+chrono = { workspace = true, features = ["serde"] }
+console_error_panic_hook = "0.1"
+console_log = "0.1"
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[profile.release]
+strip = true
+lto = true

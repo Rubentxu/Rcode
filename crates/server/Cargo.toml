@@ -1,0 +1,28 @@
+[package]
+name = "opencode-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+opencode-core = { path = "../core" }
+opencode-session = { path = "../session" }
+opencode-event = { path = "../event" }
+opencode-providers = { path = "../providers" }
+opencode-tools = { path = "../tools" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+tokio-stream = "0.1"
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+futures-util = "0.3"
+async-stream = "0.3"
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+tempfile.workspace = true

@@ -1,0 +1,22 @@
+[package]
+name = "opencode-engram"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+opencode-core = { path = "../core" }
+opencode-session = { path = "../session" }
+opencode-event = { path = "../event" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite = { version = "0.33", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12"
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

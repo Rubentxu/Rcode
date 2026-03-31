@@ -1,0 +1,18 @@
+[package]
+name = "opencode-lsp"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+opencode-core = { path = "../core" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+parking_lot = "0.12"
+
+[dev-dependencies]
+tempfile.workspace = true

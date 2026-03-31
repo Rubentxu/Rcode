@@ -1,0 +1,16 @@
+//! Plugin system for opencode-rust
+//!
+//! This crate provides a plugin architecture for extending opencode capabilities
+//! through dynamically loaded plugins.
+
+pub mod error;
+pub mod manager;
+pub mod loader;
+pub mod manifest;
+pub mod types;
+
+pub use error::{PluginError, Result};
+pub use manager::PluginManager;
+pub use loader::{LocalPluginLoader, PluginLibraryLoader};
+pub use manifest::PluginManifest;
+pub use types::*;

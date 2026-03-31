@@ -1,0 +1,25 @@
+[package]
+name = "opencode-tools"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+opencode-core = { path = "../core" }
+opencode-event = { path = "../event" }
+opencode-mcp = { path = "../mcp" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+jsonschema.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+glob = "0.3"
+regex = "1.11"
+parking_lot = "0.12"
+dirs.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

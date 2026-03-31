@@ -1,0 +1,36 @@
+[package]
+name = "opencode-cli"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "opencode_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opencode"
+path = "src/main.rs"
+
+[dependencies]
+opencode-core = { path = "../core" }
+opencode-session = { path = "../session" }
+opencode-event = { path = "../event" }
+opencode-providers = { path = "../providers" }
+opencode-tools = { path = "../tools" }
+opencode-server = { path = "../server" }
+opencode-agent = { path = "../agent" }
+opencode-tui = { path = "../tui" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap = { version = "4.5", features = ["derive"] }
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio-stream = "0.1"
+futures-util = "0.3"
+dirs.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
