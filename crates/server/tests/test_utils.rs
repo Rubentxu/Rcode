@@ -1,0 +1,82 @@
+//! Test utilities for integration testing
+
+use std::sync::Arc;
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+
+use opencode_server::{create_app, AppState};
+use opencode_core::{Session, SessionId, OpencodeConfig, Part, Message};
+
+pub struct TestApp {
+    pub state: Arc<AppState>,
+    pub port: u16,
+    shutdown_tx: Option<oneshot::Sender<()>>,
+}
+
+impl TestApp {
+    pub async fn new() -> Self {
+        let config = OpencodeConfig::default();
+        let state = Arc::new(AppState::with_config(config));
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        // Bind to a random available port
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        // Spawn the server
+        let app = create_app(state.clone()).await;
+        let server = axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                shutdown_rx.await.ok();
+            });
+
+        // Spawn server in background
+        tokio::spawn(async move {
+            server.await.ok();
+        });
+
+        Self {
+            state,
+            port,
+            shutdown_tx: Some(shutdown_tx),
+        }
+    }
+
+    pub async fn create_test_session(&self) -> SessionId {
+        let session = Session::new(
+            std::path::PathBuf::from("/test/project"),
+            "test-agent".to_string(),
+            "claude-sonnet-4-5".to_string(),
+        );
+        let session_id = session.id.0.clone();
+        self.state.session_service.create(session);
+        SessionId(session_id)
+    }
+
+    pub fn add_test_message(&self, session_id: &str, content: &str) {
+        let message = Message::user(
+            session_id.to_string(),
+            vec![Part::Text {
+                content: content.to_string(),
+            }],
+        );
+        self.state.session_service.add_message(session_id, message);
+    }
+
+    pub fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// Shutdown the test server
+    pub fn shutdown(&mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+impl Drop for TestApp {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
