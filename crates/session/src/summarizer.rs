@@ -221,8 +221,6 @@ Guidelines:
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_extract_text_content() {
         // This test requires a mock provider which we can't easily create in unit tests

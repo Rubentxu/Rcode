@@ -16,6 +16,8 @@ uuid = { version = "1.16", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 dirs = "6.0"
+walkdir = "2"
+parking_lot = "0.12.5"
 
 [dev-dependencies]
 tempfile.workspace = true

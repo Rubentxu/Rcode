@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use parking_lot::RwLock;
 
-use opencode_core::{Tool, ToolContext, ToolResult, PermissionChecker, PermissionConfig, Permission, error::{Result, OpenCodeError}};
+use opencode_core::{Tool, ToolContext, ToolResult, PermissionChecker, PermissionConfig, Permission, AgentRegistry, error::{Result, OpenCodeError}};
 
 /// Agent ID type for identifying subagents
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -81,64 +81,98 @@ impl Default for TaskToolState {
     }
 }
 
+/// Agent registry reference for looking up available agents
 pub struct TaskTool {
-    /// Available agent types that can be spawned
-    pub agent_types: Vec<String>,
     /// Shared state for task sessions
     pub state: Arc<TaskToolState>,
     /// Permission checker for validating subagent invocations
     permission_checker: Option<Arc<PermissionChecker>>,
+    /// Agent registry for looking up agents
+    agent_registry: Option<Arc<AgentRegistry>>,
 }
 
 impl TaskTool {
+    /// Create a new TaskTool without agent registry
     pub fn new() -> Self {
         Self {
-            agent_types: vec![
-                "general".to_string(),
-                "explore".to_string(),
-                "refactor".to_string(),
-                "debug".to_string(),
-            ],
             state: Arc::new(TaskToolState::new()),
             permission_checker: None,
+            agent_registry: None,
         }
     }
     
+    /// Create a TaskTool with state
     pub fn with_state(state: Arc<TaskToolState>) -> Self {
         Self {
-            agent_types: vec![
-                "general".to_string(),
-                "explore".to_string(),
-                "refactor".to_string(),
-                "debug".to_string(),
-            ],
             state,
             permission_checker: None,
+            agent_registry: None,
         }
     }
     
     /// Create a TaskTool with permission checking enabled
     pub fn with_permission_config(permission_config: PermissionConfig) -> Self {
         Self {
-            agent_types: vec![
+            state: Arc::new(TaskToolState::new()),
+            permission_checker: Some(Arc::new(PermissionChecker::new(permission_config))),
+            agent_registry: None,
+        }
+    }
+
+    /// Create a TaskTool with an agent registry
+    pub fn with_agent_registry(registry: Arc<AgentRegistry>) -> Self {
+        Self {
+            state: Arc::new(TaskToolState::new()),
+            permission_checker: None,
+            agent_registry: Some(registry),
+        }
+    }
+
+    /// Create a TaskTool with all options
+    pub fn with_all(
+        state: Arc<TaskToolState>,
+        permission_checker: Option<Arc<PermissionChecker>>,
+        registry: Option<Arc<AgentRegistry>>,
+    ) -> Self {
+        Self {
+            state,
+            permission_checker,
+            agent_registry: registry,
+        }
+    }
+    
+    /// Get available agent types from registry if available
+    pub fn available_agent_types(&self) -> Vec<String> {
+        if let Some(ref registry) = self.agent_registry {
+            registry.list().into_iter().map(|a| a.id).collect()
+        } else {
+            // Fallback to default agent types
+            vec![
                 "general".to_string(),
                 "explore".to_string(),
                 "refactor".to_string(),
                 "debug".to_string(),
-            ],
-            state: Arc::new(TaskToolState::new()),
-            permission_checker: Some(Arc::new(PermissionChecker::new(permission_config))),
+            ]
         }
     }
     
-    /// Get available agent types
-    pub fn available_agent_types(&self) -> &[String] {
-        &self.agent_types
-    }
-    
-    /// Check if an agent type is allowed
+    /// Check if an agent type is allowed (exists in registry or is a known default)
     pub fn is_agent_type_allowed(&self, agent_type: &str) -> bool {
-        self.agent_types.iter().any(|t| t == agent_type)
+        // If we have a registry, check if the agent exists
+        if let Some(ref registry) = self.agent_registry {
+            return registry.contains(agent_type);
+        }
+        
+        // Fallback to default agent types
+        matches!(
+            agent_type,
+            "general" | "explore" | "refactor" | "debug"
+        )
+    }
+
+    /// Get agent by ID from registry
+    pub fn get_agent(&self, agent_id: &str) -> Option<Arc<dyn opencode_core::agent::Agent>> {
+        self.agent_registry.as_ref()?.get(agent_id)
     }
 }
 
@@ -155,6 +189,14 @@ impl Tool for TaskTool {
     fn description(&self) -> &str { "Spawn a sub-agent to complete a task or continue an existing task session" }
     
     fn parameters(&self) -> serde_json::Value {
+        // Build enum from available agents if registry is available
+        let agent_types: Vec<String> = if let Some(ref registry) = self.agent_registry {
+            let agents = registry.list();
+            agents.into_iter().map(|a| a.id).collect()
+        } else {
+            vec!["general".to_string(), "explore".to_string(), "refactor".to_string(), "debug".to_string()]
+        };
+
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -169,7 +211,7 @@ impl Tool for TaskTool {
                 "agent_type": {
                     "type": "string",
                     "description": "Type of sub-agent to invoke",
-                    "enum": ["general", "explore", "refactor", "debug"]
+                    "enum": agent_types
                 },
                 "task_id": {
                     "type": "string",
@@ -200,7 +242,7 @@ impl Tool for TaskTool {
         if !self.is_agent_type_allowed(agent_type) {
             return Err(OpenCodeError::Permission(format!(
                 "Agent type '{}' is not allowed. Available types: {:?}",
-                agent_type, self.agent_types
+                agent_type, self.available_agent_types()
             )));
         }
         
@@ -270,9 +312,13 @@ impl Tool for TaskTool {
             // Register the session for potential continuation
             self.state.register_session(&new_task_id, &session_id);
             
+            // Get agent info if available
+            let agent_info = self.get_agent(agent_type)
+                .map(|a| format!(" (model: {:?})", a.supported_tools().first()));
+
             format!(
-                "Created new task '{}' (session: {}) with {} agent:\n\nDescription: {}\n\nPrompt:\n{}",
-                new_task_id, session_id, agent_type, description, prompt
+                "Created new task '{}' (session: {}) with {} agent{}:\n\nDescription: {}\n\nPrompt:\n{}",
+                new_task_id, session_id, agent_type, agent_info.unwrap_or_default(), description, prompt
             )
         };
         

@@ -3899,6 +3899,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dirs",
+ "parking_lot",
  "schemars 0.8.22",
  "serde",
  "serde_json",
@@ -3908,6 +3909,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "uuid",
+ "walkdir",
 ]
 
 [[package]]
@@ -3980,6 +3982,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "glob",
  "libloading 0.8.9",
  "opencode-core",

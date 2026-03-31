@@ -336,19 +336,21 @@ impl SessionService {
 
         // Perform compaction based on strategy
         let result = match self.compaction_strategy {
-            CompactionStrategy::SummarizeOlder => {
+            CompactionStrategy::SummarizeOlder { preserved_recent: _ } => {
                 self.compact_summarize_older(&messages, session_id, summarizer).await
             }
-            CompactionStrategy::TruncateMiddle => {
+            CompactionStrategy::TruncateMiddle { preserved_recent: _ } => {
                 self.compact_truncate_middle(&messages)
             }
-            CompactionStrategy::Hybrid => {
+            CompactionStrategy::Hybrid { preserved_recent: _, max_total: _ } => {
                 // Try summarize older first, fall back to truncate middle
                 match self.compact_summarize_older(&messages, session_id, summarizer).await {
                     Ok(result) => Ok(result),
                     Err(_) => self.compact_truncate_middle(&messages),
                 }
             }
+            // Other strategies don't need special handling here
+            _ => self.compact_truncate_middle(&messages),
         };
 
         match result {

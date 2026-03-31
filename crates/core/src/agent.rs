@@ -19,6 +19,11 @@ pub trait Agent: Send + Sync {
     fn supported_tools(&self) -> Vec<String> {
         vec![]
     }
+    
+    /// Returns whether this agent should be hidden from the agent list
+    fn is_hidden(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone)]

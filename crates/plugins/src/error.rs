@@ -10,11 +10,29 @@ pub enum PluginError {
     #[error("Plugin already loaded: {0}")]
     AlreadyLoaded(String),
 
+    #[error("Plugin already activated: {0}")]
+    AlreadyActivated(String),
+
+    #[error("Plugin not activated: {0}")]
+    NotActivated(String),
+
     #[error("Plugin load failed: {0}")]
     LoadFailed(String),
 
     #[error("Plugin unload failed: {0}")]
     UnloadFailed(String),
+
+    #[error("Plugin activation failed: {0}")]
+    ActivationFailed(String),
+
+    #[error("Plugin deactivation failed: {0}")]
+    DeactivationFailed(String),
+
+    #[error("Plugin install failed: {0}")]
+    InstallFailed(String),
+
+    #[error("Plugin rollback failed: {0}")]
+    RollbackFailed(String),
 
     #[error("Invalid manifest: {0}")]
     InvalidManifest(String),
@@ -27,6 +45,9 @@ pub enum PluginError {
 
     #[error("Plugin initialization failed: {0}")]
     InitFailed(String),
+
+    #[error("Duplicate plugin: {0}")]
+    DuplicatePlugin(String),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
