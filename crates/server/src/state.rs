@@ -18,22 +18,24 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Self {
         let event_bus = Arc::new(EventBus::new(1024));
+        let session_service = Arc::new(SessionService::new(event_bus.clone()));
         Self {
-            session_service: Arc::new(SessionService::new(event_bus.clone())),
+            session_service: session_service.clone(),
             event_bus,
             providers: Arc::new(Mutex::new(ProviderRegistry::new())),
-            tools: Arc::new(ToolRegistryService::new()),
+            tools: Arc::new(ToolRegistryService::with_session_service(session_service)),
             config: OpencodeConfig::default(),
         }
     }
 
     pub fn with_config(config: OpencodeConfig) -> Self {
         let event_bus = Arc::new(EventBus::new(1024));
+        let session_service = Arc::new(SessionService::new(event_bus.clone()));
         Self {
-            session_service: Arc::new(SessionService::new(event_bus.clone())),
+            session_service: session_service.clone(),
             event_bus,
             providers: Arc::new(Mutex::new(ProviderRegistry::new())),
-            tools: Arc::new(ToolRegistryService::new()),
+            tools: Arc::new(ToolRegistryService::with_session_service(session_service)),
             config,
         }
     }

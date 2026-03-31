@@ -7,6 +7,7 @@ use parking_lot::RwLock;
 use tokio::time::timeout;
 
 use opencode_core::{Tool, ToolInfo, ToolContext, ToolResult, PermissionConfig, error::{Result, OpenCodeError}};
+use opencode_session::SessionService;
 use super::validator::ToolValidator;
 
 type AnyhowResult<T> = anyhow::Result<T>;
@@ -28,7 +29,19 @@ impl ToolRegistryService {
             permission_config: None,
             command_registry: RwLock::new(None),
         };
-        registry.register_defaults();
+        registry.register_defaults(None);
+        registry
+    }
+
+    /// Create a registry with session service for session navigation tool
+    pub fn with_session_service(session_service: Arc<SessionService>) -> Self {
+        let registry = Self {
+            tools: RwLock::new(HashMap::new()),
+            default_timeout: Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS),
+            permission_config: None,
+            command_registry: RwLock::new(None),
+        };
+        registry.register_defaults(Some(session_service));
         registry
     }
 
@@ -39,7 +52,7 @@ impl ToolRegistryService {
             permission_config: None,
             command_registry: RwLock::new(None),
         };
-        registry.register_defaults();
+        registry.register_defaults(None);
         registry
     }
     
@@ -51,11 +64,11 @@ impl ToolRegistryService {
             permission_config: Some(permission_config),
             command_registry: RwLock::new(None),
         };
-        registry.register_defaults();
+        registry.register_defaults(None);
         registry
     }
     
-    fn register_defaults(&self) {
+    fn register_defaults(&self, session_service: Option<Arc<SessionService>>) {
         self.register(Arc::new(super::bash::BashTool::new()));
         self.register(Arc::new(super::question::QuestionTool::new()));
         self.register(Arc::new(super::read::ReadTool::new()));
@@ -72,6 +85,15 @@ impl ToolRegistryService {
         }
         
         self.register(Arc::new(super::plan::PlanTool::new()));
+        self.register(Arc::new(super::todowrite::TodowriteTool::new()));
+        self.register(Arc::new(super::webfetch::WebfetchTool::new()));
+        self.register(Arc::new(super::websearch::WebsearchTool::new()));
+        self.register(Arc::new(super::codesearch::CodesearchTool::new()));
+
+        // Register session navigation tool if session service is provided
+        if let Some(service) = session_service {
+            self.register(Arc::new(super::session_navigation::SessionNavigationTool::new(service)));
+        }
     }
     
     pub fn register(&self, tool: Arc<dyn Tool>) {

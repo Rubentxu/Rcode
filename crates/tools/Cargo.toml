@@ -7,6 +7,7 @@ edition.workspace = true
 opencode-core = { path = "../core" }
 opencode-event = { path = "../event" }
 opencode-mcp = { path = "../mcp" }
+opencode-session = { path = "../session" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -20,6 +21,9 @@ glob = "0.3"
 regex = "1.11"
 parking_lot = "0.12"
 dirs.workspace = true
+reqwest = { version = "0.12", features = ["json"] }
+urlencoding = "2"
+walkdir = "2"
 
 [dev-dependencies]
 tempfile.workspace = true

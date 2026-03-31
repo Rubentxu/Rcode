@@ -1,6 +1,7 @@
 //! Built-in tools for opencode-rust
 
 pub mod bash;
+pub mod question;
 pub mod read;
 pub mod write;
 pub mod edit;
@@ -14,6 +15,15 @@ pub mod skill_discovery;
 pub mod skill_registry;
 pub mod skill_tool;
 pub mod mcp_tool;
+pub mod plan;
+pub mod command_discovery;
+pub mod command_registry;
+pub mod slash_command_tool;
+pub mod todowrite;
+pub mod webfetch;
+pub mod websearch;
+pub mod codesearch;
+pub mod session_navigation;
 
 pub use registry::ToolRegistryService;
 pub use validator::ToolValidator;
@@ -21,3 +31,7 @@ pub use skill_discovery::SkillDiscovery;
 pub use skill_registry::SkillRegistry;
 pub use skill_tool::SkillTool;
 pub use mcp_tool::McpToolAdapter;
+pub use plan::PlanTool;
+pub use command_discovery::CommandDiscovery;
+pub use command_registry::CommandRegistry;
+pub use slash_command_tool::SlashCommandTool;

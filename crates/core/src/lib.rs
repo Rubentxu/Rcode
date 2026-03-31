@@ -19,6 +19,7 @@ pub mod config;
 pub mod config_loader;
 pub mod permission;
 pub mod skill;
+pub mod command;
 
 pub use agent::*;
 pub use session::*;
@@ -31,3 +32,4 @@ pub use config::*;
 pub use config_loader::*;
 pub use permission::*;
 pub use skill::*;
+pub use command::*;
