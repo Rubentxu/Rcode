@@ -1,10 +1,9 @@
 //! Mock Tool for testing
 
-use std::sync::Arc;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use opencode_core::{Tool, ToolContext, ToolResult, error::Result};
+use rcode_core::{Tool, ToolContext, ToolResult, error::Result};
 
 /// Invocation record for tracking tool calls
 #[derive(Debug, Clone)]
@@ -176,7 +175,7 @@ impl Tool for MockTool {
                 })
             }
         } else {
-            Err(opencode_core::OpenCodeError::Tool(
+            Err(rcode_core::OpenCodeError::Tool(
                 config.error.unwrap_or_else(|| "Mock tool error".to_string())
             ))
         }
@@ -187,7 +186,7 @@ impl Tool for MockTool {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use opencode_core::ToolContext;
+    use rcode_core::ToolContext;
 
     fn create_test_context() -> ToolContext {
         ToolContext {
@@ -245,7 +244,7 @@ mod tests {
         ).await;
         
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), opencode_core::OpenCodeError::Tool(_)));
+        assert!(matches!(result.unwrap_err(), rcode_core::OpenCodeError::Tool(_)));
     }
 
     #[tokio::test]

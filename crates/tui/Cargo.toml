@@ -1,13 +1,13 @@
 [package]
-name = "opencode-tui"
+name = "rcode-tui"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-opencode-core = { path = "../core" }
-opencode-session = { path = "../session" }
-opencode-agent = { path = "../agent" }
-opencode-event = { path = "../event" }
+rcode-core = { path = "../core" }
+rcode-session = { path = "../session" }
+rcode-agent = { path = "../agent" }
+rcode-event = { path = "../event" }
 ratatui = { version = "0.29", features = ["macros"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
 tokio.workspace = true

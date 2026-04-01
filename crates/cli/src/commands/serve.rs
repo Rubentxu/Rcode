@@ -4,8 +4,8 @@ use anyhow::Result;
 use clap::Args;
 use std::path::PathBuf;
 use std::sync::Arc;
-use opencode_server::{start_server, AppState};
-use opencode_providers::anthropic::AnthropicProvider;
+use rcode_server::{start_server, AppState};
+use rcode_providers::anthropic::AnthropicProvider;
 
 #[derive(Args)]
 pub struct Serve {
@@ -18,7 +18,7 @@ pub struct Serve {
 
 impl Serve {
     pub async fn execute(&self, config_path: Option<&PathBuf>, no_config: bool) -> Result<()> {
-        let config = opencode_core::load_config(config_path.map(|p| p.clone()), no_config).await?;
+        let config = rcode_core::load_config(config_path.map(|p| p.clone()), no_config).await?;
         let state = Arc::new(AppState::with_config(config));
         
         let anthropic = Arc::new(AnthropicProvider::new(

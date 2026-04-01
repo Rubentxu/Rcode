@@ -64,10 +64,10 @@ impl McpToolResult {
             .iter()
             .map(|c| match c {
                 McpContent::Text { text } => text.clone(),
-                McpContent::Image { data, mime_type } => format!("[Image: {}]", mime_type),
+                McpContent::Image { data: _, mime_type } => format!("[Image: {}]", mime_type),
                 McpContent::Resource {
                     uri,
-                    mime_type,
+                    mime_type: _,
                     body,
                 } => {
                     format!("[Resource: {} ({} bytes)]", uri, body.len())

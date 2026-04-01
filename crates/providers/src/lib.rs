@@ -6,15 +6,17 @@ pub mod openai;
 pub mod registry;
 pub mod mock;
 pub mod credentials;
+pub mod rate_limit;
 
 pub use provider_trait::LlmProvider;
 pub use registry::ProviderRegistry;
 pub use mock::MockLlmProvider;
 pub use credentials::{load_api_key, resolve_api_key};
+pub use rate_limit::TokenBucket;
 
 use std::future::Future;
 use std::time::Duration;
-use opencode_core::error::{OpenCodeError, Result};
+use rcode_core::error::{OpenCodeError, Result};
 
 /// Retry with exponential backoff for transient errors
 pub async fn retry_with_backoff<F, T, Fut>(mut f: F) -> Result<T>

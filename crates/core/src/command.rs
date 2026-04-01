@@ -16,7 +16,7 @@ impl SlashCommand {
     pub fn parse(content: &str, path: &Path) -> Result<Self, CommandParseError> {
         let mut name = String::new();
         let mut description = String::new();
-        let mut instructions = String::new();
+        let instructions;
 
         let mut in_frontmatter = false;
         let mut frontmatter_content = String::new();

@@ -1,7 +1,7 @@
 //! Persistence integration tests
 
-use opencode_core::{Message, Part, Role, Session, SessionId, SessionStatus};
-use opencode_storage::Database;
+use rcode_core::{Message, Part, Role, Session, SessionId, SessionStatus};
+use rcode_storage::Database;
 use tempfile::TempDir;
 
 #[tokio::test]

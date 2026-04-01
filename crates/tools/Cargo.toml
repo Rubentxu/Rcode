@@ -1,13 +1,13 @@
 [package]
-name = "opencode-tools"
+name = "rcode-tools"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-opencode-core = { path = "../core" }
-opencode-event = { path = "../event" }
-opencode-mcp = { path = "../mcp" }
-opencode-session = { path = "../session" }
+rcode-core = { path = "../core" }
+rcode-event = { path = "../event" }
+rcode-mcp = { path = "../mcp" }
+rcode-session = { path = "../session" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -24,6 +24,8 @@ dirs.workspace = true
 reqwest = { version = "0.12", features = ["json"] }
 urlencoding = "2"
 walkdir = "2"
+patch = "0.7"
+futures = "0.3"
 
 [dev-dependencies]
 tempfile.workspace = true

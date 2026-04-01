@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 use tempfile::TempDir;
-use opencode_cli::commands::Run;
+use rcode_cli::commands::Run;
 
 /// Helper to create a test app state (simplified for e2e tests)
-async fn create_test_app_state() -> Arc<opencode_server::AppState> {
-    let config = opencode_core::OpencodeConfig::default();
-    Arc::new(opencode_server::AppState::with_config(config))
+async fn create_test_app_state() -> Arc<rcode_server::AppState> {
+    let config = rcode_core::OpencodeConfig::default();
+    Arc::new(rcode_server::AppState::with_config(config))
 }
 
 #[tokio::test]

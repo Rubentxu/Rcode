@@ -1,5 +1,5 @@
 [package]
-name = "opencode-mcp"
+name = "rcode-mcp"
 version.workspace = true
 edition.workspace = true
 

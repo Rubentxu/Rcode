@@ -3,10 +3,10 @@
 use std::process::Stdio;
 use async_trait::async_trait;
 use tokio::process::Command;
-use tokio::io::AsyncReadExt;
 
-use opencode_core::{Tool, ToolContext, ToolResult, error::Result};
+use rcode_core::{Tool, ToolContext, ToolResult, error::Result};
 
+#[allow(dead_code)]
 pub struct BashTool {
     max_timeout_ms: u64,
 }
@@ -49,7 +49,7 @@ impl Tool for BashTool {
     ) -> Result<ToolResult> {
         let command = args["command"]
             .as_str()
-            .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'command' argument".into()))?;
+            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'command' argument".into()))?;
         
         let cwd = context.cwd.clone();
         
@@ -61,7 +61,7 @@ impl Tool for BashTool {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Failed to execute: {}", e)))?;
+            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to execute: {}", e)))?;
         
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();

@@ -10,6 +10,7 @@ use super::types::{
 };
 
 /// MCP client for connecting to MCP servers
+#[allow(dead_code)]
 pub struct McpClient {
     transport: Box<dyn McpTransport>,
     protocol_version: String,

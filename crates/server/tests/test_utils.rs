@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
-use opencode_server::{create_app, AppState};
-use opencode_core::{Session, SessionId, OpencodeConfig, Part, Message};
+use rcode_server::{create_app, AppState};
+use rcode_core::{Session, SessionId, OpencodeConfig, Part, Message};
 
 pub struct TestApp {
     pub state: Arc<AppState>,

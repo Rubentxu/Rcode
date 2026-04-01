@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::state::AppState;
 use super::error::ServerError;
-use opencode_core::{Session, SessionId, SessionStatus, Message, Part, MessageId, PaginationParams, PaginatedMessages};
+use rcode_core::{Session, SessionId, SessionStatus, Message, Part, MessageId, PaginationParams, PaginatedMessages};
 
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {

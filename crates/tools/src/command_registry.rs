@@ -2,9 +2,8 @@
 
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use opencode_core::SlashCommand;
+use rcode_core::SlashCommand;
 
 /// Registry for storing and retrieving slash commands
 pub struct CommandRegistry {

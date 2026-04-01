@@ -1,10 +1,10 @@
 //! Sidebar view - session list
 
-use opencode_core::{Session, SessionStatus};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
+use rcode_core::{Session, SessionStatus};
 
 use crate::app::OpencodeTui;
 

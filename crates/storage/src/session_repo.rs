@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::sync::Mutex;
 
-use opencode_core::{Session, SessionId, SessionStatus};
+use rcode_core::{Session, SessionId, SessionStatus};
 
 pub struct SessionRepository {
     conn: Mutex<Connection>,

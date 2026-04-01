@@ -2,7 +2,7 @@
 
 pub mod bus;
 
-pub use bus::{EventBus, Event, EventSubscriber, SseEvent};
+pub use bus::{EventBus, Event, EventSubscriber, EventType, FilteredSubscriber, SseEvent};
 
 pub fn event<T: Clone + Send + Sync + 'static>(id: &'static str) -> EventDef<T> {
     EventDef { id, _phantom: std::marker::PhantomData }

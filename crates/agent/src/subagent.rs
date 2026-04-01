@@ -4,9 +4,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use parking_lot::RwLock;
 
-use opencode_core::agent::{Agent, AgentContext, AgentResult};
-use opencode_core::error::Result;
-use opencode_core::SessionId;
+use rcode_core::agent::Agent;
+use rcode_core::error::Result;
+use rcode_core::SessionId;
 
 /// Agent ID type for identifying subagents
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -179,7 +179,8 @@ impl Default for SubagentManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opencode_core::agent::Agent;
+    use rcode_core::agent::Agent;
+    use rcode_core::{AgentContext, AgentResult};
 
     struct MockAgent {
         id: String,

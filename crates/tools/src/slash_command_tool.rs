@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use opencode_core::{Tool, ToolContext, ToolResult, error::Result};
+use rcode_core::{Tool, ToolContext, ToolResult, error::Result};
 
 /// Parameters for executing a slash command
 #[derive(Debug, Deserialize, Serialize)]
@@ -54,10 +54,10 @@ impl Tool for SlashCommandTool {
 
     async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let params: CommandParams = serde_json::from_value(args)
-            .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Invalid arguments: {}", e)))?;
+            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Invalid arguments: {}", e)))?;
 
         let command = self.registry.get(&params.name)
-            .ok_or_else(|| opencode_core::OpenCodeError::Tool(
+            .ok_or_else(|| rcode_core::OpenCodeError::Tool(
                 format!("Command '{}' not found. Available commands: {:?}", 
                     params.name, 
                     self.registry.list_all().iter().map(|c| &c.name).collect::<Vec<_>>()
@@ -79,7 +79,7 @@ impl Tool for SlashCommandTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opencode_core::SlashCommand;
+    use rcode_core::SlashCommand;
     use crate::CommandRegistry;
 
     fn test_context() -> ToolContext {

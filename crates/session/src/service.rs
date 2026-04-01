@@ -5,11 +5,11 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use opencode_core::{
+use rcode_core::{
     Message, PaginatedMessages, PaginationParams, Session, SessionId, SessionStatus,
 };
-use opencode_event::EventBus;
-use opencode_storage::{MessageRepository, SessionRepository};
+use rcode_event::EventBus;
+use rcode_storage::{MessageRepository, SessionRepository};
 
 use crate::compaction::{CompactionConfig, CompactionResult, CompactionStrategy};
 use crate::summarizer::Summarizer;
@@ -101,7 +101,7 @@ impl SessionService {
             .write()
             .insert(session.id.0.clone(), Vec::new());
         self.event_bus
-            .publish(opencode_event::Event::SessionCreated {
+            .publish(rcode_event::Event::SessionCreated {
                 session_id: session.id.0.clone(),
             });
         session
@@ -164,7 +164,7 @@ impl SessionService {
             }
         }
 
-        self.event_bus.publish(opencode_event::Event::MessageAdded {
+        self.event_bus.publish(rcode_event::Event::MessageAdded {
             session_id: session_id.to_string(),
             message_id: message.id.0.clone(),
         });
@@ -231,7 +231,7 @@ impl SessionService {
             }
 
             self.event_bus
-                .publish(opencode_event::Event::SessionUpdated {
+                .publish(rcode_event::Event::SessionUpdated {
                     session_id: session_id.to_string(),
                 });
             true
@@ -257,7 +257,7 @@ impl SessionService {
             }
 
             self.event_bus
-                .publish(opencode_event::Event::SessionDeleted {
+                .publish(rcode_event::Event::SessionDeleted {
                     session_id: session_id.to_string(),
                 });
             true
@@ -375,7 +375,7 @@ impl SessionService {
                 *self.messages.write().get_mut(session_id)? = new_messages;
 
                 // Publish compaction event
-                self.event_bus.publish(opencode_event::Event::CompactionPerformed {
+                self.event_bus.publish(rcode_event::Event::CompactionPerformed {
                     session_id: session_id.to_string(),
                     original_count: compaction_result.original_count,
                     new_count: compaction_result.new_count,
@@ -405,22 +405,22 @@ impl SessionService {
         messages: &[Message],
         session_id: &str,
         summarizer: &Arc<Summarizer>,
-    ) -> Result<CompactionResult, opencode_core::OpenCodeError> {
+    ) -> Result<CompactionResult, rcode_core::OpenCodeError> {
         let max_messages = self.compaction_config.max_messages;
         let max_tokens = self.compaction_config.max_tokens;
 
         summarizer
             .compact_messages(messages, max_messages, max_tokens, session_id)
             .await
-            .map_err(|e| opencode_core::OpenCodeError::Session(e.to_string()))
+            .map_err(|e| rcode_core::OpenCodeError::Session(e.to_string()))
     }
 
     /// Truncate middle messages strategy
-    fn compact_truncate_middle(&self, messages: &[Message]) -> Result<CompactionResult, opencode_core::OpenCodeError> {
+    fn compact_truncate_middle(&self, messages: &[Message]) -> Result<CompactionResult, rcode_core::OpenCodeError> {
         let max_messages = self.compaction_config.max_messages;
         
         if messages.len() <= max_messages {
-            return Err(opencode_core::OpenCodeError::Session(
+            return Err(rcode_core::OpenCodeError::Session(
                 "Not enough messages to truncate".to_string()
             ));
         }
@@ -431,7 +431,7 @@ impl SessionService {
         let original_count = messages.len();
 
         if original_count <= preserve_count {
-            return Err(opencode_core::OpenCodeError::Session(
+            return Err(rcode_core::OpenCodeError::Session(
                 "Not enough messages to truncate".to_string()
             ));
         }
@@ -445,7 +445,7 @@ impl SessionService {
         let truncated_count = original_count - preserve_count;
         let placeholder = Message::assistant(
             messages[1].session_id.clone(),
-            vec![opencode_core::Part::Text {
+            vec![rcode_core::Part::Text {
                 content: format!(
                     "[{} messages were truncated due to length]",
                     truncated_count
@@ -504,15 +504,15 @@ impl SessionService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opencode_core::Part;
-    use opencode_storage::schema;
+    use rcode_core::Part;
+    use rcode_storage::schema;
     use rusqlite::Connection;
     use tempfile::tempdir;
 
     fn create_test_service() -> (SessionService, tempfile::TempDir) {
         let dir = tempdir().unwrap();
 
-        let event_bus = Arc::new(opencode_event::EventBus::new(100));
+        let event_bus = Arc::new(rcode_event::EventBus::new(100));
 
         // Use a single database file for both repos since messages reference sessions via FK
         let db_path = dir.path().join("test.db");

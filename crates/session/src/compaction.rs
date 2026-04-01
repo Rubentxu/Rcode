@@ -89,8 +89,8 @@ impl CompactionStrategy {
     /// For TruncateMiddle, the second tuple element contains messages to truncate (not summarize)
     pub fn apply(
         &self,
-        messages: &[opencode_core::Message],
-    ) -> (Vec<opencode_core::Message>, Vec<opencode_core::Message>) {
+        messages: &[rcode_core::Message],
+    ) -> (Vec<rcode_core::Message>, Vec<rcode_core::Message>) {
         if messages.is_empty() {
             return (Vec::new(), Vec::new());
         }
@@ -171,7 +171,7 @@ pub struct CompactionResult {
     /// New message count after compaction
     pub new_count: usize,
     /// The summary message that replaces the compacted messages
-    pub summary_message: opencode_core::Message,
+    pub summary_message: rcode_core::Message,
     /// Estimated tokens saved by compaction
     pub tokens_saved: usize,
 }
@@ -180,7 +180,7 @@ impl CompactionResult {
     pub fn new(
         original_count: usize,
         new_count: usize,
-        summary_message: opencode_core::Message,
+        summary_message: rcode_core::Message,
         tokens_saved: usize,
     ) -> Self {
         Self {
@@ -194,7 +194,7 @@ impl CompactionResult {
 
 /// Check if compaction is needed based on message count
 pub fn needs_compaction_by_count(
-    messages: &[opencode_core::Message],
+    messages: &[rcode_core::Message],
     config: &CompactionConfig,
 ) -> bool {
     messages.len() > config.max_messages
@@ -202,7 +202,7 @@ pub fn needs_compaction_by_count(
 
 /// Check if compaction is needed based on token estimate
 pub fn needs_compaction_by_tokens(
-    messages: &[opencode_core::Message],
+    messages: &[rcode_core::Message],
     config: &CompactionConfig,
 ) -> bool {
     let total_tokens = estimate_message_tokens(messages);
@@ -210,36 +210,36 @@ pub fn needs_compaction_by_tokens(
 }
 
 /// Estimate total tokens from messages (rough estimate: 4 chars ≈ 1 token)
-pub fn estimate_message_tokens(messages: &[opencode_core::Message]) -> usize {
+pub fn estimate_message_tokens(messages: &[rcode_core::Message]) -> usize {
     messages
         .iter()
         .map(|m| estimate_message_token_count(m))
         .sum()
 }
 
-fn estimate_message_token_count(message: &opencode_core::Message) -> usize {
+fn estimate_message_token_count(message: &rcode_core::Message) -> usize {
     let mut count = 0;
 
     // Role overhead
     count += match message.role {
-        opencode_core::Role::User => 4,
-        opencode_core::Role::Assistant => 4,
-        opencode_core::Role::System => 4,
+        rcode_core::Role::User => 4,
+        rcode_core::Role::Assistant => 4,
+        rcode_core::Role::System => 4,
     };
 
     // Parts content
     for part in &message.parts {
         match part {
-            opencode_core::Part::Text { content } => count += content.len() / 4,
-            opencode_core::Part::ToolCall {
+            rcode_core::Part::Text { content } => count += content.len() / 4,
+            rcode_core::Part::ToolCall {
                 name, arguments, ..
             } => {
                 count += name.len() / 4;
                 count += arguments.to_string().len() / 4;
             }
-            opencode_core::Part::ToolResult { content, .. } => count += content.len() / 4,
-            opencode_core::Part::Reasoning { content } => count += content.len() / 4,
-            opencode_core::Part::Attachment {
+            rcode_core::Part::ToolResult { content, .. } => count += content.len() / 4,
+            rcode_core::Part::Reasoning { content } => count += content.len() / 4,
+            rcode_core::Part::Attachment {
                 name, mime_type, ..
             } => {
                 count += name.len() / 4;
@@ -256,11 +256,11 @@ fn estimate_message_token_count(message: &opencode_core::Message) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opencode_core::{Message, Part, Role};
+    use rcode_core::{Message, Part, Role};
 
     fn create_test_message(role: Role, content: &str) -> Message {
         Message {
-            id: opencode_core::MessageId::new(),
+            id: rcode_core::MessageId::new(),
             session_id: "test".to_string(),
             role,
             parts: vec![Part::Text {
@@ -324,8 +324,8 @@ mod tests {
         assert_eq!(preserved.len(), 3);
         assert_eq!(to_summarize.len(), 7);
         // Verify preserved messages are correct by checking content
-        if let opencode_core::Part::Text { content: c1 } = &preserved[0].parts[0] {
-            if let opencode_core::Part::Text { content: c2 } = &messages[0].parts[0] {
+        if let rcode_core::Part::Text { content: c1 } = &preserved[0].parts[0] {
+            if let rcode_core::Part::Text { content: c2 } = &messages[0].parts[0] {
                 assert_eq!(c1, c2);
             }
         }

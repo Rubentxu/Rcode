@@ -45,7 +45,7 @@ pub enum Part {
     ToolCall {
         id: String,
         name: String,
-        arguments: serde_json::Value,
+        arguments: Box<serde_json::Value>,
     },
     ToolResult {
         tool_call_id: String,
@@ -86,7 +86,7 @@ impl Message {
 }
 
 /// Pagination parameters for message retrieval
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PaginationParams {
     pub offset: usize,
     pub limit: usize,
@@ -117,7 +117,7 @@ pub struct PaginatedMessages {
 }
 
 /// Token budget for context management
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct TokenBudget {
     pub max_tokens: usize,
     pub used_tokens: usize,

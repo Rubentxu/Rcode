@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use std::path::PathBuf;
 
-use opencode_core::{Tool, ToolContext, ToolResult, error::Result};
+use rcode_core::{Tool, ToolContext, ToolResult, error::Result};
 
 pub struct CodesearchTool;
 
@@ -62,7 +62,7 @@ impl Tool for CodesearchTool {
     
     async fn execute(&self, args: serde_json::Value, context: &ToolContext) -> Result<ToolResult> {
         let params: CodesearchParams = serde_json::from_value(args)
-            .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Invalid parameters: {}", e)))?;
+            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Invalid parameters: {}", e)))?;
         
         let search_path: PathBuf = params.path
             .map(PathBuf::from)

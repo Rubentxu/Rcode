@@ -5,7 +5,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 
-use opencode_core::{Tool, ToolContext, ToolResult, error::{Result, OpenCodeError}};
+use rcode_core::{Tool, ToolContext, ToolResult, error::{Result, OpenCodeError}};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TodoItem {

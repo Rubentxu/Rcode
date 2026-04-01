@@ -1,4 +1,4 @@
-//! Core domain types and traits for opencode-rust
+//! Core domain types and traits for rcode
 //!
 //! This crate contains the fundamental abstractions:
 //! - `Agent` trait for agent implementations

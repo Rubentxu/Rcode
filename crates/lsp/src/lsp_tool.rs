@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tracing::{debug, error};
 
-use opencode_core::{Tool, ToolContext, ToolResult, error::Result as OpenCodeResult};
+use rcode_core::{Tool, ToolContext, ToolResult, error::Result as OpenCodeResult};
 
 use super::client::LspClient;
 use super::error::LspError;
@@ -101,7 +101,7 @@ impl Tool for LspToolAdapter {
                 match self.client.goto_definition(uri, pos).await {
                     Ok(Some(loc)) => format!("{:?}", loc),
                     Ok(None) => "No definition found".to_string(),
-                    Err(e) => return Err(opencode_core::OpenCodeError::Tool(e.to_string())),
+                    Err(e) => return Err(rcode_core::OpenCodeError::Tool(e.to_string())),
                 }
             }
             "find-references" => {
@@ -114,7 +114,7 @@ impl Tool for LspToolAdapter {
                         s
                     }
                     Ok(_) => "No references found".to_string(),
-                    Err(e) => return Err(opencode_core::OpenCodeError::Tool(e.to_string())),
+                    Err(e) => return Err(rcode_core::OpenCodeError::Tool(e.to_string())),
                 }
             }
             "completions" => {
@@ -127,7 +127,7 @@ impl Tool for LspToolAdapter {
                         s
                     }
                     Ok(_) => "No completions available".to_string(),
-                    Err(e) => return Err(opencode_core::OpenCodeError::Tool(e.to_string())),
+                    Err(e) => return Err(rcode_core::OpenCodeError::Tool(e.to_string())),
                 }
             }
             "hover" => {
@@ -139,7 +139,7 @@ impl Tool for LspToolAdapter {
                         }
                     }
                     Ok(None) => "No hover information available".to_string(),
-                    Err(e) => return Err(opencode_core::OpenCodeError::Tool(e.to_string())),
+                    Err(e) => return Err(rcode_core::OpenCodeError::Tool(e.to_string())),
                 }
             }
             "diagnostics" => {
@@ -153,12 +153,12 @@ impl Tool for LspToolAdapter {
                         s
                     }
                     Ok(_) => "No diagnostics".to_string(),
-                    Err(e) => return Err(opencode_core::OpenCodeError::Tool(e.to_string())),
+                    Err(e) => return Err(rcode_core::OpenCodeError::Tool(e.to_string())),
                 }
             }
             _ => {
                 error!("Unknown LSP command: {}", command);
-                return Err(opencode_core::OpenCodeError::Tool(format!("Unknown command: {}", command)));
+                return Err(rcode_core::OpenCodeError::Tool(format!("Unknown command: {}", command)));
             }
         };
 
@@ -171,8 +171,8 @@ impl Tool for LspToolAdapter {
     }
 }
 
-impl From<LspError> for opencode_core::OpenCodeError {
+impl From<LspError> for rcode_core::OpenCodeError {
     fn from(e: LspError) -> Self {
-        opencode_core::OpenCodeError::Tool(e.to_string())
+        rcode_core::OpenCodeError::Tool(e.to_string())
     }
 }

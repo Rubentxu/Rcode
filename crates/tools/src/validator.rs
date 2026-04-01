@@ -4,7 +4,7 @@ use jsonschema::Validator;
 use serde_json::Value;
 use thiserror::Error;
 
-use opencode_core::error::OpenCodeError;
+use rcode_core::error::OpenCodeError;
 
 /// Validation error with field and message details
 #[derive(Error, Debug, Clone)]

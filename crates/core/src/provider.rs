@@ -1,7 +1,9 @@
 //! LLM Provider trait
 
 use async_trait::async_trait;
+use futures::Stream;
 use serde::{Deserialize, Serialize};
+use std::pin::Pin;
 
 use crate::{error::Result, message::Message};
 
@@ -74,7 +76,7 @@ pub struct ModelInfo {
 }
 
 pub struct StreamingResponse {
-    pub events: tokio_stream::wrappers::BroadcastStream<StreamingEvent>,
+    pub events: Pin<Box<dyn Stream<Item = StreamingEvent> + Send>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,7 +87,7 @@ pub enum StreamingEvent {
     ToolCallStart { id: String, name: String },
     ToolCallArg { id: String, name: String, value: String },
     ToolCallEnd { id: String },
-    ContentBlock { content: ContentBlock },
+    ContentBlock { content: Box<ContentBlock> },
     Finish { stop_reason: StopReason, usage: TokenUsage },
 }
 

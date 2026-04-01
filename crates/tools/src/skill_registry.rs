@@ -6,7 +6,7 @@ use parking_lot::RwLock;
 use anyhow::Result;
 use tracing::debug;
 
-use opencode_core::Skill;
+use rcode_core::Skill;
 
 /// Registry for managing skills with lazy loading
 pub struct SkillRegistry {
@@ -87,11 +87,11 @@ impl SkillRegistry {
         Ok(all_skills
             .into_iter()
             .filter(|s| match &s.trigger {
-                opencode_core::SkillTrigger::Keyword(kw) => 
+                rcode_core::SkillTrigger::Keyword(kw) => 
                     kw.to_lowercase().contains(&trigger.to_lowercase()),
-                opencode_core::SkillTrigger::Command(cmd) => 
+                rcode_core::SkillTrigger::Command(cmd) => 
                     cmd.to_lowercase() == trigger.to_lowercase().trim_start_matches('/'),
-                opencode_core::SkillTrigger::FilePattern(pattern) => 
+                rcode_core::SkillTrigger::FilePattern(pattern) => 
                     glob::Pattern::new(pattern)
                         .map(|p| p.matches(trigger))
                         .unwrap_or(false),

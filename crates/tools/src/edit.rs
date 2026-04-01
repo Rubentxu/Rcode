@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use tokio::fs;
 
-use opencode_core::{Tool, ToolContext, ToolResult, error::Result};
+use rcode_core::{Tool, ToolContext, ToolResult, error::Result};
 
 pub struct EditTool;
 
@@ -51,7 +51,7 @@ impl Tool for EditTool {
         let content = fs::read_to_string(&full_path).await?;
         
         if !content.contains(old_text) {
-            return Err(opencode_core::OpenCodeError::Tool(
+            return Err(rcode_core::OpenCodeError::Tool(
                 format!("Text not found in file: {}", path)
             ));
         }

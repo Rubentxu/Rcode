@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use parking_lot::RwLock;
 
-use opencode_core::{Tool, ToolContext, ToolResult, PermissionChecker, PermissionConfig, Permission, AgentRegistry, error::{Result, OpenCodeError}};
+use rcode_core::{Tool, ToolContext, ToolResult, PermissionChecker, PermissionConfig, Permission, AgentRegistry, error::{Result, OpenCodeError}};
 
 /// Agent ID type for identifying subagents
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -171,7 +171,7 @@ impl TaskTool {
     }
 
     /// Get agent by ID from registry
-    pub fn get_agent(&self, agent_id: &str) -> Option<Arc<dyn opencode_core::agent::Agent>> {
+    pub fn get_agent(&self, agent_id: &str) -> Option<Arc<dyn rcode_core::agent::Agent>> {
         self.agent_registry.as_ref()?.get(agent_id)
     }
 }

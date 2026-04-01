@@ -1,9 +1,8 @@
 //! LLM Provider trait
 
 use async_trait::async_trait;
-use std::sync::Arc;
 
-use opencode_core::{
+use rcode_core::{
     CompletionRequest, CompletionResponse, 
     StreamingResponse, ModelInfo, error::Result,
 };

@@ -16,6 +16,7 @@ members = [
     "crates/engram",
     "crates/mcp",
     "crates/lsp",
+    "crates/acp",
     "web",
 ]
 
@@ -39,6 +40,7 @@ async-trait = "0.1"
 uuid = { version = "1.16", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
 bytes = "1.0"
 tempfile = "3.27"
 dirs = "6.0"

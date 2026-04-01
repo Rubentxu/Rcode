@@ -10,9 +10,9 @@ use std::io;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use opencode_core::{Message, Part, Session, SessionId, SessionStatus};
-use opencode_event::EventBus;
-use opencode_session::SessionService;
+use rcode_core::{Message, Part, Session, SessionStatus};
+use rcode_event::EventBus;
+use rcode_session::SessionService;
 
 use crate::app::{AppMode, OpencodeTui};
 use crate::events::{parse_event, InputEvent};
@@ -97,13 +97,13 @@ async fn run_loop(
     input: &mut InputView,
     session_service: &Arc<SessionService>,
     event_bus: &Arc<EventBus>,
-    tx: mpsc::Sender<InputEvent>,
+    _tx: mpsc::Sender<InputEvent>,
     rx: &mut mpsc::Receiver<InputEvent>,
 ) -> anyhow::Result<()> {
     loop {
         // Draw
         terminal.draw(|f| {
-            let size = f.size();
+            let size = f.area();
             let (sidebar_area, chat_area) = split_layout(size);
 
             sidebar.render(app, sidebar_area, f.buffer_mut());
@@ -164,7 +164,7 @@ async fn handle_input_event(
     chat: &mut ChatView,
     input: &mut InputView,
     session_service: &Arc<SessionService>,
-    event_bus: &Arc<EventBus>,
+    _event_bus: &Arc<EventBus>,
 ) -> anyhow::Result<bool> {
     match event {
         InputEvent::Key(key_event) => {

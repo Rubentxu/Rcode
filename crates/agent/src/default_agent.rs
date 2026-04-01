@@ -1,8 +1,8 @@
 //! Default agent implementation
 
 use async_trait::async_trait;
-use opencode_core::agent::{Agent, AgentContext, AgentResult, StopReason};
-use opencode_core::error::Result;
+use rcode_core::agent::{Agent, AgentContext, AgentResult, StopReason};
+use rcode_core::error::Result;
 
 /// Default agent with basic behavior
 pub struct DefaultAgent {
@@ -55,7 +55,7 @@ impl Agent for DefaultAgent {
         // This method is not called directly when using AgentExecutor
         Ok(AgentResult {
             message: ctx.messages.last().cloned().unwrap_or_else(|| {
-                opencode_core::Message::assistant(ctx.session_id.clone(), vec![])
+                rcode_core::Message::assistant(ctx.session_id.clone(), vec![])
             }),
             should_continue: false,
             stop_reason: StopReason::EndOfTurn,

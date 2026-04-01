@@ -3,20 +3,24 @@
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 
-use opencode_core::{
+use rcode_core::{
     CompletionRequest, CompletionResponse, StreamingResponse,
     ContentBlock as CoreContentBlock, ModelInfo, StreamingEvent,
     ToolDefinition, TokenUsage, error::Result,
 };
-use opencode_core::provider::StopReason;
+use rcode_core::provider::StopReason;
 
+use super::rate_limit::TokenBucket;
 use super::LlmProvider;
 
 pub struct AnthropicProvider {
     api_key: String,
     http_client: Client,
+    rate_limiter: Option<Arc<TokenBucket>>,
 }
 
 impl AnthropicProvider {
@@ -24,13 +28,26 @@ impl AnthropicProvider {
         Self {
             api_key,
             http_client: Client::new(),
+            rate_limiter: None,
         }
+    }
+
+    pub fn with_rate_limit(mut self, capacity: u64, refill_rate: f64) -> Self {
+        self.rate_limiter = Some(Arc::new(TokenBucket::new(capacity, refill_rate)));
+        self
     }
 }
 
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse> {
+        if let Some(limiter) = &self.rate_limiter {
+            if let Err(wait_time) = limiter.try_acquire(1) {
+                tokio::time::sleep(wait_time).await;
+                let _ = limiter.try_acquire(1);
+            }
+        }
+
         let body = AnthropicRequest {
             model: req.model.clone(),
             messages: req.messages.into_iter().map(into_anthropic_message).collect(),
@@ -47,10 +64,10 @@ impl LlmProvider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| opencode_core::OpenCodeError::Provider(format!("Network error: {}", e)))?;
+            .map_err(|e| rcode_core::OpenCodeError::Provider(format!("Network error: {}", e)))?;
         
         let resp: AnthropicResponse = response.json().await
-            .map_err(|e| opencode_core::OpenCodeError::Provider(format!("Parse error: {}", e)))?;
+            .map_err(|e| rcode_core::OpenCodeError::Provider(format!("Parse error: {}", e)))?;
         
         Ok(CompletionResponse {
             content: resp.content.first()
@@ -72,6 +89,13 @@ impl LlmProvider for AnthropicProvider {
     }
     
     async fn stream(&self, req: CompletionRequest) -> Result<StreamingResponse> {
+        if let Some(limiter) = &self.rate_limiter {
+            if let Err(wait_time) = limiter.try_acquire(1) {
+                tokio::time::sleep(wait_time).await;
+                let _ = limiter.try_acquire(1);
+            }
+        }
+
         let body = AnthropicRequest {
             model: req.model.clone(),
             messages: req.messages.into_iter().map(into_anthropic_message).collect(),
@@ -89,10 +113,10 @@ impl LlmProvider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| opencode_core::OpenCodeError::Provider(format!("Network error: {}", e)))?;
+            .map_err(|e| rcode_core::OpenCodeError::Provider(format!("Network error: {}", e)))?;
 
-        let (tx, rx) = tokio::sync::broadcast::channel(100);
-        let tx_clone = tx.clone();
+        let (tx, rx) = mpsc::channel(1);
+        let tx_clone = tx;
 
         tokio::spawn(async move {
             let mut stream = response.bytes_stream();
@@ -103,15 +127,15 @@ impl LlmProvider for AnthropicProvider {
             while let Some(chunk_result) = stream.next().await {
                 match chunk_result {
                     Ok(chunk) => {
-                        // Process chunk line by line
                         let text = String::from_utf8_lossy(&chunk);
                         for line in text.lines() {
                             let line = line.trim();
                             if line.is_empty() {
-                                // Empty line signals end of event
                                 if !current_event.is_empty() || !current_data.is_empty() {
                                     if let Some(event) = parse_anthropic_sse_event(&current_event, &current_data, &mut tool_call_buffer) {
-                                        let _ = tx_clone.send(event);
+                                        if tx_clone.send(event).await.is_err() {
+                                            return;
+                                        }
                                     }
                                     current_event.clear();
                                     current_data.clear();
@@ -131,7 +155,7 @@ impl LlmProvider for AnthropicProvider {
                                 output_tokens: 0, 
                                 total_tokens: None 
                             }
-                        });
+                        }).await;
                         break;
                     }
                 }
@@ -139,7 +163,7 @@ impl LlmProvider for AnthropicProvider {
         });
 
         Ok(StreamingResponse {
-            events: tokio_stream::wrappers::BroadcastStream::new(rx),
+            events: Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)),
         })
     }
     
@@ -215,6 +239,7 @@ enum AnthropicContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "tool_use")]
+    #[allow(dead_code)]
     ToolUse { id: String, name: String, input: serde_json::Value },
 }
 
@@ -224,15 +249,15 @@ struct Usage {
     output_tokens: u32,
 }
 
-fn into_anthropic_message(msg: opencode_core::Message) -> AnthropicMessage {
+fn into_anthropic_message(msg: rcode_core::Message) -> AnthropicMessage {
     let content = msg.parts.iter()
         .map(|p| match p {
-            opencode_core::Part::Text { content } => content.clone(),
-            opencode_core::Part::ToolResult { content, .. } => content.clone(),
-            opencode_core::Part::ToolCall { name, arguments, .. } => 
+            rcode_core::Part::Text { content } => content.clone(),
+            rcode_core::Part::ToolResult { content, .. } => content.clone(),
+            rcode_core::Part::ToolCall { name, arguments, .. } => 
                 format!("Tool call: {}({})", name, arguments),
-            opencode_core::Part::Reasoning { content } => format!("[Reasoning]: {}", content),
-            opencode_core::Part::Attachment { name, mime_type, .. } => 
+            rcode_core::Part::Reasoning { content } => format!("[Reasoning]: {}", content),
+            rcode_core::Part::Attachment { name, mime_type, .. } => 
                 format!("[Attachment: {} ({})]", name, mime_type),
         })
         .collect::<Vec<_>>()
@@ -240,9 +265,9 @@ fn into_anthropic_message(msg: opencode_core::Message) -> AnthropicMessage {
     
     AnthropicMessage {
         role: match msg.role {
-            opencode_core::Role::User => "user".into(),
-            opencode_core::Role::Assistant => "assistant".into(),
-            opencode_core::Role::System => "user".into(),
+            rcode_core::Role::User => "user".into(),
+            rcode_core::Role::Assistant => "assistant".into(),
+            rcode_core::Role::System => "user".into(),
         },
         content,
     }
@@ -270,7 +295,7 @@ fn parse_anthropic_sse_event(
     match event_type {
         "message_start" => {
             Some(StreamingEvent::ContentBlock {
-                content: CoreContentBlock::Text { text: String::new() },
+                content: Box::new(CoreContentBlock::Text { text: String::new() }),
             })
         }
         "content_block_start" => {
@@ -353,11 +378,13 @@ fn merge_json_values(target: &mut serde_json::Map<String, serde_json::Value>, so
     }
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct MessageStart {
     message: AnthropicMessageContent,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct AnthropicMessageContent {
     id: String,
@@ -371,12 +398,14 @@ struct AnthropicMessageContent {
     usage: Usage,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct ContentBlockStart {
     index: u32,
     content: ContentBlockStartContent,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum ContentBlockStartContent {
@@ -384,6 +413,7 @@ enum ContentBlockStartContent {
     ToolUse { id: String, name: String, #[serde(rename = "type")] t: String },
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct ContentBlockDelta {
     index: u32,
@@ -399,6 +429,7 @@ enum DeltaContent {
     InputJsonDelta { partial_json: String },
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct MessageDelta {
     delta: DeltaUsage,

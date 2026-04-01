@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::LlmProvider;
-use opencode_core::ModelInfo;
+use rcode_core::ModelInfo;
 
 pub struct ProviderRegistry {
     providers: HashMap<String, Arc<dyn LlmProvider>>,

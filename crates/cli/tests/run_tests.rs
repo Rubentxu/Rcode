@@ -1,6 +1,6 @@
 //! CLI run command tests
 
-use opencode_cli::commands::Run;
+use rcode_cli::commands::Run;
 use tempfile::TempDir;
 
 #[test]

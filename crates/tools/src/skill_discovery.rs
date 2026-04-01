@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use tracing::{debug, warn};
 
-use opencode_core::Skill;
+use rcode_core::Skill;
 
 /// Default search paths for skills
 pub fn default_search_paths() -> Vec<PathBuf> {
@@ -173,7 +173,7 @@ impl SkillDiscovery {
     /// Load a skill from a specific file path
     async fn load_skill_from_file(&self, path: &Path) -> Result<Skill> {
         let content = tokio::fs::read_to_string(path).await?;
-        let skill = opencode_core::Skill::parse(&content, path)?;
+        let skill = rcode_core::Skill::parse(&content, path)?;
         Ok(skill)
     }
 }

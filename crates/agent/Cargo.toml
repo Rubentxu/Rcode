@@ -1,13 +1,13 @@
 [package]
-name = "opencode-agent"
+name = "rcode-agent"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-opencode-core = { path = "../core" }
-opencode-event = { path = "../event" }
-opencode-providers = { path = "../providers" }
-opencode-tools = { path = "../tools" }
+rcode-core = { path = "../core" }
+rcode-event = { path = "../event" }
+rcode-providers = { path = "../providers" }
+rcode-tools = { path = "../tools" }
 tokio.workspace = true
 tokio-stream.workspace = true
 serde.workspace = true

@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 
-use super::{ConfigError, Result};
-use opencode_core::OpencodeConfig;
+use super::Result;
+use rcode_core::OpencodeConfig;
 
 /// Load configuration from file or return default
 pub fn load_config(config_path: Option<PathBuf>, no_config: bool) -> Result<OpencodeConfig> {
@@ -75,9 +75,12 @@ mod tests {
 
     #[test]
     fn test_substitute_env_vars() {
-        std::env::set_var("TEST_API_KEY", "secret123");
-        assert_eq!(substitute_env_vars("${TEST_API_KEY}"), "secret123");
-        std::env::remove_var("TEST_API_KEY");
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::set_var("TEST_API_KEY", "secret123");
+            assert_eq!(substitute_env_vars("${TEST_API_KEY}"), "secret123");
+            std::env::remove_var("TEST_API_KEY");
+        }
     }
 
     #[test]

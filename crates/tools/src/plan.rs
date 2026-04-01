@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 
-use opencode_core::{Tool, ToolContext, ToolResult, error::{Result, OpenCodeError}};
+use rcode_core::{Tool, ToolContext, ToolResult, error::{Result, OpenCodeError}};
 
 pub struct PlanTool;
 

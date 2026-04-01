@@ -1,5 +1,5 @@
 [package]
-name = "opencode-web"
+name = "rcode-web"
 version.workspace = true
 edition.workspace = true
 

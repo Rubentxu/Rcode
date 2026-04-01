@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use tokio::fs;
 
-use opencode_core::{Tool, ToolContext, ToolResult, error::Result};
+use rcode_core::{Tool, ToolContext, ToolResult, error::Result};
 
 pub struct WriteTool;
 
@@ -41,20 +41,20 @@ impl Tool for WriteTool {
     async fn execute(&self, args: serde_json::Value, context: &ToolContext) -> Result<ToolResult> {
         let path = args["path"]
             .as_str()
-            .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'path' argument".into()))?;
+            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'path' argument".into()))?;
         let content = args["content"]
             .as_str()
-            .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'content' argument".into()))?;
+            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'content' argument".into()))?;
         
         let full_path = context.cwd.join(path);
         
         if let Some(parent) = full_path.parent() {
             fs::create_dir_all(parent).await
-                .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Failed to create directory: {}", e)))?;
+                .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to create directory: {}", e)))?;
         }
         
         fs::write(&full_path, content).await
-            .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Failed to write {}: {}", path, e)))?;
+            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to write {}: {}", path, e)))?;
         
         Ok(ToolResult {
             title: format!("Written: {}", path),

@@ -1,12 +1,10 @@
 //! API Integration for OpenCode Backend
 
 use crate::components::Session;
-use crate::components::Message;
 use crate::components::PaginatedMessages;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-const API_BASE: &str = "http://localhost:8080";
+pub const API_BASE: &str = "http://localhost:8080";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSessionRequest {

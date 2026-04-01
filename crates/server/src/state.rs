@@ -1,10 +1,10 @@
 //! Application state
 
-use opencode_core::OpencodeConfig;
-use opencode_event::EventBus;
-use opencode_providers::ProviderRegistry;
-use opencode_session::SessionService;
-use opencode_tools::ToolRegistryService;
+use rcode_core::OpencodeConfig;
+use rcode_event::EventBus;
+use rcode_providers::ProviderRegistry;
+use rcode_session::SessionService;
+use rcode_tools::ToolRegistryService;
 use std::sync::{Arc, Mutex};
 
 pub struct AppState {

@@ -5,7 +5,7 @@
 
 use crate::client::EngramClient;
 use crate::types::{Observation, ObservationType, Scope};
-use opencode_session::SessionService;
+use rcode_session::SessionService;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -26,7 +26,7 @@ impl EngramSessionIntegration {
 
     /// Called when a session ends - saves relevant context to Engram
     pub async fn on_session_end(&self, session_id: &str) -> anyhow::Result<()> {
-        let session = match self.session_service.get(&opencode_core::SessionId(session_id.to_string())) {
+        let session = match self.session_service.get(&rcode_core::SessionId(session_id.to_string())) {
             Some(s) => s,
             None => {
                 tracing::debug!("Session {} not found, skipping Engram integration", session_id);
@@ -184,7 +184,7 @@ impl EngramSessionIntegration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opencode_core::Session;
+    use rcode_core::Session;
     use tempfile::TempDir;
 
     fn create_test_integration() -> (EngramSessionIntegration, TempDir) {
@@ -193,7 +193,7 @@ mod tests {
             EngramClient::new(&temp.path().join("engram.db")).unwrap()
         );
 
-        let event_bus = Arc::new(opencode_event::EventBus::new(100));
+        let event_bus = Arc::new(rcode_event::EventBus::new(100));
         let session_service = Arc::new(SessionService::new(event_bus));
 
         (

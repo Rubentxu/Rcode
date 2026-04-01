@@ -1,8 +1,8 @@
 //! TUI binary entry point
 
-use opencode_event::EventBus;
-use opencode_session::SessionService;
-use opencode_tui::run;
+use rcode_event::EventBus;
+use rcode_session::SessionService;
+use rcode_tui::run;
 use std::sync::Arc;
 
 #[tokio::main]

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use tracing::{debug, warn};
 
-use opencode_core::SlashCommand;
+use rcode_core::SlashCommand;
 
 /// Default search paths for slash commands
 pub fn default_search_paths() -> Vec<PathBuf> {

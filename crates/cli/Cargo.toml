@@ -1,25 +1,26 @@
 [package]
-name = "opencode-cli"
+name = "rcode-cli"
 version.workspace = true
 edition.workspace = true
 
 [lib]
-name = "opencode_cli"
+name = "rcode_cli"
 path = "src/lib.rs"
 
 [[bin]]
-name = "opencode"
+name = "rcode"
 path = "src/main.rs"
 
 [dependencies]
-opencode-core = { path = "../core" }
-opencode-session = { path = "../session" }
-opencode-event = { path = "../event" }
-opencode-providers = { path = "../providers" }
-opencode-tools = { path = "../tools" }
-opencode-server = { path = "../server" }
-opencode-agent = { path = "../agent" }
-opencode-tui = { path = "../tui" }
+rcode-core = { path = "../core" }
+rcode-session = { path = "../session" }
+rcode-event = { path = "../event" }
+rcode-providers = { path = "../providers" }
+rcode-tools = { path = "../tools" }
+rcode-server = { path = "../server" }
+rcode-agent = { path = "../agent" }
+rcode-tui = { path = "../tui" }
+rcode-acp = { path = "../acp" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

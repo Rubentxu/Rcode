@@ -4,9 +4,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use opencode_core::{Tool, ToolContext, ToolResult, error::Result};
+use rcode_core::{Tool, ToolContext, ToolResult, error::Result};
 
-use opencode_mcp::McpServerRegistry;
+use rcode_mcp::McpServerRegistry;
 
 /// Adapter that wraps MCP tools as regular tools
 pub struct McpToolAdapter {
@@ -59,24 +59,24 @@ impl Tool for McpToolAdapter {
     async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let server = args["server"]
             .as_str()
-            .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'server' argument".into()))?;
+            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'server' argument".into()))?;
         
         let tool = args["tool"]
             .as_str()
-            .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'tool' argument".into()))?;
+            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'tool' argument".into()))?;
         
         let params = args["params"].clone();
 
         // Get the MCP client for this server
         let client = self.registry.get_server(server)
             .await
-            .ok_or_else(|| opencode_core::OpenCodeError::Tool(format!("MCP server '{}' not found", server)))?;
+            .ok_or_else(|| rcode_core::OpenCodeError::Tool(format!("MCP server '{}' not found", server)))?;
 
         let mut client = client.write().await;
 
         // Call the tool on the MCP server
         let result = client.call_tool(tool, params).await
-            .map_err(|e| opencode_core::OpenCodeError::Tool(format!("MCP tool call failed: {}", e)))?;
+            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("MCP tool call failed: {}", e)))?;
 
         let content = result.content_to_string();
 
@@ -97,7 +97,7 @@ impl Tool for McpToolAdapter {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use opencode_core::ToolContext;
+    use rcode_core::ToolContext;
 
     fn test_context() -> ToolContext {
         ToolContext {

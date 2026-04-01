@@ -1,12 +1,12 @@
 //! Chat view - message list with scroll
 
-use opencode_core::{Message, Part, Role};
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Paragraph},
 };
+use rcode_core::{Message, Part, Role};
 
-use crate::app::{AppMode, OpencodeTui, ToolStatus};
+use crate::app::{OpencodeTui, ToolStatus};
 
 /// Chat view widget
 pub struct ChatView {
@@ -25,12 +25,12 @@ impl ChatView {
     }
 
     /// Scroll down in message list
-    pub fn scroll_down(&mut self, app: &OpencodeTui) {
+    pub fn scroll_down(&mut self, _app: &OpencodeTui) {
         self.scroll_offset = self.scroll_offset.saturating_add(1);
     }
 
     /// Page up
-    pub fn page_up(&mut self, app: &OpencodeTui) {
+    pub fn page_up(&mut self, _app: &OpencodeTui) {
         let page_size = 10;
         self.scroll_offset = self.scroll_offset.saturating_sub(page_size);
     }
@@ -151,7 +151,7 @@ impl ChatView {
         paragraph.render(inner_area, buf);
     }
 
-    fn format_message(&self, msg: &Message) -> Vec<Line> {
+    fn format_message(&self, msg: &Message) -> Vec<Line<'_>> {
         let role_label = match msg.role {
             Role::User => "User",
             Role::Assistant => "Assistant",
@@ -209,7 +209,7 @@ impl ChatView {
                     )));
                 }
                 Part::Attachment {
-                    id,
+                    id: _,
                     name,
                     mime_type,
                     ..

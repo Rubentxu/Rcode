@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use opencode_core::error::Result as CoreResult;
+use rcode_core::error::Result as CoreResult;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::path::PathBuf;

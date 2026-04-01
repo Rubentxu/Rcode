@@ -2,7 +2,7 @@
 
 use std::env;
 
-use opencode_core::error::{OpenCodeError, Result};
+use rcode_core::error::{OpenCodeError, Result};
 
 /// Load API key from environment variable
 /// Format: {PROVIDER}_API_KEY (e.g., ANTHROPIC_API_KEY, OPENAI_API_KEY)
@@ -44,34 +44,46 @@ mod tests {
 
     #[test]
     fn test_load_api_key_from_env() {
-        std::env::set_var("TEST_PROVIDER_API_KEY", "test-key-123");
-        let result = load_api_key("test_provider");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "test-key-123");
-        std::env::remove_var("TEST_PROVIDER_API_KEY");
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::set_var("TEST_PROVIDER_API_KEY", "test-key-123");
+            let result = load_api_key("test_provider");
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "test-key-123");
+            std::env::remove_var("TEST_PROVIDER_API_KEY");
+        }
     }
 
     #[test]
     fn test_load_api_key_missing() {
-        std::env::remove_var("NONEXISTENT_API_KEY");
-        let result = load_api_key("nonexistent");
-        assert!(result.is_err());
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::remove_var("NONEXISTENT_API_KEY");
+            let result = load_api_key("nonexistent");
+            assert!(result.is_err());
+        }
     }
 
     #[test]
     fn test_resolve_api_key_env_first() {
-        std::env::set_var("TEST_RESOLVE_API_KEY", "env-key");
-        let result = resolve_api_key("test_resolve", Some("config-key"));
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "env-key");
-        std::env::remove_var("TEST_RESOLVE_API_KEY");
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::set_var("TEST_RESOLVE_API_KEY", "env-key");
+            let result = resolve_api_key("test_resolve", Some("config-key"));
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "env-key");
+            std::env::remove_var("TEST_RESOLVE_API_KEY");
+        }
     }
 
     #[test]
     fn test_resolve_api_key_fallback_to_config() {
-        std::env::remove_var("TEST_FALLBACK_API_KEY");
-        let result = resolve_api_key("test_fallback", Some("config-key"));
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "config-key");
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::remove_var("TEST_FALLBACK_API_KEY");
+            let result = resolve_api_key("test_fallback", Some("config-key"));
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "config-key");
+        }
     }
 }

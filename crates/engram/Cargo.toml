@@ -1,12 +1,12 @@
 [package]
-name = "opencode-engram"
+name = "rcode-engram"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-opencode-core = { path = "../core" }
-opencode-session = { path = "../session" }
-opencode-event = { path = "../event" }
+rcode-core = { path = "../core" }
+rcode-session = { path = "../session" }
+rcode-event = { path = "../event" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

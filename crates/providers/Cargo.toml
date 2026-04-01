@@ -1,10 +1,10 @@
 [package]
-name = "opencode-providers"
+name = "rcode-providers"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-opencode-core = { path = "../core" }
+rcode-core = { path = "../core" }
 tokio.workspace = true
 tokio-stream.workspace = true
 bytes.workspace = true

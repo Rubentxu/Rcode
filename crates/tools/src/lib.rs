@@ -1,6 +1,7 @@
 //! Built-in tools for opencode-rust
 
 pub mod bash;
+pub mod batch;
 pub mod question;
 pub mod read;
 pub mod write;
@@ -20,10 +21,13 @@ pub mod command_discovery;
 pub mod command_registry;
 pub mod slash_command_tool;
 pub mod todowrite;
+pub mod plan_exit;
+pub mod delegate;
 pub mod webfetch;
 pub mod websearch;
 pub mod codesearch;
 pub mod session_navigation;
+pub mod applypatch;
 
 pub use registry::ToolRegistryService;
 pub use validator::ToolValidator;
@@ -35,3 +39,4 @@ pub use plan::PlanTool;
 pub use command_discovery::CommandDiscovery;
 pub use command_registry::CommandRegistry;
 pub use slash_command_tool::SlashCommandTool;
+pub use delegate::{DelegateTool, DelegationReadTool, DelegationRecord};

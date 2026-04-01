@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use opencode_core::{Tool, ToolContext, ToolResult, error::Result};
+use rcode_core::{Tool, ToolContext, ToolResult, error::Result};
 
 /// Tool for executing skills
 pub struct SkillTool {
@@ -51,22 +51,22 @@ impl Tool for SkillTool {
     async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let skill_name = args["skill"]
             .as_str()
-            .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'skill' argument".into()))?;
+            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'skill' argument".into()))?;
         
         let prompt = args["prompt"]
             .as_str()
-            .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'prompt' argument".into()))?;
+            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'prompt' argument".into()))?;
 
         // Load the skill
         let skill = self.registry.get(skill_name).await
-            .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Failed to load skill: {}", e)))?
-            .ok_or_else(|| opencode_core::OpenCodeError::Tool(format!("Skill '{}' not found", skill_name)))?;
+            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to load skill: {}", e)))?
+            .ok_or_else(|| rcode_core::OpenCodeError::Tool(format!("Skill '{}' not found", skill_name)))?;
 
         // Build the response with skill instructions
         let trigger_str = match &skill.trigger {
-            opencode_core::SkillTrigger::Keyword(k) => format!("keyword:{}", k),
-            opencode_core::SkillTrigger::Command(c) => format!("/{}", c),
-            opencode_core::SkillTrigger::FilePattern(p) => format!("pattern:{}", p),
+            rcode_core::SkillTrigger::Keyword(k) => format!("keyword:{}", k),
+            rcode_core::SkillTrigger::Command(c) => format!("/{}", c),
+            rcode_core::SkillTrigger::FilePattern(p) => format!("pattern:{}", p),
         };
 
         let content = format!(
@@ -94,7 +94,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use std::fs;
-    use opencode_core::ToolContext;
+    use rcode_core::ToolContext;
 
     fn test_context() -> ToolContext {
         ToolContext {

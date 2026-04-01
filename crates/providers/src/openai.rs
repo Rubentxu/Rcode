@@ -3,21 +3,25 @@
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 
-use opencode_core::{
+use rcode_core::{
     CompletionRequest, CompletionResponse, ModelInfo,
     StreamingEvent, StreamingResponse,
     TokenUsage, error::Result,
 };
-use opencode_core::provider::StopReason;
+use rcode_core::provider::StopReason;
 
+use super::rate_limit::TokenBucket;
 use super::LlmProvider;
 
 pub struct OpenAIProvider {
     api_key: String,
     base_url: String,
     http_client: Client,
+    rate_limiter: Option<Arc<TokenBucket>>,
 }
 
 impl OpenAIProvider {
@@ -26,7 +30,13 @@ impl OpenAIProvider {
             api_key,
             base_url: "https://api.openai.com".to_string(),
             http_client: Client::new(),
+            rate_limiter: None,
         }
+    }
+
+    pub fn with_rate_limit(mut self, capacity: u64, refill_rate: f64) -> Self {
+        self.rate_limiter = Some(Arc::new(TokenBucket::new(capacity, refill_rate)));
+        self
     }
 }
 
@@ -37,6 +47,13 @@ impl LlmProvider for OpenAIProvider {
     }
     
     async fn stream(&self, req: CompletionRequest) -> Result<StreamingResponse> {
+        if let Some(limiter) = &self.rate_limiter {
+            if let Err(wait_time) = limiter.try_acquire(1) {
+                tokio::time::sleep(wait_time).await;
+                let _ = limiter.try_acquire(1);
+            }
+        }
+
         let body = OpenAIRequest {
             model: req.model.clone(),
             messages: req.messages.into_iter().map(into_openai_message).collect(),
@@ -52,10 +69,10 @@ impl LlmProvider for OpenAIProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| opencode_core::OpenCodeError::Provider(format!("Network error: {}", e)))?;
+            .map_err(|e| rcode_core::OpenCodeError::Provider(format!("Network error: {}", e)))?;
 
-        let (tx, rx) = tokio::sync::broadcast::channel(100);
-        let tx_clone = tx.clone();
+        let (tx, rx) = mpsc::channel(1);
+        let tx_clone = tx;
 
         tokio::spawn(async move {
             let mut stream = response.bytes_stream();
@@ -68,11 +85,9 @@ impl LlmProvider for OpenAIProvider {
                         let text = String::from_utf8_lossy(&chunk);
                         buffer.push_str(&text);
 
-                        // Process complete lines
                         while let Some(newline_pos) = buffer.find('\n') {
-                            let line_str = (&buffer[..newline_pos]).to_string();
-                            let remainder_str = buffer[newline_pos + 1..].to_string();
-                            buffer = remainder_str;
+                            let line_str = buffer[..newline_pos].to_string();
+                            buffer = buffer.split_off(newline_pos + 1);
                             let line = line_str.trim();
 
                             if line.is_empty() || line == "data: [DONE]" {
@@ -81,26 +96,19 @@ impl LlmProvider for OpenAIProvider {
 
                             if let Some(data) = line.strip_prefix("data: ") {
                                 if let Some(event) = parse_openai_sse_event(data, &mut current_tool_call) {
-                                    let _ = tx_clone.send(event);
+                                    if tx_clone.send(event).await.is_err() {
+                                        return;
+                                    }
                                 }
                             }
                         }
                     }
                     Err(_e) => {
-                        let _ = tx_clone.send(StreamingEvent::Finish { 
-                            stop_reason: StopReason::EndTurn, 
-                            usage: TokenUsage { 
-                                input_tokens: 0, 
-                                output_tokens: 0, 
-                                total_tokens: None 
-                            }
-                        });
                         break;
                     }
                 }
             }
 
-            // Send finish event if not already sent
             let _ = tx_clone.send(StreamingEvent::Finish { 
                 stop_reason: StopReason::EndTurn, 
                 usage: TokenUsage { 
@@ -108,11 +116,11 @@ impl LlmProvider for OpenAIProvider {
                     output_tokens: 0, 
                     total_tokens: None 
                 }
-            });
+            }).await;
         });
 
         Ok(StreamingResponse {
-            events: tokio_stream::wrappers::BroadcastStream::new(rx),
+            events: Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)),
         })
     }
     
@@ -154,15 +162,15 @@ struct OpenAIMessage {
     content: String,
 }
 
-fn into_openai_message(msg: opencode_core::Message) -> OpenAIMessage {
+fn into_openai_message(msg: rcode_core::Message) -> OpenAIMessage {
     let content = msg.parts.iter()
         .map(|p| match p {
-            opencode_core::Part::Text { content } => content.clone(),
-            opencode_core::Part::ToolResult { content, .. } => content.clone(),
-            opencode_core::Part::ToolCall { name, arguments, .. } => 
+            rcode_core::Part::Text { content } => content.clone(),
+            rcode_core::Part::ToolResult { content, .. } => content.clone(),
+            rcode_core::Part::ToolCall { name, arguments, .. } => 
                 format!("Tool call: {}({})", name, arguments),
-            opencode_core::Part::Reasoning { content } => format!("[Reasoning]: {}", content),
-            opencode_core::Part::Attachment { name, mime_type, .. } => 
+            rcode_core::Part::Reasoning { content } => format!("[Reasoning]: {}", content),
+            rcode_core::Part::Attachment { name, mime_type, .. } => 
                 format!("[Attachment: {} ({})]", name, mime_type),
         })
         .collect::<Vec<_>>()
@@ -170,9 +178,9 @@ fn into_openai_message(msg: opencode_core::Message) -> OpenAIMessage {
     
     OpenAIMessage {
         role: match msg.role {
-            opencode_core::Role::User => "user".into(),
-            opencode_core::Role::Assistant => "assistant".into(),
-            opencode_core::Role::System => "system".into(),
+            rcode_core::Role::User => "user".into(),
+            rcode_core::Role::Assistant => "assistant".into(),
+            rcode_core::Role::System => "system".into(),
         },
         content,
     }
@@ -228,12 +236,14 @@ fn parse_openai_sse_event(
     None
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct OpenAIChunk {
     id: String,
     choices: Vec<OpenAIChoice>,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct OpenAIChoice {
     index: u32,

@@ -2,4 +2,4 @@
 
 pub mod commands;
 
-pub use commands::{Run, Serve, Tui};
+pub use commands::{Run, Serve, Tui, Acp};

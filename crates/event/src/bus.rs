@@ -23,6 +23,21 @@ pub enum Event {
         new_count: usize,
         tokens_saved: usize,
     },
+    StreamingProgress {
+        session_id: String,
+        accumulated_text: String,
+        accumulated_reasoning: String,
+    },
+    AppStarted { version: String },
+    AppShutdown { reason: String },
+    AgentError { session_id: String, agent_id: String, error: String },
+    ToolError { session_id: String, tool_id: String, error: String, duration_ms: u64 },
+    ProviderConnected { provider_id: String, provider_type: String },
+    ProviderDisconnected { provider_id: String, reason: String },
+    ProviderError { provider_id: String, error: String },
+    PluginInstalled { plugin_id: String, version: String },
+    PluginActivated { plugin_id: String },
+    PluginDeactivated { plugin_id: String, reason: String },
 }
 
 impl Event {
@@ -38,6 +53,17 @@ impl Event {
             Event::AgentFinished { .. } => "agent_finished",
             Event::ConfigChanged { .. } => "config_changed",
             Event::CompactionPerformed { .. } => "compaction_performed",
+            Event::StreamingProgress { .. } => "streaming_progress",
+            Event::AppStarted { .. } => "app_started",
+            Event::AppShutdown { .. } => "app_shutdown",
+            Event::AgentError { .. } => "agent_error",
+            Event::ToolError { .. } => "tool_error",
+            Event::ProviderConnected { .. } => "provider_connected",
+            Event::ProviderDisconnected { .. } => "provider_disconnected",
+            Event::ProviderError { .. } => "provider_error",
+            Event::PluginInstalled { .. } => "plugin_installed",
+            Event::PluginActivated { .. } => "plugin_activated",
+            Event::PluginDeactivated { .. } => "plugin_deactivated",
         }
     }
     
@@ -53,6 +79,17 @@ impl Event {
             Event::AgentFinished { session_id } => Some(session_id),
             Event::ConfigChanged { .. } => None,
             Event::CompactionPerformed { session_id, .. } => Some(session_id),
+            Event::StreamingProgress { session_id, .. } => Some(session_id),
+            Event::AppStarted { .. } => None,
+            Event::AppShutdown { .. } => None,
+            Event::AgentError { session_id, .. } => Some(session_id),
+            Event::ToolError { session_id, .. } => Some(session_id),
+            Event::ProviderConnected { .. } => None,
+            Event::ProviderDisconnected { .. } => None,
+            Event::ProviderError { .. } => None,
+            Event::PluginInstalled { .. } => None,
+            Event::PluginActivated { .. } => None,
+            Event::PluginDeactivated { .. } => None,
         }
     }
 }
@@ -144,6 +181,75 @@ impl EventSubscriber {
             }
             
             return Ok(event);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EventType {
+    AppStarted,
+    AppShutdown,
+    SessionCreated,
+    SessionUpdated,
+    SessionDeleted,
+    MessageAdded,
+    ToolExecuted,
+    ToolError,
+    AgentStarted,
+    AgentFinished,
+    AgentError,
+    ProviderConnected,
+    ProviderDisconnected,
+    ProviderError,
+    PluginInstalled,
+    PluginActivated,
+    PluginDeactivated,
+}
+
+impl EventBus {
+    pub fn subscribe_to(&self, types: Vec<EventType>) -> FilteredSubscriber {
+        FilteredSubscriber {
+            receiver: self.sender.subscribe(),
+            type_filter: types,
+        }
+    }
+}
+
+pub struct FilteredSubscriber {
+    receiver: broadcast::Receiver<Event>,
+    type_filter: Vec<EventType>,
+}
+
+impl FilteredSubscriber {
+    pub async fn recv(&mut self) -> Result<Event, RecvError> {
+        loop {
+            let event = self.receiver.recv().await?;
+            let event_type = event.event_type();
+            
+            if self.type_filter.iter().any(|t| {
+                let t_name = match t {
+                    EventType::AppStarted => "app_started",
+                    EventType::AppShutdown => "app_shutdown",
+                    EventType::SessionCreated => "session_created",
+                    EventType::SessionUpdated => "session_updated",
+                    EventType::SessionDeleted => "session_deleted",
+                    EventType::MessageAdded => "message_added",
+                    EventType::ToolExecuted => "tool_executed",
+                    EventType::ToolError => "tool_error",
+                    EventType::AgentStarted => "agent_started",
+                    EventType::AgentFinished => "agent_finished",
+                    EventType::AgentError => "agent_error",
+                    EventType::ProviderConnected => "provider_connected",
+                    EventType::ProviderDisconnected => "provider_disconnected",
+                    EventType::ProviderError => "provider_error",
+                    EventType::PluginInstalled => "plugin_installed",
+                    EventType::PluginActivated => "plugin_activated",
+                    EventType::PluginDeactivated => "plugin_deactivated",
+                };
+                event_type == t_name
+            }) {
+                return Ok(event);
+            }
         }
     }
 }

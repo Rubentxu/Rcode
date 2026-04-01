@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use glob::glob;
 
-use opencode_core::{Tool, ToolContext, ToolResult, error::Result};
+use rcode_core::{Tool, ToolContext, ToolResult, error::Result};
 
 pub struct GlobTool;
 
@@ -37,7 +37,7 @@ impl Tool for GlobTool {
     async fn execute(&self, args: serde_json::Value, context: &ToolContext) -> Result<ToolResult> {
         let pattern = args["pattern"]
             .as_str()
-            .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'pattern' argument".into()))?;
+            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'pattern' argument".into()))?;
         
         let full_pattern = if pattern.starts_with('/') {
             pattern.to_string()
@@ -47,7 +47,7 @@ impl Tool for GlobTool {
         
         let mut matches = Vec::new();
         for entry in glob(&full_pattern)
-            .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Glob error: {}", e)))? {
+            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Glob error: {}", e)))? {
             if let Ok(path) = entry {
                 matches.push(path.display().to_string());
             }

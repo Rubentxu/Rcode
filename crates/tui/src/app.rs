@@ -1,6 +1,6 @@
 //! TUI Application state and models
 
-use opencode_core::{Message, Session, SessionId, SessionStatus};
+use rcode_core::{Message, Session, SessionId};
 use std::sync::Arc;
 
 /// Application mode / screen

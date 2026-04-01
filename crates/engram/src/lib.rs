@@ -1,6 +1,6 @@
 //! Engram persistent memory system
 //!
-//! This crate provides persistent memory storage and retrieval for opencode-rust,
+//! This crate provides persistent memory storage and retrieval for rcode,
 //! allowing agents to save decisions, discoveries, patterns, and other observations
 //! that persist across sessions.
 //!
@@ -15,7 +15,7 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use opencode_engram::{EngramClient, EngramTool};
+//! use rcode_engram::{EngramClient, EngramTool};
 //! use std::sync::Arc;
 //!
 //! // Create client

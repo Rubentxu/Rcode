@@ -3,7 +3,7 @@
 //! Uses an LLM provider to generate concise summaries of conversation history.
 
 use std::sync::Arc;
-use opencode_core::{
+use rcode_core::{
     CompletionRequest, Message, Part, Role, error::Result as CoreResult,
 };
 
@@ -11,13 +11,13 @@ use crate::compaction::CompactionResult;
 
 /// Summarizer for generating conversation summaries
 pub struct Summarizer {
-    provider: Arc<dyn opencode_core::LlmProvider>,
+    provider: Arc<dyn rcode_core::LlmProvider>,
     model: String,
 }
 
 impl Summarizer {
     /// Create a new summarizer with the given LLM provider
-    pub fn new(provider: Arc<dyn opencode_core::LlmProvider>, model: String) -> Self {
+    pub fn new(provider: Arc<dyn rcode_core::LlmProvider>, model: String) -> Self {
         Self { provider, model }
     }
 
@@ -34,7 +34,7 @@ impl Summarizer {
         let request = CompletionRequest {
             model: self.model.clone(),
             messages: vec![Message {
-                id: opencode_core::MessageId::new(),
+                id: rcode_core::MessageId::new(),
                 session_id: session_id.to_string(),
                 role: Role::User,
                 parts: vec![Part::Text { content: summary_prompt }],
@@ -50,7 +50,7 @@ impl Summarizer {
         
         // Create the summary message
         let summary_message = Message {
-            id: opencode_core::MessageId::new(),
+            id: rcode_core::MessageId::new(),
             session_id: session_id.to_string(),
             role: Role::Assistant,
             parts: vec![Part::Text { content: response.content }],
@@ -136,7 +136,7 @@ Guidelines:
         
         // If we're under the limits, no compaction needed
         if original_count <= max_messages && self.estimate_tokens(messages) <= max_tokens {
-            return Err(opencode_core::OpenCodeError::Session(
+            return Err(rcode_core::OpenCodeError::Session(
                 "No compaction needed".to_string()
             ));
         }
@@ -147,7 +147,7 @@ Guidelines:
 
         if original_count <= preserve_count {
             // Not enough messages to compact meaningfully
-            return Err(opencode_core::OpenCodeError::Session(
+            return Err(rcode_core::OpenCodeError::Session(
                 "Not enough messages to compact".to_string()
             ));
         }
@@ -156,7 +156,7 @@ Guidelines:
         let to_summarize = &messages[2..original_count - keep_recent];
         
         if to_summarize.is_empty() {
-            return Err(opencode_core::OpenCodeError::Session(
+            return Err(rcode_core::OpenCodeError::Session(
                 "No messages to summarize".to_string()
             ));
         }

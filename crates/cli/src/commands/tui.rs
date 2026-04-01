@@ -2,9 +2,9 @@
 
 use anyhow::Result;
 use clap::Args;
-use opencode_event::EventBus;
-use opencode_session::SessionService;
-use opencode_tui::run;
+use rcode_event::EventBus;
+use rcode_session::SessionService;
+use rcode_tui::run;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -28,7 +28,7 @@ impl Default for Tui {
 
 impl Tui {
     pub async fn execute(&self, config_path: Option<&PathBuf>, no_config: bool) -> Result<()> {
-        let _config = opencode_core::load_config(config_path.map(|p| p.clone()), no_config).await?;
+        let _config = rcode_core::load_config(config_path.map(|p| p.clone()), no_config).await?;
         
         tracing::info!("TUI mode starting...");
         tracing::info!("Project: {:?}", self.project);

@@ -4,12 +4,12 @@ use anyhow::{Context, Result};
 use clap::Args;
 use std::path::PathBuf;
 use std::sync::Arc;
-use opencode_core::{
+use rcode_core::{
     AgentContext, Message, Part, Session, SessionStatus,
 };
-use opencode_server::AppState;
-use opencode_providers::anthropic::AnthropicProvider;
-use opencode_agent::{AgentExecutor, DefaultAgent};
+use rcode_server::AppState;
+use rcode_providers::anthropic::AnthropicProvider;
+use rcode_agent::{AgentExecutor, DefaultAgent};
 
 #[derive(Args)]
 pub struct Run {
@@ -47,7 +47,7 @@ pub struct Run {
 impl Run {
     pub async fn execute(&self, config_path: Option<&PathBuf>, no_config: bool) -> Result<()> {
         // Load config
-        let config = opencode_core::load_config(config_path.map(|p| p.clone()), no_config).await?;
+        let config = rcode_core::load_config(config_path.map(|p| p.clone()), no_config).await?;
         
         // Get prompt content
         let prompt = self.get_prompt_content()?;
@@ -73,7 +73,7 @@ impl Run {
         state.session_service.update_status(&session.id.0, SessionStatus::Running);
         
         // Publish agent started event
-        state.event_bus.publish(opencode_event::Event::AgentStarted {
+        state.event_bus.publish(rcode_event::Event::AgentStarted {
             session_id: session.id.0.clone(),
         });
         
@@ -149,7 +149,7 @@ impl Run {
         state.session_service.update_status(&session.id.0, final_status);
         
         // Publish agent finished event
-        state.event_bus.publish(opencode_event::Event::AgentFinished {
+        state.event_bus.publish(rcode_event::Event::AgentFinished {
             session_id: session.id.0.clone(),
         });
         

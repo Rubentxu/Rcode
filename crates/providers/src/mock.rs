@@ -2,14 +2,14 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 
-use opencode_core::{
+use rcode_core::{
     CompletionRequest, CompletionResponse, 
     StreamingResponse, ModelInfo, StreamingEvent, TokenUsage,
     error::{Result, OpenCodeError},
 };
-use opencode_core::provider::StopReason;
+use rcode_core::provider::StopReason;
 use crate::LlmProvider;
 
 /// Invocation record for tracking calls
@@ -152,13 +152,19 @@ impl LlmProvider for MockLlmProvider {
             ]
         };
 
-        let (tx, rx) = broadcast::channel(100);
-        for event in events {
-            let _ = tx.send(event);
-        }
+        let (tx, rx) = mpsc::channel(1);
+        let tx_clone = tx;
+
+        tokio::spawn(async move {
+            for event in events {
+                if tx_clone.send(event).await.is_err() {
+                    return;
+                }
+            }
+        });
 
         Ok(StreamingResponse { 
-            events: tokio_stream::wrappers::BroadcastStream::new(rx) 
+            events: Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx))
         })
     }
 
@@ -184,14 +190,14 @@ impl LlmProvider for MockLlmProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opencode_core::Message;
-    use opencode_core::message::Role;
+    use rcode_core::Message;
+    use rcode_core::message::Role;
 
     fn create_test_request() -> CompletionRequest {
         CompletionRequest {
             model: "mock-model".to_string(),
             messages: vec![Message {
-                id: opencode_core::MessageId("msg1".to_string()),
+                id: rcode_core::MessageId("msg1".to_string()),
                 session_id: "session1".to_string(),
                 role: Role::User,
                 parts: vec![],

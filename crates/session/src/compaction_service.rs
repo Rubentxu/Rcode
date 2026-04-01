@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use opencode_core::{Message, Result as CoreResult};
+use rcode_core::{Message, Result as CoreResult};
 
 use crate::compaction::{CompactionConfig, CompactionResult, CompactionStrategy};
 use crate::summarizer::Summarizer;
@@ -162,24 +162,24 @@ fn estimate_message_tokens(message: &Message) -> usize {
 
     // Role overhead
     count += match message.role {
-        opencode_core::Role::User => 4,
-        opencode_core::Role::Assistant => 4,
-        opencode_core::Role::System => 4,
+        rcode_core::Role::User => 4,
+        rcode_core::Role::Assistant => 4,
+        rcode_core::Role::System => 4,
     };
 
     // Parts content
     for part in &message.parts {
         match part {
-            opencode_core::Part::Text { content } => count += content.len() / 4,
-            opencode_core::Part::ToolCall {
+            rcode_core::Part::Text { content } => count += content.len() / 4,
+            rcode_core::Part::ToolCall {
                 name, arguments, ..
             } => {
                 count += name.len() / 4;
                 count += arguments.to_string().len() / 4;
             }
-            opencode_core::Part::ToolResult { content, .. } => count += content.len() / 4,
-            opencode_core::Part::Reasoning { content } => count += content.len() / 4,
-            opencode_core::Part::Attachment {
+            rcode_core::Part::ToolResult { content, .. } => count += content.len() / 4,
+            rcode_core::Part::Reasoning { content } => count += content.len() / 4,
+            rcode_core::Part::Attachment {
                 name, mime_type, ..
             } => {
                 count += name.len() / 4;
@@ -196,11 +196,11 @@ fn estimate_message_tokens(message: &Message) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opencode_core::{Message, Part, Role};
+    use rcode_core::{Message, Part, Role};
 
     fn create_test_message(role: Role, content: &str) -> Message {
         Message {
-            id: opencode_core::MessageId::new(),
+            id: rcode_core::MessageId::new(),
             session_id: "test".to_string(),
             role,
             parts: vec![Part::Text {

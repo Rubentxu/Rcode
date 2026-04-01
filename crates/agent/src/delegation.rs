@@ -1,6 +1,6 @@
 //! Delegation for sub-agents
 
-use opencode_core::error::Result;
+use rcode_core::error::Result;
 
 pub struct DelegationManager;
 
@@ -12,7 +12,7 @@ impl DelegationManager {
     pub async fn create_child_session(
         &self,
         parent_session_id: &str,
-        description: &str,
+        _description: &str,
         subagent_type: &str,
     ) -> Result<String> {
         use std::time::{SystemTime, UNIX_EPOCH};

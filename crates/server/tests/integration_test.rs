@@ -2,7 +2,7 @@
 
 mod test_utils;
 
-use opencode_core::SessionId;
+use rcode_core::SessionId;
 use serde_json::json;
 use test_utils::TestApp;
 

@@ -1,16 +1,22 @@
 //! Agent executor - main agent loop with streaming support
 
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::task::JoinSet;
+use tokio::time::interval;
 use tokio_stream::StreamExt;
-use opencode_core::{
+use rcode_core::{
     Agent, AgentContext, AgentResult, Message, Part, ToolContext, error::Result,
 };
-use opencode_core::agent::StopReason;
-use opencode_core::provider::{StreamingEvent, StreamingResponse};
-use opencode_providers::LlmProvider;
-use opencode_tools::ToolRegistryService;
-use opencode_event::EventBus;
+use rcode_core::agent::StopReason;
+use rcode_core::provider::StreamingEvent;
+use rcode_providers::LlmProvider;
+use rcode_tools::ToolRegistryService;
+use rcode_event::EventBus;
 use tracing::{info, warn, error};
+
+const MAX_ACCUMULATED_TEXT: usize = 10_000;
+const FLUSH_INTERVAL_SECS: u64 = 2;
 
 /// CancellationToken for abort support
 #[derive(Clone)]
@@ -140,14 +146,14 @@ impl AgentExecutor {
         ctx: &mut AgentContext,
         cancellation_token: &CancellationToken,
     ) -> Result<ShouldContinue> {
-        let request = opencode_core::CompletionRequest {
+        let request = rcode_core::CompletionRequest {
             model: ctx.messages.first()
                 .map(|_| "claude-sonnet-4-5".to_string())
                 .unwrap_or_default(),
-            messages: ctx.messages.clone(),
+            messages: ctx.messages.clone(), // TODO: CompletionRequest owns messages, cannot take slice without significant refactoring
             system_prompt: Some(self.agent.system_prompt()),
             tools: self.tools.list().into_iter().map(|t|
-                opencode_core::ToolDefinition {
+                rcode_core::ToolDefinition {
                     name: t.id,
                     description: t.description,
                     parameters: serde_json::json!({}),
@@ -159,62 +165,114 @@ impl AgentExecutor {
 
         let response = self.provider.stream(request).await?;
 
-        // Process streaming events
-        let mut accumulated_text = String::new();
-        let mut accumulated_reasoning = String::new();
+        let mut accumulated_text = Arc::new(String::new());
+        let mut accumulated_reasoning = Arc::new(String::new());
         let mut tool_calls = Vec::new();
         let mut active_tool_call: Option<(String, String, String)> = None;
         let mut final_stop_reason = StopReason::EndOfTurn;
         let mut final_usage = None;
+        let mut stream_ended = false;
+        let mut last_flush_len = 0;
 
-        self.process_stream(
-            response,
-            cancellation_token,
-            &mut |event| {
-                match event {
-                    StreamingEvent::Text { delta } => {
-                        accumulated_text.push_str(&delta);
-                    }
-                    StreamingEvent::Reasoning { delta } => {
-                        accumulated_reasoning.push_str(&delta);
-                    }
-                    StreamingEvent::ToolCallStart { id, name } => {
-                        // Start accumulating a tool call
-                        active_tool_call = Some((id, name, String::new()));
-                    }
-                    StreamingEvent::ToolCallArg { id, name, value } => {
-                        // Continue accumulating tool call arguments
-                        if let Some(ref mut active) = active_tool_call {
-                            if active.0 == id {
-                                active.2.push_str(&value);
-                            }
+        let mut flush_timer = interval(Duration::from_secs(FLUSH_INTERVAL_SECS));
+        let mut stream = response.events;
+
+        loop {
+            tokio::select! {
+                _ = flush_timer.tick() => {
+                    if accumulated_text.len() > last_flush_len || !accumulated_reasoning.is_empty() {
+                        last_flush_len = accumulated_text.len();
+                        if let Some(event_bus) = &self.event_bus {
+                            event_bus.publish(rcode_event::Event::StreamingProgress {
+                                session_id: ctx.session_id.clone(),
+                                accumulated_text: (*Arc::clone(&accumulated_text)).clone(),
+                                accumulated_reasoning: (*Arc::clone(&accumulated_reasoning)).clone(),
+                            });
                         }
-                    }
-                    StreamingEvent::ToolCallEnd { id } => {
-                        // Finalize tool call
-                        if let Some(ref active) = active_tool_call {
-                            if active.0 == id {
-                                let arguments: serde_json::Value = serde_json::from_str(&active.2)
-                                    .unwrap_or(serde_json::json!({}));
-                                tool_calls.push((active.0.clone(), active.1.clone(), arguments));
-                                active_tool_call = None;
-                            }
-                        }
-                    }
-                    StreamingEvent::ContentBlock { content: _ } => {
-                        // Handle content blocks if needed
-                    }
-                    StreamingEvent::Finish { stop_reason, usage } => {
-                        final_stop_reason = match stop_reason {
-                            opencode_core::provider::StopReason::EndTurn => StopReason::EndOfTurn,
-                            opencode_core::provider::StopReason::MaxTokens => StopReason::MaxSteps,
-                            opencode_core::provider::StopReason::StopSequence => StopReason::EndOfTurn,
-                        };
-                        final_usage = Some(usage);
                     }
                 }
-            },
-        ).await?;
+                result = stream.next() => {
+                    match result {
+                        Some(event) => {
+                            match event {
+                                StreamingEvent::Text { delta } => {
+                                    let new_text = Arc::clone(&accumulated_text);
+                                    let mut text = (*new_text).clone();
+                                    text.push_str(&delta);
+                                    accumulated_text = Arc::new(text);
+                                    if accumulated_text.len() > MAX_ACCUMULATED_TEXT {
+                                        if let Some(event_bus) = &self.event_bus {
+                                            event_bus.publish(rcode_event::Event::StreamingProgress {
+                                                session_id: ctx.session_id.clone(),
+                                                accumulated_text: (*Arc::clone(&accumulated_text)).clone(),
+                                                accumulated_reasoning: (*Arc::clone(&accumulated_reasoning)).clone(),
+                                            });
+                                        }
+                                        last_flush_len = accumulated_text.len();
+                                    }
+                                }
+                                StreamingEvent::Reasoning { delta } => {
+                                    let new_reasoning = Arc::clone(&accumulated_reasoning);
+                                    let mut reasoning = (*new_reasoning).clone();
+                                    reasoning.push_str(&delta);
+                                    accumulated_reasoning = Arc::new(reasoning);
+                                    if accumulated_reasoning.len() > MAX_ACCUMULATED_TEXT {
+                                        if let Some(event_bus) = &self.event_bus {
+                                            event_bus.publish(rcode_event::Event::StreamingProgress {
+                                                session_id: ctx.session_id.clone(),
+                                                accumulated_text: (*Arc::clone(&accumulated_text)).clone(),
+                                                accumulated_reasoning: (*Arc::clone(&accumulated_reasoning)).clone(),
+                                            });
+                                        }
+                                    }
+                                }
+                                StreamingEvent::ToolCallStart { id, name } => {
+                                    active_tool_call = Some((id, name, String::new()));
+                                }
+                                StreamingEvent::ToolCallArg { id, name: _, value } => {
+                                    if let Some(ref mut active) = active_tool_call {
+                                        if active.0 == id {
+                                            active.2.push_str(&value);
+                                        }
+                                    }
+                                }
+                                StreamingEvent::ToolCallEnd { id } => {
+                                    if let Some(ref active) = active_tool_call {
+                                        if active.0 == id {
+                                            let arguments: serde_json::Value = serde_json::from_str(&active.2)
+                                                .unwrap_or(serde_json::json!({}));
+                                            tool_calls.push((active.0.clone(), active.1.clone(), arguments));
+                                            active_tool_call = None;
+                                        }
+                                    }
+                                }
+                                StreamingEvent::ContentBlock { content: _ } => {}
+                                StreamingEvent::Finish { stop_reason, usage } => {
+                                    final_stop_reason = match stop_reason {
+                                        rcode_core::provider::StopReason::EndTurn => StopReason::EndOfTurn,
+                                        rcode_core::provider::StopReason::MaxTokens => StopReason::MaxSteps,
+                                        rcode_core::provider::StopReason::StopSequence => StopReason::EndOfTurn,
+                                    };
+                                    final_usage = Some(usage);
+                                    stream_ended = true;
+                                }
+                            }
+                        }
+                        None => {
+                            stream_ended = true;
+                            break;
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)), if cancellation_token.is_cancelled() => {
+                    return Ok(ShouldContinue(false, StopReason::UserStopped));
+                }
+            }
+
+            if stream_ended {
+                break;
+            }
+        }
 
         // Check cancellation after streaming
         if cancellation_token.is_cancelled() {
@@ -223,16 +281,18 @@ impl AgentExecutor {
 
         // Build the assistant message with accumulated content
         let mut assistant_parts = Vec::new();
+        let final_text = (*accumulated_text).clone();
+        let final_reasoning = (*accumulated_reasoning).clone();
 
-        if !accumulated_text.is_empty() {
+        if !final_text.is_empty() {
             assistant_parts.push(Part::Text {
-                content: accumulated_text.clone(),
+                content: final_text,
             });
         }
 
-        if !accumulated_reasoning.is_empty() {
+        if !final_reasoning.is_empty() {
             assistant_parts.push(Part::Reasoning {
-                content: accumulated_reasoning,
+                content: final_reasoning,
             });
         }
 
@@ -242,7 +302,7 @@ impl AgentExecutor {
             assistant_parts.push(Part::ToolCall {
                 id: id.clone(),
                 name: name.clone(),
-                arguments: arguments.clone(),
+                arguments: Box::new(arguments.clone()),
             });
         }
 
@@ -257,7 +317,7 @@ impl AgentExecutor {
 
         // Publish MessageAdded event
         if let Some(event_bus) = &self.event_bus {
-            event_bus.publish(opencode_event::Event::MessageAdded {
+            event_bus.publish(rcode_event::Event::MessageAdded {
                 session_id: ctx.session_id.clone(),
                 message_id: assistant_msg.id.0.clone(),
             });
@@ -268,42 +328,53 @@ impl AgentExecutor {
             return Ok(ShouldContinue(false, final_stop_reason));
         }
 
-        // Execute tool calls and collect results
-        let mut tool_results = Vec::new();
-        for (id, name, arguments) in &tool_calls {
-            // Check cancellation before each tool call
-            if cancellation_token.is_cancelled() {
-                return Ok(ShouldContinue(false, StopReason::UserStopped));
-            }
+        // Check cancellation before starting tool execution
+        if cancellation_token.is_cancelled() {
+            return Ok(ShouldContinue(false, StopReason::UserStopped));
+        }
 
-            info!("Executing tool: {} with id: {}", name, id);
+        let tool_call_names: Vec<String> = tool_calls.iter().map(|(_, name, _)| name.clone()).collect();
+        let mut join_set = JoinSet::new();
 
-            let tool_result = match self.tools.execute(name, arguments.clone(), &ToolContext {
+        for (id, name, arguments) in tool_calls {
+            let tools = Arc::clone(&self.tools);
+            let ctx = ToolContext {
                 session_id: ctx.session_id.clone(),
                 project_path: ctx.project_path.clone(),
                 cwd: ctx.cwd.clone(),
                 user_id: ctx.user_id.clone(),
                 agent: self.agent.id().to_string(),
-            }).await {
-                Ok(result) => {
-                    info!("Tool {} executed successfully", name);
-                    Part::ToolResult {
-                        tool_call_id: id.clone(),
-                        content: result.content,
-                        is_error: false,
-                    }
-                }
-                Err(e) => {
-                    warn!("Tool {} failed: {}", name, e);
-                    Part::ToolResult {
-                        tool_call_id: id.clone(),
-                        content: format!("Error: {}", e),
-                        is_error: true,
-                    }
-                }
             };
 
-            tool_results.push(tool_result);
+            join_set.spawn(async move {
+                let result = tools.execute(&name, arguments, &ctx).await;
+                (id, name, result)
+            });
+        }
+
+        let mut tool_results = Vec::new();
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok((id, name, Ok(r))) => {
+                    info!("Tool {} executed successfully", name);
+                    tool_results.push(Part::ToolResult {
+                        tool_call_id: id,
+                        content: r.content,
+                        is_error: false,
+                    });
+                }
+                Ok((id, _, Err(e))) => {
+                    warn!("Tool {} failed: {}", id, e);
+                    tool_results.push(Part::ToolResult {
+                        tool_call_id: id,
+                        content: format!("Error: {}", e),
+                        is_error: true,
+                    });
+                }
+                Err(e) => {
+                    error!("Tool join error: {:?}", e);
+                }
+            }
         }
 
         // Add tool results message
@@ -312,49 +383,14 @@ impl AgentExecutor {
 
         // Publish MessageAdded event for tool results
         if let Some(event_bus) = &self.event_bus {
-            event_bus.publish(opencode_event::Event::MessageAdded {
+            event_bus.publish(rcode_event::Event::MessageAdded {
                 session_id: ctx.session_id.clone(),
                 message_id: results_msg.id.0.clone(),
             });
         }
 
         // Continue for another step if we had tool calls
-        Ok(ShouldContinue(true, StopReason::ToolCalls(tool_calls.iter().map(|(id, name, _)| name.clone()).collect())))
-    }
-
-    async fn process_stream<F>(
-        &self,
-        response: StreamingResponse,
-        cancellation_token: &CancellationToken,
-        mut handler: F,
-    ) -> Result<()>
-    where
-        F: FnMut(StreamingEvent) + Send,
-    {
-        let mut stream = response.events;
-
-        loop {
-            // Check cancellation periodically
-            if cancellation_token.is_cancelled() {
-                break;
-            }
-
-            match stream.next().await {
-                Some(Ok(event)) => {
-                    handler(event);
-                }
-                Some(Err(e)) => {
-                    warn!("Stream error: {:?}", e);
-                    break;
-                }
-                None => {
-                    // Stream ended
-                    break;
-                }
-            }
-        }
-
-        Ok(())
+        Ok(ShouldContinue(true, StopReason::ToolCalls(tool_call_names)))
     }
 }
 
@@ -363,7 +399,7 @@ struct ShouldContinue(bool, StopReason);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opencode_core::{Message, Role, Part};
+    use rcode_core::{Message, Role, Part};
 
     #[test]
     fn test_cancellation_token_default_not_cancelled() {

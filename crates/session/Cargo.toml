@@ -1,12 +1,12 @@
 [package]
-name = "opencode-session"
+name = "rcode-session"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-opencode-core = { path = "../core" }
-opencode-event = { path = "../event" }
-opencode-storage = { path = "../storage" }
+rcode-core = { path = "../core" }
+rcode-event = { path = "../event" }
+rcode-storage = { path = "../storage" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

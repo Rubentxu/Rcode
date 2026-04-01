@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use opencode_core::{Tool, ToolContext, ToolResult, SessionId, error::Result};
-use opencode_session::SessionService;
+use rcode_core::{Tool, ToolContext, ToolResult, SessionId, error::Result};
+use rcode_session::SessionService;
 
 pub struct SessionNavigationTool {
     session_service: Arc<SessionService>,
@@ -70,10 +70,10 @@ impl Tool for SessionNavigationTool {
             "switch" | "attach" => {
                 let session_id = args["session_id"]
                     .as_str()
-                    .ok_or_else(|| opencode_core::OpenCodeError::Tool("session_id required for switch/attach".into()))?;
+                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("session_id required for switch/attach".into()))?;
                 
                 if self.session_service.get(&SessionId(session_id.to_string())).is_none() {
-                    return Err(opencode_core::OpenCodeError::Tool(format!("Session {} not found", session_id)));
+                    return Err(rcode_core::OpenCodeError::Tool(format!("Session {} not found", session_id)));
                 }
                 
                 Ok(ToolResult {
@@ -83,7 +83,7 @@ impl Tool for SessionNavigationTool {
                     attachments: vec![],
                 })
             }
-            _ => Err(opencode_core::OpenCodeError::Tool(format!("Unknown action: {}", action)))
+            _ => Err(rcode_core::OpenCodeError::Tool(format!("Unknown action: {}", action)))
         }
     }
 }

@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 
-use opencode_core::{Tool, ToolContext, ToolResult, error::Result};
+use rcode_core::{Tool, ToolContext, ToolResult, error::Result};
 
 pub struct WebfetchTool;
 
@@ -55,21 +55,21 @@ impl Tool for WebfetchTool {
     
     async fn execute(&self, args: serde_json::Value, _context: &ToolContext) -> Result<ToolResult> {
         let params: WebfetchParams = serde_json::from_value(args)
-            .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Invalid parameters: {}", e)))?;
+            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Invalid parameters: {}", e)))?;
         
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Failed to create HTTP client: {}", e)))?;
+            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to create HTTP client: {}", e)))?;
         
         let response = client.get(&params.url)
             .send()
             .await
-            .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Failed to fetch URL: {}", e)))?;
+            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to fetch URL: {}", e)))?;
         
         let content = response.text()
             .await
-            .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Failed to read response: {}", e)))?;
+            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to read response: {}", e)))?;
         
         let content_preview = if content.len() > 1000 {
             format!("{}...[truncated {} chars]", &content[..1000], content.len() - 1000)

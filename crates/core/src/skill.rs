@@ -49,8 +49,8 @@ impl Skill {
         let mut description = String::new();
         let mut compatibility = SkillCompatibility::Opencode;
         let mut trigger = SkillTrigger::Command(String::new());
-        let mut metadata = None;
-        let mut instructions = String::new();
+        let metadata = None;
+        let instructions;
 
         let mut in_frontmatter = false;
         let mut frontmatter_content = String::new();

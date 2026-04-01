@@ -3,6 +3,7 @@
 pub mod chat_view;
 pub mod header;
 pub mod message_item;
+pub mod prompt_input;
 pub mod session_view;
 pub mod sidebar;
 

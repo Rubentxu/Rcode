@@ -5,7 +5,7 @@ use base64::Engine;
 use rusqlite::{params, Connection};
 use std::sync::Mutex;
 
-use opencode_core::{Message, MessageId, PaginatedMessages, PaginationParams, Part, Role};
+use rcode_core::{Message, MessageId, PaginatedMessages, PaginationParams, Part, Role};
 
 pub struct MessageRepository {
     conn: Mutex<Connection>,
@@ -225,7 +225,7 @@ impl MessageRepository {
                         tool_call_name.as_ref().map(|n| Part::ToolCall {
                             id: t.clone(),
                             name: n.clone(),
-                            arguments: args,
+                            arguments: Box::new(args),
                         })
                     })
                 }
@@ -404,7 +404,7 @@ mod tests {
                 Part::ToolCall {
                     id: "tool_1".to_string(),
                     name: "read_file".to_string(),
-                    arguments: serde_json::json!({"path": "/test.txt"}),
+                    arguments: Box::new(serde_json::json!({"path": "/test.txt"})),
                 },
                 Part::ToolResult {
                     tool_call_id: "tool_1".to_string(),

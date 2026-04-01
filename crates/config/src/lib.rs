@@ -1,6 +1,6 @@
 //! Configuration types and loading for opencode
 
-pub use opencode_core::OpencodeConfig;
+pub use rcode_core::OpencodeConfig;
 
 pub mod loader;
 pub use loader::load_config;

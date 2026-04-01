@@ -3,7 +3,7 @@
 use crate::client::EngramClient;
 use crate::types::Observation;
 use async_trait::async_trait;
-use opencode_core::{Tool, ToolContext, ToolResult};
+use rcode_core::{Tool, ToolContext, ToolResult};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -82,29 +82,29 @@ impl Tool for EngramTool {
         })
     }
 
-    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolResult, opencode_core::OpenCodeError> {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolResult, rcode_core::OpenCodeError> {
         let action = args["action"]
             .as_str()
-            .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'action' argument".into()))?;
+            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'action' argument".into()))?;
 
         match action {
             "save" => {
                 let title = args["title"]
                     .as_str()
-                    .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'title' argument".into()))?;
+                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'title' argument".into()))?;
                 let content = args["content"]
                     .as_str()
-                    .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'content' argument".into()))?;
+                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'content' argument".into()))?;
                 let obs_type = args["type"]
                     .as_str()
                     .unwrap_or("discovery")
                     .parse()
-                    .map_err(|e: String| opencode_core::OpenCodeError::Tool(format!("Invalid type: {}", e)))?;
+                    .map_err(|e: String| rcode_core::OpenCodeError::Tool(format!("Invalid type: {}", e)))?;
                 let scope = args["scope"]
                     .as_str()
                     .unwrap_or("project")
                     .parse()
-                    .map_err(|e: String| opencode_core::OpenCodeError::Tool(format!("Invalid scope: {}", e)))?;
+                    .map_err(|e: String| rcode_core::OpenCodeError::Tool(format!("Invalid scope: {}", e)))?;
                 let topic = args["topic_key"].as_str().map(String::from);
                 let project = args["project"].as_str().map(String::from);
 
@@ -122,7 +122,7 @@ impl Tool for EngramTool {
                 obs = obs.with_session(context.session_id.clone());
 
                 let id = self.client.save(obs).await
-                    .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Failed to save: {}", e)))?;
+                    .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to save: {}", e)))?;
 
                 Ok(ToolResult {
                     title: "Observation saved".to_string(),
@@ -135,13 +135,13 @@ impl Tool for EngramTool {
             "search" => {
                 let query = args["query"]
                     .as_str()
-                    .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'query' argument".into()))?;
+                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'query' argument".into()))?;
                 let limit = args["limit"]
                     .as_i64()
                     .unwrap_or(10) as usize;
 
                 let results = self.client.search(query, limit).await
-                    .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Failed to search: {}", e)))?;
+                    .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to search: {}", e)))?;
 
                 if results.is_empty() {
                     return Ok(ToolResult {
@@ -182,7 +182,7 @@ impl Tool for EngramTool {
                     .unwrap_or(10) as usize;
 
                 let observations = self.client.get_context(limit).await
-                    .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Failed to get context: {}", e)))?;
+                    .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to get context: {}", e)))?;
 
                 if observations.is_empty() {
                     return Ok(ToolResult {
@@ -219,10 +219,10 @@ impl Tool for EngramTool {
             "get" => {
                 let id = args["id"]
                     .as_i64()
-                    .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'id' argument".into()))?;
+                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'id' argument".into()))?;
 
                 let obs = self.client.get(id).await
-                    .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Failed to get: {}", e)))?;
+                    .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to get: {}", e)))?;
 
                 match obs {
                     Some(obs) => Ok(ToolResult {
@@ -244,29 +244,29 @@ impl Tool for EngramTool {
                         })),
                         attachments: vec![],
                     }),
-                    None => Err(opencode_core::OpenCodeError::Tool(format!("Observation {} not found", id)))
+                    None => Err(rcode_core::OpenCodeError::Tool(format!("Observation {} not found", id)))
                 }
             }
 
             "update" => {
                 let id = args["id"]
                     .as_i64()
-                    .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'id' argument".into()))?;
+                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'id' argument".into()))?;
                 let title = args["title"]
                     .as_str()
-                    .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'title' argument".into()))?;
+                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'title' argument".into()))?;
                 let content = args["content"]
                     .as_str()
-                    .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'content' argument".into()))?;
+                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'content' argument".into()))?;
                 let obs_type = args["type"]
                     .as_str()
                     .unwrap_or("discovery")
                     .parse()
-                    .map_err(|e: String| opencode_core::OpenCodeError::Tool(format!("Invalid type: {}", e)))?;
+                    .map_err(|e: String| rcode_core::OpenCodeError::Tool(format!("Invalid type: {}", e)))?;
 
                 let obs = Observation::new(title.to_string(), content.to_string(), obs_type);
                 self.client.update(id, obs).await
-                    .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Failed to update: {}", e)))?;
+                    .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to update: {}", e)))?;
 
                 Ok(ToolResult {
                     title: "Observation updated".to_string(),
@@ -279,10 +279,10 @@ impl Tool for EngramTool {
             "delete" => {
                 let id = args["id"]
                     .as_i64()
-                    .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'id' argument".into()))?;
+                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'id' argument".into()))?;
 
                 self.client.delete(id).await
-                    .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Failed to delete: {}", e)))?;
+                    .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to delete: {}", e)))?;
 
                 Ok(ToolResult {
                     title: "Observation deleted".to_string(),
@@ -295,10 +295,10 @@ impl Tool for EngramTool {
             "topic" => {
                 let topic = args["topic_key"]
                     .as_str()
-                    .ok_or_else(|| opencode_core::OpenCodeError::Tool("Missing 'topic_key' argument".into()))?;
+                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'topic_key' argument".into()))?;
 
                 let observations = self.client.get_topic(topic).await
-                    .map_err(|e| opencode_core::OpenCodeError::Tool(format!("Failed to get topic: {}", e)))?;
+                    .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to get topic: {}", e)))?;
 
                 if observations.is_empty() {
                     return Ok(ToolResult {
@@ -336,7 +336,7 @@ impl Tool for EngramTool {
                 })
             }
 
-            _ => Err(opencode_core::OpenCodeError::Tool(
+            _ => Err(rcode_core::OpenCodeError::Tool(
                 format!("Unknown action: '{}'. Use: save, search, context, get, update, delete, topic", action)
             )),
         }
@@ -347,7 +347,7 @@ impl Tool for EngramTool {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use opencode_core::ToolContext;
+    use rcode_core::ToolContext;
 
     fn create_test_context() -> ToolContext {
         ToolContext {
@@ -355,6 +355,7 @@ mod tests {
             project_path: std::path::PathBuf::from("/test/project"),
             cwd: std::path::PathBuf::from("/test"),
             user_id: None,
+            agent: "test-agent".to_string(),
         }
     }
 

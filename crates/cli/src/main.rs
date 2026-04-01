@@ -3,7 +3,7 @@
 mod commands;
 
 use clap::{Parser, Subcommand};
-use commands::{Run, Serve, Tui};
+use commands::{Run, Serve, Tui, Acp};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -31,6 +31,7 @@ enum Commands {
     Run(Run),
     Serve(Serve),
     Tui(Tui),
+    Acp(Acp),
 }
 
 #[tokio::main]
@@ -57,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Run(run)) => run.execute(cli.config.as_ref(), cli.no_config).await,
         Some(Commands::Serve(serve)) => serve.execute(cli.config.as_ref(), cli.no_config).await,
         Some(Commands::Tui(tui)) => tui.execute(cli.config.as_ref(), cli.no_config).await,
+        Some(Commands::Acp(acp)) => acp.execute(cli.config.as_ref(), cli.no_config).await,
         None => {
             let tui = Tui::default();
             tui.execute(cli.config.as_ref(), cli.no_config).await
