@@ -5,6 +5,7 @@ use base64::Engine;
 use rusqlite::{params, Connection};
 use std::sync::Mutex;
 
+use crate::StorageError;
 use rcode_core::{Message, MessageId, PaginatedMessages, PaginationParams, Part, Role};
 
 pub struct MessageRepository {
@@ -19,7 +20,10 @@ impl MessageRepository {
     }
 
     pub fn save_message(&self, session_id: &str, message: &Message) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::LockPoisoned(e.to_string()))?;
 
         // Start transaction
         conn.execute("BEGIN TRANSACTION", [])?;
@@ -137,7 +141,10 @@ impl MessageRepository {
     }
 
     pub fn load_messages(&self, session_id: &str) -> Result<Vec<Message>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::LockPoisoned(e.to_string()))?;
 
         let mut stmt = conn
             .prepare(
@@ -169,18 +176,18 @@ impl MessageRepository {
             .map(|(id, role_str, created_at_str)| {
                 let role: Role = serde_json::from_str(&role_str).unwrap_or(Role::User);
                 let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
-                    .unwrap()
+                    .map_err(|e| StorageError::InvalidTimestamp(e.to_string()))?
                     .with_timezone(&chrono::Utc);
                 let parts = self.load_parts_for_message(&conn, &id);
-                Message {
+                Ok::<Message, StorageError>(Message {
                     id: MessageId(id),
                     session_id: session_id.to_string(),
                     role,
                     parts,
                     created_at,
-                }
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(messages)
     }
@@ -254,7 +261,10 @@ impl MessageRepository {
         session_id: &str,
         pagination: &PaginationParams,
     ) -> Result<PaginatedMessages> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::LockPoisoned(e.to_string()))?;
 
         // Get total count
         let total: usize = conn
@@ -303,18 +313,18 @@ impl MessageRepository {
             .map(|(id, role_str, created_at_str)| {
                 let role: Role = serde_json::from_str(&role_str).unwrap_or(Role::User);
                 let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
-                    .unwrap()
+                    .map_err(|e| StorageError::InvalidTimestamp(e.to_string()))?
                     .with_timezone(&chrono::Utc);
                 let parts = self.load_parts_for_message(&conn, &id);
-                Message {
+                Ok::<Message, StorageError>(Message {
                     id: MessageId(id),
                     session_id: session_id.to_string(),
                     role,
                     parts,
                     created_at,
-                }
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(PaginatedMessages {
             messages,
@@ -325,7 +335,10 @@ impl MessageRepository {
     }
 
     pub fn delete_messages_for_session(&self, session_id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::LockPoisoned(e.to_string()))?;
 
         // First delete all parts for messages in this session
         conn.execute(
@@ -341,6 +354,25 @@ impl MessageRepository {
             "DELETE FROM messages WHERE session_id = ?1",
             params![session_id],
         )?;
+
+        Ok(())
+    }
+
+    /// Delete a single message by its ID
+    pub fn delete_message(&self, message_id: &str) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::LockPoisoned(e.to_string()))?;
+
+        // First delete all parts for this message
+        conn.execute(
+            "DELETE FROM message_parts WHERE message_id = ?1",
+            params![message_id],
+        )?;
+
+        // Then delete the message
+        conn.execute("DELETE FROM messages WHERE id = ?1", params![message_id])?;
 
         Ok(())
     }

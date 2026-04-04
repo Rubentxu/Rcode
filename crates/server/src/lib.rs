@@ -9,7 +9,7 @@ pub use error::ServerError;
 
 use axum::{
     Router,
-    routing::{get, post, delete},
+    routing::{get, post, delete, put},
 };
 use std::sync::Arc;
 use tokio::signal;
@@ -37,6 +37,15 @@ pub async fn create_app(state: Arc<AppState>) -> Router {
         .route("/session/:id/abort", post(routes::abort_session))
         .route("/session/:id/events", get(routes::sse_session_events))
         .route("/event", get(routes::sse_events))
+        .route("/models", get(routes::list_models))
+        .route("/connect", post(routes::connect_session))
+        .route("/config", get(routes::get_config))
+        .route("/config", put(routes::update_config))
+        .route("/config/providers", get(routes::get_providers))
+        .route("/config/providers/:id", put(routes::update_provider))
+        .route("/terminal/exec", post(routes::terminal::exec_terminal_command))
+        .route("/session/:id/diffs", get(routes::diff::list_diffs))
+        .route("/session/:id/diff/:file", get(routes::diff::get_diff))
         .with_state(state)
         .layer(cors)
 }

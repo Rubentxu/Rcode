@@ -35,8 +35,11 @@ impl ErrorResponse {
 pub enum ServerError {
     NotFound,
     BadRequest(String),
+    Conflict(String),
     Internal(String),
     InvalidTransition(String),
+    Forbidden(String),
+    RequestTimeout(String),
 }
 
 impl ServerError {
@@ -48,12 +51,24 @@ impl ServerError {
         ServerError::BadRequest(msg.into())
     }
 
+    pub fn conflict(msg: impl Into<String>) -> Self {
+        ServerError::Conflict(msg.into())
+    }
+
     pub fn internal(msg: impl Into<String>) -> Self {
         ServerError::Internal(msg.into())
     }
 
     pub fn invalid_transition(msg: impl Into<String>) -> Self {
         ServerError::InvalidTransition(msg.into())
+    }
+
+    pub fn forbidden(msg: impl Into<String>) -> Self {
+        ServerError::Forbidden(msg.into())
+    }
+
+    pub fn request_timeout(msg: impl Into<String>) -> Self {
+        ServerError::RequestTimeout(msg.into())
     }
 }
 
@@ -66,6 +81,7 @@ impl IntoResponse for ServerError {
                 "Session not found",
             ),
             ServerError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.as_str()),
+            ServerError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.as_str()),
             ServerError::Internal(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
@@ -73,6 +89,10 @@ impl IntoResponse for ServerError {
             ),
             ServerError::InvalidTransition(msg) => {
                 (StatusCode::CONFLICT, "INVALID_TRANSITION", msg.as_str())
+            }
+            ServerError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg.as_str()),
+            ServerError::RequestTimeout(msg) => {
+                (StatusCode::REQUEST_TIMEOUT, "REQUEST_TIMEOUT", msg.as_str())
             }
         };
 

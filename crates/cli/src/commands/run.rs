@@ -8,7 +8,7 @@ use rcode_core::{
     AgentContext, Message, Part, Session, SessionStatus,
 };
 use rcode_server::AppState;
-use rcode_providers::anthropic::AnthropicProvider;
+use rcode_providers::{parse_model_id, ProviderFactory};
 use rcode_agent::{AgentExecutor, DefaultAgent};
 
 #[derive(Args)]
@@ -37,8 +37,9 @@ pub struct Run {
     #[arg(long)]
     pub save_session: Option<bool>,
     
-    #[arg(long, default_value = "claude-sonnet-4-5")]
-    pub model: String,
+    /// Model to use (format: provider/model or just model name)
+    #[arg(long)]
+    pub model: Option<String>,
     
     #[arg(short, long)]
     pub agent: Option<String>,
@@ -46,56 +47,51 @@ pub struct Run {
 
 impl Run {
     pub async fn execute(&self, config_path: Option<&PathBuf>, no_config: bool) -> Result<()> {
-        // Load config
-        let config = rcode_core::load_config(config_path.map(|p| p.clone()), no_config).await?;
+        let work_dir = std::env::current_dir().unwrap_or_default();
+        let config = rcode_core::load_config(config_path.map(|p| p.clone()), no_config, Some(work_dir.clone())).await?;
         
-        // Get prompt content
         let prompt = self.get_prompt_content()?;
         
-        // Create AppState with providers and tools
         let state = Arc::new(AppState::with_config(config.clone()));
+
+        let model_string = rcode_core::resolve_model_from_config(&config, self.model.as_deref(), self.agent.as_deref())
+            .unwrap_or_else(|| "anthropic/claude-sonnet-4-5".to_string());
         
-        // Setup provider
-        let api_key = std::env::var("ANTHROPIC_API_KEY")
-            .context("ANTHROPIC_API_KEY must be set")?;
-        let anthropic = Arc::new(AnthropicProvider::new(api_key));
-        state.providers.lock().unwrap().register(anthropic);
+        let (provider_id, model_name) = parse_model_id(&model_string);
+        let (provider, _) = ProviderFactory::build(&model_string, Some(&config))
+            .context(format!("Failed to configure provider '{}'", provider_id))?;
+        state.providers.lock().unwrap().register(provider.clone());
         
-        // Create session
         let session = Session::new(
-            std::env::current_dir().unwrap_or_default(),
+            work_dir,
             self.agent.clone().unwrap_or_else(|| "default".to_string()),
-            self.model.clone(),
+            model_name.clone(),
         );
         let session = state.session_service.create(session);
         
-        // Update status to running
         state.session_service.update_status(&session.id.0, SessionStatus::Running);
         
-        // Publish agent started event
         state.event_bus.publish(rcode_event::Event::AgentStarted {
             session_id: session.id.0.clone(),
         });
         
-        // Add user message
         let user_message = Message::user(
             session.id.0.clone(),
             vec![Part::Text { content: prompt.clone() }],
         );
         state.session_service.add_message(&session.id.0, user_message.clone());
         
-        // Create AgentContext
         let mut ctx = AgentContext {
             session_id: session.id.0.clone(),
             messages: vec![user_message],
             project_path: session.project_path.clone(),
             cwd: std::env::current_dir().unwrap_or_default(),
             user_id: None,
+            model_id: model_name.clone(),
         };
         
-        // Create AgentExecutor with event bus
-        let provider = state.providers.lock().unwrap().get("anthropic")
-            .context("Anthropic provider not found")?
+        let provider = state.providers.lock().unwrap().get(&provider_id)
+            .with_context(|| format!("Provider '{}' not found", provider_id))?
             .clone();
         let executor = AgentExecutor::new(
             Arc::new(DefaultAgent::new()),
@@ -105,7 +101,6 @@ impl Run {
         
         tracing::info!("Starting agent execution for session {}", session.id.0);
         
-        // Execute agent with streaming
         let result = executor.run(&mut ctx).await;
         
         let stop_reason = match &result {
@@ -113,7 +108,6 @@ impl Run {
             Err(e) => format!("Error: {}", e),
         };
         
-        // Display streaming output
         if !self.silent {
             if self.json {
                 let output = serde_json::json!({
@@ -124,7 +118,6 @@ impl Run {
                 });
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
-                // Print the assistant's final message
                 if let Some(msg) = ctx.messages.last() {
                     for part in &msg.parts {
                         match part {
@@ -139,7 +132,6 @@ impl Run {
             }
         }
         
-        // Update status to completed or aborted based on result
         let final_status = if result.is_ok() {
             SessionStatus::Completed
         } else {
@@ -148,12 +140,10 @@ impl Run {
         };
         state.session_service.update_status(&session.id.0, final_status);
         
-        // Publish agent finished event
         state.event_bus.publish(rcode_event::Event::AgentFinished {
             session_id: session.id.0.clone(),
         });
         
-        // Optionally persist session
         if self.save_session.unwrap_or(true) {
             tracing::info!("Session {} saved", session.id.0);
         }
@@ -166,7 +156,6 @@ impl Run {
     }
     
     fn get_prompt_content(&self) -> Result<String> {
-        // Priority: message > file > stdin
         if let Some(ref msg) = self.message {
             return Ok(msg.clone());
         }
