@@ -13,44 +13,44 @@ interface Provider {
 const PROVIDER_URLS: Record<string, Array<{ label: string; url: string }>> = {
   anthropic: [
     { label: "Anthropic (official)", url: "https://api.anthropic.com" },
-    { label: "Custom / proxy", url: "" },
+    { label: "Custom / proxy", url: "__custom__" },
   ],
   openai: [
     { label: "OpenAI (official)", url: "https://api.openai.com" },
     { label: "Azure OpenAI", url: "https://<resource>.openai.azure.com" },
     { label: "LM Studio (local)", url: "http://localhost:1234" },
     { label: "Ollama (local)", url: "http://localhost:11434" },
-    { label: "Custom / proxy", url: "" },
+    { label: "Custom / proxy", url: "__custom__" },
   ],
   google: [
     { label: "Google AI (official)", url: "https://generativelanguage.googleapis.com" },
     { label: "Vertex AI", url: "https://<region>-aiplatform.googleapis.com" },
-    { label: "Custom / proxy", url: "" },
+    { label: "Custom / proxy", url: "__custom__" },
   ],
   openrouter: [
     { label: "OpenRouter (official)", url: "https://openrouter.ai/api/v1" },
-    { label: "Custom / proxy", url: "" },
+    { label: "Custom / proxy", url: "__custom__" },
   ],
   minimax: [
     { label: "MiniMax (official)", url: "https://api.minimax.chat/v1" },
-    { label: "Custom / proxy", url: "" },
+    { label: "Custom / proxy", url: "__custom__" },
   ],
   zai: [
     { label: "ZAI (official)", url: "https://api.zai.chat/v1" },
-    { label: "Custom / proxy", url: "" },
+    { label: "Custom / proxy", url: "__custom__" },
   ],
 };
 
-const CUSTOM_OPTION = "custom";
+const CUSTOM_OPTION = "__custom__";
 
 function getPresetOptions(providerId: string) {
-  return PROVIDER_URLS[providerId] ?? [{ label: "Custom / proxy", url: "" }];
+  return PROVIDER_URLS[providerId] ?? [{ label: "Custom / proxy", url: CUSTOM_OPTION }];
 }
 
-/** Return "custom" if url doesn't match any preset, otherwise the preset url. */
+/** Return preset url that matches, or CUSTOM_OPTION if none matches. */
 function detectSelectedPreset(providerId: string, url: string): string {
   if (!url) return getPresetOptions(providerId)[0]?.url ?? "";
-  const match = getPresetOptions(providerId).find((o) => o.url === url);
+  const match = getPresetOptions(providerId).find((o) => o.url === url && o.url !== CUSTOM_OPTION);
   return match ? match.url : CUSTOM_OPTION;
 }
 
@@ -60,6 +60,9 @@ export function Settings(props: { onClose: () => void }) {
   const [apiKey, setApiKey] = createSignal("");
   const [baseUrl, setBaseUrl] = createSignal("");
   const [selectedPreset, setSelectedPreset] = createSignal<string>("");
+  const [saving, setSaving] = createSignal(false);
+  const [saveError, setSaveError] = createSignal<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = createSignal(false);
 
   // Custom provider form state
   const [showCustomForm, setShowCustomForm] = createSignal(false);
@@ -86,22 +89,49 @@ export function Settings(props: { onClose: () => void }) {
   }
 
   async function saveProvider(providerId: string) {
+    setSaving(true);
+    setSaveError(null);
+    setSaveSuccess(false);
+
+    // Build body — only include fields that have values
+    const body: Record<string, string> = {};
+    const key = apiKey().trim();
+    if (key) body.api_key = key;
+
+    // Always include the current base URL (even if unchanged) so the server stores it
+    const url = baseUrl().trim();
+    if (url) body.base_url = url;
+
     try {
-      await fetch(`${API_BASE}/config/providers/${providerId}`, {
+      const res = await fetch(`${API_BASE}/config/providers/${providerId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          api_key: apiKey() || undefined,
-          base_url: baseUrl() || undefined,
-        }),
+        body: JSON.stringify(body),
       });
-      setEditingProvider(null);
-      setApiKey("");
-      setBaseUrl("");
-      setSelectedPreset("");
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "Unknown error");
+        setSaveError(`Server error ${res.status}: ${text}`);
+        setSaving(false);
+        return;
+      }
+
+      // Success — reload provider list so status badge updates
       await loadProviders();
+      setSaveSuccess(true);
+
+      // Close form after a short delay so the user sees "Saved ✓"
+      setTimeout(() => {
+        setEditingProvider(null);
+        setApiKey("");
+        setBaseUrl("");
+        setSelectedPreset("");
+        setSaveSuccess(false);
+      }, 800);
     } catch (e) {
-      console.error("Failed to save provider:", e);
+      setSaveError(`Network error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -111,7 +141,7 @@ export function Settings(props: { onClose: () => void }) {
     }
 
     try {
-      await fetch(`${API_BASE}/config/providers/${customProviderId()}`, {
+      const res = await fetch(`${API_BASE}/config/providers/${customProviderId()}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -119,6 +149,8 @@ export function Settings(props: { onClose: () => void }) {
           base_url: customBaseUrl(),
         }),
       });
+
+      if (!res.ok) return;
 
       setCustomProviderId("");
       setCustomApiKey("");
@@ -132,16 +164,22 @@ export function Settings(props: { onClose: () => void }) {
 
   function startEditing(provider: Provider) {
     setEditingProvider(provider.id);
-    const url = provider.base_url || "";
-    const preset = detectSelectedPreset(provider.id, url);
+    setSaveError(null);
+    setSaveSuccess(false);
+
+    const savedUrl = provider.base_url || "";
+    const preset = detectSelectedPreset(provider.id, savedUrl);
     setSelectedPreset(preset);
-    // If no URL saved yet, pre-fill with the official default so Save works
-    // without requiring the user to explicitly pick from the dropdown.
-    if (!url && preset !== CUSTOM_OPTION) {
-      setBaseUrl(preset);
+
+    if (savedUrl) {
+      // Use the saved URL as-is (visible in the text hint below the select)
+      setBaseUrl(savedUrl);
     } else {
-      setBaseUrl(url);
+      // No URL saved yet — pre-fill with the official default for this provider
+      const defaultUrl = getPresetOptions(provider.id)[0]?.url ?? "";
+      setBaseUrl(defaultUrl !== CUSTOM_OPTION ? defaultUrl : "");
     }
+
     setApiKey("");
   }
 
@@ -150,6 +188,8 @@ export function Settings(props: { onClose: () => void }) {
     setApiKey("");
     setBaseUrl("");
     setSelectedPreset("");
+    setSaveError(null);
+    setSaveSuccess(false);
   }
 
   function handlePresetChange(providerId: string, value: string) {
@@ -161,11 +201,42 @@ export function Settings(props: { onClose: () => void }) {
     }
   }
 
-  const inputStyle =
-    "width: 100%; padding: 8px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--text-primary); font-size: 13px; box-sizing: border-box;";
+  // Styles
+  const inputStyle = [
+    "width: 100%",
+    "padding: 8px 10px",
+    "background: var(--bg-secondary)",
+    "border: 1px solid var(--border)",
+    "border-radius: var(--radius-md)",
+    "color: var(--text-primary)",
+    "font-size: 13px",
+    "box-sizing: border-box",
+    "outline: none",
+  ].join("; ");
 
-  const labelStyle =
-    "display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px;";
+  const selectStyle = [
+    "width: 100%",
+    "padding: 8px 10px",
+    "background: var(--bg-secondary)",
+    "border: 1px solid var(--border)",
+    "border-radius: var(--radius-md)",
+    "color: var(--text-primary)",
+    "font-size: 13px",
+    "box-sizing: border-box",
+    "outline: none",
+    "cursor: pointer",
+    "margin-bottom: 6px",
+    // Force the dropdown arrow to be visible with appearance
+    "-webkit-appearance: none",
+    "-moz-appearance: none",
+    "appearance: none",
+    "background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L1 3h10z'/%3E%3C/svg%3E\")",
+    "background-repeat: no-repeat",
+    "background-position: right 10px center",
+    "padding-right: 28px",
+  ].join("; ");
+
+  const labelStyle = "display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px;";
 
   return (
     <div style="position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;">
@@ -217,6 +288,7 @@ export function Settings(props: { onClose: () => void }) {
 
                   <Show when={editingProvider() === provider.id}>
                     <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);">
+
                       {/* API Key */}
                       <div style="margin-bottom: 8px;">
                         <label style={labelStyle}>API Key</label>
@@ -226,32 +298,31 @@ export function Settings(props: { onClose: () => void }) {
                           onInput={(e) => setApiKey(e.currentTarget.value)}
                           placeholder={
                             provider.has_key
-                              ? "Leave empty to keep existing"
+                              ? "Leave empty to keep existing key"
                               : "Enter API key..."
                           }
                           style={inputStyle}
                         />
                       </div>
 
-                      {/* Base URL selector */}
-                      <div style="margin-bottom: 8px;">
+                      {/* Base URL */}
+                      <div style="margin-bottom: 12px;">
                         <label style={labelStyle}>
-                          Base URL
-                          {hasPresets ? "" : " (optional)"}
+                          Base URL{hasPresets ? "" : " (optional)"}
                         </label>
 
-                        {/* Preset selector — only shown when we know the URLs */}
+                        {/* Preset dropdown */}
                         <Show when={hasPresets}>
                           <select
                             value={selectedPreset()}
-                            onChange={(e) =>
+                            onInput={(e) =>
                               handlePresetChange(provider.id, e.currentTarget.value)
                             }
-                            style={`${inputStyle} margin-bottom: 6px; appearance: auto;`}
+                            style={selectStyle}
                           >
                             <For each={presets}>
                               {(opt) => (
-                                <option value={opt.url === "" ? CUSTOM_OPTION : opt.url}>
+                                <option value={opt.url}>
                                   {opt.label}
                                 </option>
                               )}
@@ -259,10 +330,8 @@ export function Settings(props: { onClose: () => void }) {
                           </select>
                         </Show>
 
-                        {/* Manual input — always visible when custom, or when no presets */}
-                        <Show
-                          when={!hasPresets || selectedPreset() === CUSTOM_OPTION}
-                        >
+                        {/* Manual input — shown only when "Custom / proxy" is chosen */}
+                        <Show when={!hasPresets || selectedPreset() === CUSTOM_OPTION}>
                           <input
                             type="text"
                             value={baseUrl()}
@@ -272,7 +341,7 @@ export function Settings(props: { onClose: () => void }) {
                           />
                         </Show>
 
-                        {/* Show selected URL as read-only hint when a preset is chosen */}
+                        {/* Read-only URL hint when a known preset is selected */}
                         <Show
                           when={
                             hasPresets &&
@@ -280,26 +349,39 @@ export function Settings(props: { onClose: () => void }) {
                             selectedPreset() !== ""
                           }
                         >
-                          <div
-                            style="margin-top: 4px; font-size: 12px; color: var(--text-secondary); font-family: monospace; padding: 4px 8px; background: var(--bg-secondary); border-radius: var(--radius-md); border: 1px solid var(--border);"
-                          >
-                            {selectedPreset()}
+                          <div style="margin-top: 4px; font-size: 12px; color: var(--text-secondary); font-family: monospace; padding: 6px 8px; background: var(--bg-secondary); border-radius: var(--radius-md); border: 1px solid var(--border);">
+                            {baseUrl()}
                           </div>
                         </Show>
                       </div>
 
+                      {/* Error / success feedback */}
+                      <Show when={saveError()}>
+                        <div style="margin-bottom: 8px; padding: 6px 10px; background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.3); border-radius: var(--radius-md); font-size: 12px; color: var(--error);">
+                          {saveError()}
+                        </div>
+                      </Show>
+                      <Show when={saveSuccess()}>
+                        <div style="margin-bottom: 8px; padding: 6px 10px; background: rgba(34,197,94,0.12); border: 1px solid rgba(34,197,94,0.3); border-radius: var(--radius-md); font-size: 12px; color: var(--success);">
+                          ✓ Saved successfully
+                        </div>
+                      </Show>
+
+                      {/* Action buttons */}
                       <div style="display: flex; gap: 8px; justify-content: flex-end;">
                         <button
                           onClick={cancelEditing}
+                          disabled={saving()}
                           style="padding: 6px 16px; border-radius: var(--radius-md); border: 1px solid var(--border); background: none; color: var(--text-secondary); cursor: pointer; font-size: 13px;"
                         >
                           Cancel
                         </button>
                         <button
                           onClick={() => saveProvider(provider.id)}
-                          style="padding: 6px 16px; border-radius: var(--radius-md); border: none; background: var(--accent); color: white; cursor: pointer; font-size: 13px;"
+                          disabled={saving()}
+                          style={`padding: 6px 16px; border-radius: var(--radius-md); border: none; background: var(--accent); color: white; cursor: pointer; font-size: 13px; opacity: ${saving() ? "0.6" : "1"};`}
                         >
-                          Save
+                          {saving() ? "Saving…" : "Save"}
                         </button>
                       </div>
                     </div>
