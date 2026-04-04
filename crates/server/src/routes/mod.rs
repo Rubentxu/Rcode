@@ -446,6 +446,7 @@ pub async fn get_providers(
             .unwrap_or(serde_json::Value::Null)
     };
 
+    // Well-known providers shown by default (id → display name)
     let known: &[(&str, &str)] = &[
         ("anthropic",  "Anthropic"),
         ("openai",     "OpenAI"),
@@ -455,16 +456,50 @@ pub async fn get_providers(
         ("zai",        "ZAI"),
     ];
 
-    let list: Vec<serde_json::Value> = known
-        .iter()
-        .map(|(id, name)| serde_json::json!({
+    // Build ordered list: known providers first, then any additional ones
+    // that exist in the config (e.g. custom or third-party providers).
+    let mut seen = std::collections::HashSet::new();
+    let mut list: Vec<serde_json::Value> = Vec::new();
+
+    for (id, name) in known {
+        seen.insert(*id);
+        list.push(serde_json::json!({
             "id":       id,
             "name":     name,
             "has_key":  check_has_key(id),
             "base_url": get_base_url(id),
             "enabled":  true,
-        }))
-        .collect();
+        }));
+    }
+
+    // Add providers from config that are not in the well-known list
+    for (id, _provider_cfg) in config.providers.iter() {
+        if seen.contains(id.as_str()) {
+            continue;
+        }
+        // Derive a display name: title-case the id, replace dashes/underscores with spaces
+        let name = id
+            .replace('-', " ")
+            .replace('_', " ")
+            .split_whitespace()
+            .map(|w| {
+                let mut c = w.chars();
+                match c.next() {
+                    None => String::new(),
+                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        list.push(serde_json::json!({
+            "id":       id,
+            "name":     name,
+            "has_key":  check_has_key(id),
+            "base_url": get_base_url(id),
+            "enabled":  true,
+        }));
+    }
 
     Json(serde_json::json!({ "providers": list }))
 }
