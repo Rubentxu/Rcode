@@ -418,25 +418,55 @@ pub async fn update_config(
 
 /// GET /config/providers - Returns provider status
 pub async fn get_providers(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
-    // Check which providers have API keys set via environment or config
+    let config = state.config.lock().unwrap();
+
+    // Returns true if the provider has an API key set via env var OR in the
+    // in-memory config (which may have been saved via PUT /config/providers/:id).
     let check_has_key = |provider_id: &str| -> bool {
         let env_key = format!("{}_API_KEY", provider_id.to_uppercase().replace('-', "_"));
-        std::env::var(&env_key).is_ok()
+        if std::env::var(&env_key).is_ok() {
+            return true;
+        }
+        config
+            .providers
+            .get(provider_id)
+            .and_then(|p| p.api_key.as_deref())
+            .map(|k| !k.is_empty())
+            .unwrap_or(false)
     };
-    
-    let providers = serde_json::json!({
-        "providers": [
-            { "id": "anthropic", "name": "Anthropic", "has_key": check_has_key("anthropic"), "base_url": null, "enabled": true },
-            { "id": "openai", "name": "OpenAI", "has_key": check_has_key("openai"), "base_url": null, "enabled": true },
-            { "id": "google", "name": "Google", "has_key": check_has_key("google"), "base_url": null, "enabled": true },
-            { "id": "openrouter", "name": "OpenRouter", "has_key": check_has_key("openrouter"), "base_url": null, "enabled": true },
-            { "id": "minimax", "name": "MiniMax", "has_key": check_has_key("minimax"), "base_url": null, "enabled": true },
-            { "id": "zai", "name": "ZAI", "has_key": check_has_key("zai"), "base_url": null, "enabled": true },
-        ]
-    });
-    Json(providers)
+
+    let get_base_url = |provider_id: &str| -> serde_json::Value {
+        config
+            .providers
+            .get(provider_id)
+            .and_then(|p| p.base_url.clone())
+            .map(serde_json::Value::String)
+            .unwrap_or(serde_json::Value::Null)
+    };
+
+    let known: &[(&str, &str)] = &[
+        ("anthropic",  "Anthropic"),
+        ("openai",     "OpenAI"),
+        ("google",     "Google"),
+        ("openrouter", "OpenRouter"),
+        ("minimax",    "MiniMax"),
+        ("zai",        "ZAI"),
+    ];
+
+    let list: Vec<serde_json::Value> = known
+        .iter()
+        .map(|(id, name)| serde_json::json!({
+            "id":       id,
+            "name":     name,
+            "has_key":  check_has_key(id),
+            "base_url": get_base_url(id),
+            "enabled":  true,
+        }))
+        .collect();
+
+    Json(serde_json::json!({ "providers": list }))
 }
 
 /// PUT /config/providers/:id - Set provider config

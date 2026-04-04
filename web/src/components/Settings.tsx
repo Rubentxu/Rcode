@@ -135,7 +135,13 @@ export function Settings(props: { onClose: () => void }) {
     const url = provider.base_url || "";
     const preset = detectSelectedPreset(provider.id, url);
     setSelectedPreset(preset);
-    setBaseUrl(url);
+    // If no URL saved yet, pre-fill with the official default so Save works
+    // without requiring the user to explicitly pick from the dropdown.
+    if (!url && preset !== CUSTOM_OPTION) {
+      setBaseUrl(preset);
+    } else {
+      setBaseUrl(url);
+    }
     setApiKey("");
   }
 
