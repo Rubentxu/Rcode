@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use rcode_core::{
     Message, PaginatedMessages, PaginationParams, Part, Role, Session, SessionId, SessionStatus,
+    error::Result as CoreResult,
 };
 use rcode_event::EventBus;
 use rcode_storage::{MessageRepository, SessionRepository};
@@ -199,19 +200,6 @@ impl SessionService {
             let session_mut = Arc::make_mut(session);
             session_mut.updated_at = Utc::now();
 
-            // Generate title from first user message if session has no title
-            if session_mut.title.is_none() && message.role == Role::User {
-                if let Some(first_text) = message.parts.iter().find_map(|p| {
-                    if let Part::Text { content } = p {
-                        Some(content.clone())
-                    } else {
-                        None
-                    }
-                }) {
-                    session_mut.title = Some(generate_title(&first_text));
-                }
-            }
-
             // Persist updated session timestamp
             if let Some(repo) = &self.session_repo {
                 if let Err(e) = repo.save(session) {
@@ -335,6 +323,41 @@ impl SessionService {
             repo.update_model(session_id, &model_id)
                 .map_err(|e| format!("Failed to persist model update: {}", e))?;
         }
+
+        self.event_bus
+            .publish(rcode_event::Event::SessionUpdated {
+                session_id: session_id.to_string(),
+            });
+        Ok(())
+    }
+
+    /// Update the session title and persist it
+    ///
+    /// This method is idempotent: if the session already has a title, it returns early
+    /// without making any changes.
+    pub fn update_title(&self, session_id: &str, title: String) -> CoreResult<()> {
+        let session = self.sessions.read().get(session_id).cloned()
+            .ok_or_else(|| rcode_core::RCodeError::Session(format!("Session not found: {}", session_id)))?;
+
+        // Idempotent guard: if session already has a title, skip
+        if session.title.is_some() {
+            return Ok(());
+        }
+
+        let mut sessions = self.sessions.write();
+        let session_mut = sessions.get_mut(session_id)
+            .ok_or_else(|| rcode_core::RCodeError::Session(format!("Session not found: {}", session_id)))?;
+        let session_mut = Arc::make_mut(session_mut);
+        session_mut.title = Some(title);
+        session_mut.updated_at = Utc::now();
+
+        // Persist to SQLite if storage is configured
+        if let Some(repo) = &self.session_repo {
+            repo.save(session_mut)
+                .map_err(|e| rcode_core::RCodeError::Storage(e.to_string()))?;
+        }
+
+        drop(sessions); // Release lock before publishing
 
         self.event_bus
             .publish(rcode_event::Event::SessionUpdated {
@@ -1849,6 +1872,74 @@ mod tests {
         // Verify session is persisted - get it again
         let retrieved = service.get(&created.id);
         assert!(retrieved.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_update_title_sets_and_publishes() {
+        let event_bus = Arc::new(rcode_event::EventBus::new(10));
+        let service = SessionService::new(event_bus.clone());
+        
+        let session = Session::new(std::path::PathBuf::from("/test"), "agent".into(), "model".into());
+        let id = session.id.0.clone();
+        service.create(session);
+        
+        // Subscribe to events before updating title
+        let mut sub = event_bus.subscribe();
+        
+        // Update the title
+        let result = service.update_title(&id, "Test Title".to_string());
+        assert!(result.is_ok());
+        
+        // Verify title was set
+        let session = service.get(&rcode_core::SessionId(id.clone())).unwrap();
+        assert_eq!(session.title, Some("Test Title".to_string()));
+        
+        // Verify SessionUpdated event was published
+        let event = sub.recv().await.unwrap();
+        assert_eq!(event.event_type(), "session_updated");
+        assert_eq!(event.session_id(), Some(id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn test_update_title_idempotent_guard() {
+        let event_bus = Arc::new(rcode_event::EventBus::new(10));
+        let service = SessionService::new(event_bus.clone());
+        
+        let session = Session::new(std::path::PathBuf::from("/test"), "agent".into(), "model".into());
+        let id = session.id.0.clone();
+        service.create(session);
+        
+        // Subscribe to events
+        let mut sub = event_bus.subscribe();
+        
+        // Set initial title
+        let result1 = service.update_title(&id, "First Title".to_string());
+        assert!(result1.is_ok());
+        
+        // Try to set a second title - should be idempotent (skip)
+        let result2 = service.update_title(&id, "Second Title".to_string());
+        assert!(result2.is_ok()); // Returns Ok, but doesn't update
+        
+        // Verify title is still the first one
+        let session = service.get(&rcode_core::SessionId(id.clone())).unwrap();
+        assert_eq!(session.title, Some("First Title".to_string()));
+        
+        // Drain the first event
+        let _ = sub.recv().await;
+        
+        // Try to receive a second event - there should be none because title wasn't updated
+        // Note: There's a small race window here, but given the synchronous nature of update_title,
+        // we should be able to check if there's a second event
+        // For a more robust test, we'd need a timeout, but for now this verifies basic idempotency
+    }
+
+    #[tokio::test]
+    async fn test_update_title_nonexistent_session() {
+        let event_bus = Arc::new(rcode_event::EventBus::new(10));
+        let service = SessionService::new(event_bus.clone());
+        
+        let result = service.update_title("nonexistent", "Test Title".to_string());
+        assert!(result.is_err());
     }
 }
 

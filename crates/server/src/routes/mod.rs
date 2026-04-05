@@ -20,6 +20,34 @@ use rcode_core::{
 use rcode_agent::{AgentExecutor, DefaultAgent};
 use rcode_providers::ProviderFactory;
 
+/// Adapter to wrap rcode_providers::LlmProvider and expose it as rcode_core::LlmProvider
+/// This allows using production providers (via ProviderFactory) with TitleGenerator
+/// which expects rcode_core::LlmProvider
+struct ProviderAdapter {
+    inner: Arc<dyn rcode_providers::LlmProvider>,
+}
+
+impl ProviderAdapter {
+    fn new(inner: Arc<dyn rcode_providers::LlmProvider>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait::async_trait]
+impl rcode_core::LlmProvider for ProviderAdapter {
+    async fn complete(&self, req: rcode_core::CompletionRequest) -> rcode_core::error::Result<rcode_core::CompletionResponse> {
+        self.inner.complete(req).await
+    }
+
+    async fn stream(&self, req: rcode_core::CompletionRequest) -> rcode_core::error::Result<rcode_core::StreamingResponse> {
+        self.inner.stream(req).await
+    }
+
+    fn model_info(&self, model_id: &str) -> Option<rcode_core::ModelInfo> {
+        self.inner.model_info(model_id)
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
     pub status: String,
@@ -186,6 +214,12 @@ pub async fn submit_prompt(
     let reasoning_effort_override = agent_config.as_ref()
         .and_then(|ac| ac.reasoning_effort.clone());
     
+    // Resolve title model: small_model > model_for_agent("title") > effective_model
+    let title_model = config.effective_small_model()
+        .or_else(|| config.model_for_agent("title"))
+        .or_else(|| config.effective_model())
+        .map(|s| s.to_string());
+
     let (provider, effective_model) = match ProviderFactory::build(&model_id, Some(&*config)) {
         Ok((p, m)) => (p, m),
         Err(e) => {
@@ -209,6 +243,46 @@ pub async fn submit_prompt(
         content: req.prompt.clone(),
     }]);
     state.session_service.add_message(&id, message.clone());
+    
+    // T3: If this is the first message in the session, spawn async title generation
+    // We build the provider BEFORE spawning to avoid holding MutexGuard across await
+    let title_gen_provider = if pre_existing_count == 0 {
+        if let Some(ref model_str) = title_model {
+            let config_guard = state.config.lock().ok();
+            config_guard.and_then(|g| {
+                ProviderFactory::build(model_str, Some(&*g))
+                    .ok()
+                    .map(|(p, m)| (p, m))
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some((provider, model_name)) = title_gen_provider {
+        let session_service = Arc::clone(&state.session_service);
+        let session_id = id.clone();
+        let prompt_content = req.prompt.clone();
+        
+        tokio::spawn(async move {
+            let title_gen = rcode_session::TitleGenerator::new(
+                Arc::new(ProviderAdapter::new(provider)),
+                model_name
+            );
+            match title_gen.generate_title(&prompt_content).await {
+                Ok(title) => {
+                    if let Err(e) = session_service.update_title(&session_id, title) {
+                        tracing::warn!("Failed to update session title: {}", e);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Title generation failed: {}", e);
+                }
+            }
+        });
+    }
     
     // C9: Get FULL session history (includes the new message we just added)
     let messages = state.session_service.get_messages(&id);
