@@ -22,6 +22,9 @@ pub struct CompletionRequest {
     pub tools: Vec<ToolDefinition>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+    /// Reasoning effort override (e.g. "low", "medium", "high")
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,4 +99,73 @@ pub enum StreamingEvent {
 pub enum ContentBlock {
     Text { text: String },
     ToolUse { id: String, name: String, input: serde_json::Value },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_completion_request_deserialization_with_reasoning_effort() {
+        let json = r#"{
+            "model": "claude-sonnet-4-5",
+            "messages": [],
+            "tools": [],
+            "max_tokens": 4096,
+            "reasoning_effort": "high"
+        }"#;
+        
+        let req: CompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.model, "claude-sonnet-4-5");
+        assert_eq!(req.max_tokens, Some(4096));
+        assert_eq!(req.reasoning_effort, Some("high".to_string()));
+    }
+
+    #[test]
+    fn test_completion_request_deserialization_without_reasoning_effort() {
+        let json = r#"{
+            "model": "claude-sonnet-4-5",
+            "messages": [],
+            "tools": [],
+            "max_tokens": 4096
+        }"#;
+        
+        let req: CompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.model, "claude-sonnet-4-5");
+        assert_eq!(req.max_tokens, Some(4096));
+        assert_eq!(req.reasoning_effort, None);
+    }
+
+    #[test]
+    fn test_completion_request_serialization_skips_none_reasoning_effort() {
+        let req = CompletionRequest {
+            model: "claude-sonnet-4-5".to_string(),
+            messages: vec![],
+            system_prompt: None,
+            tools: vec![],
+            temperature: None,
+            max_tokens: Some(4096),
+            reasoning_effort: None,
+        };
+        
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(!json.contains("reasoning_effort"));
+    }
+
+    #[test]
+    fn test_completion_request_serialization_includes_reasoning_effort_when_set() {
+        let req = CompletionRequest {
+            model: "claude-sonnet-4-5".to_string(),
+            messages: vec![],
+            system_prompt: None,
+            tools: vec![],
+            temperature: None,
+            max_tokens: Some(4096),
+            reasoning_effort: Some("high".to_string()),
+        };
+        
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("reasoning_effort"));
+        assert!(json.contains("high"));
+    }
 }

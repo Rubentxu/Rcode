@@ -219,6 +219,14 @@ pub struct AgentConfig {
     #[serde(rename = "maxSteps", default)]
     pub max_steps: Option<u32>,
 
+    /// Optional max_tokens override for this agent
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+
+    /// Optional reasoning effort for this agent (e.g. "low", "high")
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+
     #[serde(default)]
     pub permission: Option<AgentPermissionConfig>,
 
@@ -343,6 +351,20 @@ impl RcodeConfig {
             .or(self.model.as_deref())
     }
 
+    pub fn max_tokens_for_agent(&self, agent_name: &str) -> Option<u32> {
+        self.agent
+            .as_ref()
+            .and_then(|agents| agents.get(agent_name))
+            .and_then(|agent| agent.max_tokens)
+    }
+
+    pub fn reasoning_effort_for_agent(&self, agent_name: &str) -> Option<&str> {
+        self.agent
+            .as_ref()
+            .and_then(|agents| agents.get(agent_name))
+            .and_then(|agent| agent.reasoning_effort.as_deref())
+    }
+
     pub fn effective_model(&self) -> Option<&str> {
         self.model.as_deref()
     }
@@ -391,5 +413,61 @@ mod tests {
     fn test_effective_default_agent_falls_back_to_build() {
         let config = RcodeConfig::default();
         assert_eq!(config.effective_default_agent(), Some("build"));
+    }
+
+    #[test]
+    fn test_max_tokens_for_agent() {
+        let mut config = RcodeConfig::default();
+
+        let mut agent_config = AgentConfig::default();
+        agent_config.max_tokens = Some(8192);
+
+        let mut agents = AgentConfigMap::new();
+        agents.insert("coder".to_string(), agent_config);
+        config.agent = Some(agents);
+
+        assert_eq!(config.max_tokens_for_agent("coder"), Some(8192));
+        assert_eq!(config.max_tokens_for_agent("unknown"), None);
+    }
+
+    #[test]
+    fn test_reasoning_effort_for_agent() {
+        let mut config = RcodeConfig::default();
+
+        let mut agent_config = AgentConfig::default();
+        agent_config.reasoning_effort = Some("high".to_string());
+
+        let mut agents = AgentConfigMap::new();
+        agents.insert("coder".to_string(), agent_config);
+        config.agent = Some(agents);
+
+        assert_eq!(config.reasoning_effort_for_agent("coder"), Some("high"));
+        assert_eq!(config.reasoning_effort_for_agent("unknown"), None);
+    }
+
+    #[test]
+    fn test_agent_config_deserialization_with_new_fields() {
+        let json = r#"{
+            "model": "openai/gpt-4o",
+            "max_tokens": 8192,
+            "reasoning_effort": "high"
+        }"#;
+
+        let agent_config: AgentConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(agent_config.model, Some("openai/gpt-4o".to_string()));
+        assert_eq!(agent_config.max_tokens, Some(8192));
+        assert_eq!(agent_config.reasoning_effort, Some("high".to_string()));
+    }
+
+    #[test]
+    fn test_agent_config_deserialization_without_new_fields() {
+        let json = r#"{
+            "model": "openai/gpt-4o"
+        }"#;
+
+        let agent_config: AgentConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(agent_config.model, Some("openai/gpt-4o".to_string()));
+        assert_eq!(agent_config.max_tokens, None);
+        assert_eq!(agent_config.reasoning_effort, None);
     }
 }

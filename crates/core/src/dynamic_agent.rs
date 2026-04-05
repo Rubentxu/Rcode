@@ -82,6 +82,8 @@ mod tests {
             permission: Default::default(),
             tools: vec!["read".to_string(), "write".to_string()],
             model: Some("claude-sonnet-4".to_string()),
+            max_tokens: None,
+            reasoning_effort: None,
         }
     }
 

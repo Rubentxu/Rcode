@@ -73,6 +73,14 @@ pub struct AgentDefinition {
     /// Optional model override for this agent
     #[serde(default)]
     pub model: Option<String>,
+
+    /// Optional max_tokens override for this agent
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+
+    /// Optional reasoning effort for this agent (e.g. "low", "high")
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 fn default_mode() -> AgentMode {
@@ -86,6 +94,8 @@ impl From<&AgentDefinition> for AgentInfo {
             name: def.name.clone(),
             description: def.description.clone(),
             model: def.model.clone(),
+            max_tokens: def.max_tokens,
+            reasoning_effort: def.reasoning_effort.clone(),
             tools: if def.tools.is_empty() {
                 None
             } else {
@@ -93,5 +103,64 @@ impl From<&AgentDefinition> for AgentInfo {
             },
             hidden: if def.hidden { Some(true) } else { None },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_agent_definition_deserialization_with_new_fields() {
+        let json = r#"{
+            "identifier": "test-agent",
+            "name": "Test Agent",
+            "system_prompt": "You are a test",
+            "max_tokens": 8192,
+            "reasoning_effort": "high"
+        }"#;
+
+        let def: AgentDefinition = serde_json::from_str(json).unwrap();
+        assert_eq!(def.identifier, "test-agent");
+        assert_eq!(def.max_tokens, Some(8192));
+        assert_eq!(def.reasoning_effort, Some("high".to_string()));
+    }
+
+    #[test]
+    fn test_agent_definition_deserialization_without_new_fields() {
+        let json = r#"{
+            "identifier": "test-agent",
+            "name": "Test Agent",
+            "system_prompt": "You are a test"
+        }"#;
+
+        let def: AgentDefinition = serde_json::from_str(json).unwrap();
+        assert_eq!(def.identifier, "test-agent");
+        assert_eq!(def.max_tokens, None);
+        assert_eq!(def.reasoning_effort, None);
+    }
+
+    #[test]
+    fn test_agent_definition_to_agent_info_includes_new_fields() {
+        let def = AgentDefinition {
+            identifier: "test-agent".to_string(),
+            name: "Test Agent".to_string(),
+            description: "A test agent".to_string(),
+            when_to_use: "Testing".to_string(),
+            system_prompt: "You are a test".to_string(),
+            mode: AgentMode::All,
+            hidden: false,
+            permission: AgentPermissionConfig::default(),
+            tools: vec![],
+            model: Some("claude-sonnet-4".to_string()),
+            max_tokens: Some(8192),
+            reasoning_effort: Some("high".to_string()),
+        };
+
+        let info: AgentInfo = (&def).into();
+        assert_eq!(info.id, "test-agent");
+        assert_eq!(info.model, Some("claude-sonnet-4".to_string()));
+        assert_eq!(info.max_tokens, Some(8192));
+        assert_eq!(info.reasoning_effort, Some("high".to_string()));
     }
 }

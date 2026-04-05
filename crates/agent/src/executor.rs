@@ -67,6 +67,8 @@ pub struct AgentExecutorBuilder {
     tools: Arc<ToolRegistryService>,
     event_bus: Option<Arc<EventBus>>,
     model_override: Option<String>,
+    max_tokens_override: Option<u32>,
+    reasoning_effort: Option<String>,
     allowed_tools: Option<Vec<String>>,
     agent_definition: Option<Arc<rcode_core::AgentDefinition>>,
     permission_service: Option<Arc<dyn PermissionService>>,
@@ -80,6 +82,8 @@ impl AgentExecutorBuilder {
             tools,
             event_bus: None,
             model_override: None,
+            max_tokens_override: None,
+            reasoning_effort: None,
             allowed_tools: None,
             agent_definition: None,
             permission_service: None,
@@ -96,6 +100,16 @@ impl AgentExecutorBuilder {
         self
     }
     
+    pub fn with_max_tokens_override(mut self, max_tokens: u32) -> Self {
+        self.max_tokens_override = Some(max_tokens);
+        self
+    }
+    
+    pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Self {
+        self.reasoning_effort = Some(effort.into());
+        self
+    }
+    
     pub fn with_allowed_tools(mut self, tools: Vec<String>) -> Self {
         self.allowed_tools = Some(tools);
         self
@@ -105,6 +119,12 @@ impl AgentExecutorBuilder {
     pub fn with_definition(mut self, def: Arc<rcode_core::AgentDefinition>) -> Self {
         if let Some(ref model) = def.model {
             self.model_override = Some(model.clone());
+        }
+        if let Some(max_tokens) = def.max_tokens {
+            self.max_tokens_override = Some(max_tokens);
+        }
+        if let Some(ref reasoning_effort) = def.reasoning_effort {
+            self.reasoning_effort = Some(reasoning_effort.clone());
         }
         if !def.tools.is_empty() {
             self.allowed_tools = Some(def.tools.clone());
@@ -143,6 +163,8 @@ impl AgentExecutorBuilder {
             tools: self.tools,
             event_bus: self.event_bus,
             model_override: self.model_override,
+            max_tokens_override: self.max_tokens_override,
+            reasoning_effort: self.reasoning_effort,
             allowed_tools: self.allowed_tools,
             permission_service: self.permission_service,
         }
@@ -156,6 +178,8 @@ pub struct AgentExecutor {
     tools: Arc<ToolRegistryService>,
     event_bus: Option<Arc<EventBus>>,
     model_override: Option<String>,
+    max_tokens_override: Option<u32>,
+    reasoning_effort: Option<String>,
     allowed_tools: Option<Vec<String>>,
     permission_service: Option<Arc<dyn PermissionService>>,
 }
@@ -172,6 +196,8 @@ impl AgentExecutor {
             tools,
             event_bus: None,
             model_override: None,
+            max_tokens_override: None,
+            reasoning_effort: None,
             allowed_tools: None,
             permission_service: None,
         }
@@ -184,6 +210,16 @@ impl AgentExecutor {
 
     pub fn with_model_override(mut self, model: String) -> Self {
         self.model_override = Some(model);
+        self
+    }
+
+    pub fn with_max_tokens_override(mut self, max_tokens: u32) -> Self {
+        self.max_tokens_override = Some(max_tokens);
+        self
+    }
+
+    pub fn with_reasoning_effort(mut self, effort: String) -> Self {
+        self.reasoning_effort = Some(effort);
         self
     }
 
@@ -299,7 +335,8 @@ impl AgentExecutor {
                 }
             }).collect(),
             temperature: None,
-            max_tokens: Some(4096),
+            max_tokens: self.max_tokens_override.or(Some(4096)),
+            reasoning_effort: self.reasoning_effort.clone(),
         };
 
         let response = self.provider.stream(request).await?;
@@ -1393,6 +1430,8 @@ mod tests {
             permission: rcode_core::agent_definition::AgentPermissionConfig::default(),
             tools: vec!["bash".to_string(), "read".to_string()],
             model: Some("claude-opus-5".to_string()),
+            max_tokens: Some(8192),
+            reasoning_effort: Some("high".to_string()),
         };
         
         let executor = AgentExecutorBuilder::new(agent, provider, tools)
@@ -1400,6 +1439,8 @@ mod tests {
             .build();
         
         assert_eq!(executor.model_override.as_deref().unwrap(), "claude-opus-5");
+        assert_eq!(executor.max_tokens_override.unwrap(), 8192);
+        assert_eq!(executor.reasoning_effort.as_deref().unwrap(), "high");
         assert!(executor.allowed_tools.is_some());
         assert_eq!(executor.allowed_tools.unwrap().len(), 2);
     }
@@ -1422,6 +1463,8 @@ mod tests {
             permission: rcode_core::agent_definition::AgentPermissionConfig::default(),
             tools: vec![],  // Empty = all tools
             model: None,
+            max_tokens: None,
+            reasoning_effort: None,
         };
         
         let executor = AgentExecutorBuilder::new(agent, provider, tools)
@@ -1430,6 +1473,47 @@ mod tests {
         
         // Model should still be None, allowed_tools should be None (empty tools list doesn't set filter)
         assert!(executor.model_override.is_none());
+        assert!(executor.max_tokens_override.is_none());
+        assert!(executor.reasoning_effort.is_none());
         assert!(executor.allowed_tools.is_none());
+    }
+
+    #[test]
+    fn test_agent_executor_builder_with_max_tokens_and_reasoning_effort() {
+        let agent: Arc<dyn Agent> = Arc::new(MockTestAgent::new("test"));
+        let provider: Arc<dyn rcode_providers::LlmProvider> = Arc::new(MockLlmProvider::new());
+        let tools = Arc::new(ToolRegistryService::new());
+        
+        let executor = AgentExecutorBuilder::new(agent, provider, tools)
+            .with_max_tokens_override(16384)
+            .with_reasoning_effort("low")
+            .build();
+        
+        assert_eq!(executor.max_tokens_override.unwrap(), 16384);
+        assert_eq!(executor.reasoning_effort.as_deref().unwrap(), "low");
+    }
+
+    #[test]
+    fn test_agent_executor_with_max_tokens_override() {
+        let agent: Arc<dyn Agent> = Arc::new(MockTestAgent::new("test"));
+        let provider: Arc<dyn rcode_providers::LlmProvider> = Arc::new(MockLlmProvider::new());
+        let tools = Arc::new(ToolRegistryService::new());
+        
+        let executor = AgentExecutor::new(agent, provider, tools)
+            .with_max_tokens_override(8192);
+        
+        assert_eq!(executor.max_tokens_override.unwrap(), 8192);
+    }
+
+    #[test]
+    fn test_agent_executor_with_reasoning_effort() {
+        let agent: Arc<dyn Agent> = Arc::new(MockTestAgent::new("test"));
+        let provider: Arc<dyn rcode_providers::LlmProvider> = Arc::new(MockLlmProvider::new());
+        let tools = Arc::new(ToolRegistryService::new());
+        
+        let executor = AgentExecutor::new(agent, provider, tools)
+            .with_reasoning_effort("high".to_string());
+        
+        assert_eq!(executor.reasoning_effort.as_deref().unwrap(), "high");
     }
 }

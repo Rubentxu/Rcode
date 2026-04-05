@@ -84,6 +84,8 @@ impl AgentRegistry {
                     name: a.name().to_string(),
                     description: a.description().to_string(),
                     model: None,
+                    max_tokens: None,
+                    reasoning_effort: None,
                     tools: if a.supported_tools().is_empty() {
                         None
                     } else {
@@ -140,6 +142,8 @@ mod tests {
             permission: Default::default(),
             tools: vec!["read".to_string()],
             model: None,
+            max_tokens: None,
+            reasoning_effort: None,
         };
         DynamicAgent::from_definition(def)
     }
@@ -195,6 +199,8 @@ mod tests {
             permission: Default::default(),
             tools: vec![],
             model: None,
+            max_tokens: None,
+            reasoning_effort: None,
         };
 
         let hidden = DynamicAgent::from_definition(def);
@@ -233,6 +239,8 @@ mod tests {
             permission: Default::default(),
             tools: vec![],
             model: None,
+            max_tokens: None,
+            reasoning_effort: None,
         };
 
         let hidden = DynamicAgent::from_definition(def);

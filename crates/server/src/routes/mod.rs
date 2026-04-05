@@ -163,10 +163,29 @@ pub async fn submit_prompt(
     let session = state.session_service.get(&SessionId(id.clone()))
         .ok_or_else(|| ServerError::not_found())?;
     
+    // Get agent name from session
+    let agent_name = &session.agent_id;
+    
     // D5: Build provider FIRST, before setting Running status
-    // Use req.model_id if provided, otherwise use session.model_id
-    let model_id = req.model_id.clone().unwrap_or_else(|| session.model_id.clone());
+    // Resolve model using hierarchy: req.model_id > agent_config.model > session.model_id > config.model
     let config = state.config.lock().map_err(|e| ServerError::internal(e.to_string()))?;
+    
+    // Get agent config for this agent (if any)
+    let agent_config = config.agent.as_ref()
+        .and_then(|agents| agents.get(agent_name));
+    
+    // Resolve model_id using the full hierarchy:
+    // req.model_id > config.model_for_agent(agent_name) > session.model_id
+    let model_id = req.model_id
+        .clone()
+        .or_else(|| config.model_for_agent(agent_name).map(|s| s.to_string()))
+        .unwrap_or_else(|| session.model_id.clone());
+    
+    // Get max_tokens and reasoning_effort from agent config
+    let max_tokens_override = agent_config.and_then(|ac| ac.max_tokens);
+    let reasoning_effort_override = agent_config.as_ref()
+        .and_then(|ac| ac.reasoning_effort.clone());
+    
     let (provider, effective_model) = match ProviderFactory::build(&model_id, Some(&*config)) {
         Ok((p, m)) => (p, m),
         Err(e) => {
@@ -197,7 +216,7 @@ pub async fn submit_prompt(
     // Create the agent
     let agent: Arc<dyn rcode_core::Agent> = Arc::new(DefaultAgent::new());
     
-    // Build the executor
+    // Build the executor with all overrides
     let mut executor = AgentExecutor::new(
         agent,
         provider,
@@ -205,9 +224,19 @@ pub async fn submit_prompt(
     )
     .with_event_bus(Arc::clone(&state.event_bus));
     
-    // T9: Apply model override if provided in request
+    // T9: Apply model override if provided in request (explicit request override wins)
     if let Some(ref model_override) = req.model_id {
         executor = executor.with_model_override(model_override.clone());
+    }
+    
+    // Apply max_tokens override from agent config
+    if let Some(max_tokens) = max_tokens_override {
+        executor = executor.with_max_tokens_override(max_tokens);
+    }
+    
+    // Apply reasoning_effort override from agent config
+    if let Some(reasoning_effort) = reasoning_effort_override {
+        executor = executor.with_reasoning_effort(reasoning_effort);
     }
     
     // Create agent context

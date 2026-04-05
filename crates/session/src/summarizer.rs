@@ -44,6 +44,7 @@ impl Summarizer {
             tools: vec![],
             temperature: Some(0.3), // Lower temperature for more consistent summaries
             max_tokens: Some((target_tokens / 2) as u32), // Leave room for summary
+            reasoning_effort: None,
         };
 
         let response = self.provider.complete(request).await?;
