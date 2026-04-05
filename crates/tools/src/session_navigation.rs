@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use rcode_core::{Tool, ToolContext, ToolResult, SessionId, error::Result};
+use rcode_core::{Tool, ToolContext, ToolResult, Session, SessionId, error::Result};
 use rcode_session::SessionService;
 
 pub struct SessionNavigationTool {
@@ -70,10 +70,10 @@ impl Tool for SessionNavigationTool {
             "switch" | "attach" => {
                 let session_id = args["session_id"]
                     .as_str()
-                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("session_id required for switch/attach".into()))?;
+                    .ok_or_else(|| rcode_core::RCodeError::Tool("session_id required for switch/attach".into()))?;
                 
                 if self.session_service.get(&SessionId(session_id.to_string())).is_none() {
-                    return Err(rcode_core::OpenCodeError::Tool(format!("Session {} not found", session_id)));
+                    return Err(rcode_core::RCodeError::Tool(format!("Session {} not found", session_id)));
                 }
                 
                 Ok(ToolResult {
@@ -83,7 +83,96 @@ impl Tool for SessionNavigationTool {
                     attachments: vec![],
                 })
             }
-            _ => Err(rcode_core::OpenCodeError::Tool(format!("Unknown action: {}", action)))
+            _ => Err(rcode_core::RCodeError::Tool(format!("Unknown action: {}", action)))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn ctx() -> ToolContext {
+        ToolContext {
+            session_id: "s1".into(),
+            project_path: PathBuf::from("/tmp"),
+            cwd: PathBuf::from("/tmp"),
+            user_id: None,
+            agent: "test".into(),
+        }
+    }
+
+    fn make_service() -> Arc<SessionService> {
+        Arc::new(SessionService::new(Arc::new(rcode_event::EventBus::new(10))))
+    }
+
+    #[tokio::test]
+    async fn test_list_sessions_empty() {
+        let tool = SessionNavigationTool::new(make_service());
+        let result = tool.execute(serde_json::json!({"action": "list"}), &ctx()).await.unwrap();
+        assert_eq!(result.content, "No sessions");
+    }
+
+    #[tokio::test]
+    async fn test_list_sessions_with_data() {
+        let service = make_service();
+        let session = Session::new(PathBuf::from("/tmp"), "agent".into(), "model".into());
+        let sid = session.id.0.clone();
+        service.create(session);
+        let tool = SessionNavigationTool::new(service);
+        let result = tool.execute(serde_json::json!({"action": "list"}), &ctx()).await.unwrap();
+        assert!(result.content.contains(&sid));
+    }
+
+    #[tokio::test]
+    async fn test_current_session() {
+        let tool = SessionNavigationTool::new(make_service());
+        let result = tool.execute(serde_json::json!({"action": "current"}), &ctx()).await.unwrap();
+        assert_eq!(result.content, "s1");
+    }
+
+    #[tokio::test]
+    async fn test_switch_missing_session_id() {
+        let tool = SessionNavigationTool::new(make_service());
+        let result = tool.execute(serde_json::json!({"action": "switch"}), &ctx()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_switch_nonexistent_session() {
+        let tool = SessionNavigationTool::new(make_service());
+        let result = tool.execute(serde_json::json!({"action": "switch", "session_id": "nope"}), &ctx()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_switch_valid_session() {
+        let service = make_service();
+        let session = Session::new(PathBuf::from("/tmp"), "a".into(), "m".into());
+        let sid = session.id.0.clone();
+        service.create(session);
+        let tool = SessionNavigationTool::new(service);
+        let result = tool.execute(serde_json::json!({"action": "switch", "session_id": &sid}), &ctx()).await.unwrap();
+        assert!(result.content.contains(&sid));
+        assert!(result.title.contains("Switched"));
+    }
+
+    #[tokio::test]
+    async fn test_attach_valid_session() {
+        let service = make_service();
+        let session = Session::new(PathBuf::from("/tmp"), "a".into(), "m".into());
+        let sid = session.id.0.clone();
+        service.create(session);
+        let tool = SessionNavigationTool::new(service);
+        let result = tool.execute(serde_json::json!({"action": "attach", "session_id": &sid}), &ctx()).await.unwrap();
+        assert!(result.title.contains("Attached"));
+    }
+
+    #[tokio::test]
+    async fn test_unknown_action() {
+        let tool = SessionNavigationTool::new(make_service());
+        let result = tool.execute(serde_json::json!({"action": "delete"}), &ctx()).await;
+        assert!(result.is_err());
     }
 }

@@ -6,7 +6,7 @@ use rcode_cli::commands::Run;
 
 /// Helper to create a test app state (simplified for e2e tests)
 async fn create_test_app_state() -> Arc<rcode_server::AppState> {
-    let config = rcode_core::OpencodeConfig::default();
+    let config = rcode_core::RcodeConfig::default();
     Arc::new(rcode_server::AppState::with_config(config))
 }
 

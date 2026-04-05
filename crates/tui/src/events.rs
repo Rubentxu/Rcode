@@ -1,6 +1,7 @@
 //! Event handling for TUI (keyboard, mouse, async)
 
 use crossterm::event::{Event as CrosstermEvent, KeyEvent, MouseEvent};
+use rcode_event::Event;
 use std::time::Duration;
 
 /// TUI input events
@@ -14,6 +15,8 @@ pub enum InputEvent {
     Resize(u16, u16),
     /// Tick (periodic timer event)
     Tick,
+    /// Bus event from the event bus (streaming, messages, etc.)
+    BusEvent(Event),
 }
 
 /// Event handler configuration

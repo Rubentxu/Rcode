@@ -15,6 +15,45 @@ pub enum Permission {
     Ask,
 }
 
+/// Request for permission to execute a tool
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionRequest {
+    /// Name of the tool to execute
+    pub tool_name: String,
+    /// Tool input arguments
+    pub tool_input: serde_json::Value,
+    /// Human-readable reason why permission is needed
+    pub reason: Option<String>,
+}
+
+impl PermissionRequest {
+    pub fn new(tool_name: String, tool_input: serde_json::Value) -> Self {
+        Self {
+            tool_name,
+            tool_input,
+            reason: None,
+        }
+    }
+
+    pub fn with_reason(mut self, reason: String) -> Self {
+        self.reason = Some(reason);
+        self
+    }
+}
+
+/// Response to a permission request
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum PermissionResponse {
+    /// Allow the tool to execute once
+    Allow,
+    /// Allow the tool and add it to the always-allow list
+    AllowAlways,
+    /// Deny the tool once
+    Deny,
+    /// Deny the tool and add it to the always-deny list
+    DenyAlways,
+}
+
 impl Default for Permission {
     fn default() -> Self {
         Permission::Ask
@@ -371,5 +410,158 @@ mod tests {
         // Depth 3 should be denied
         let result = checker.check_delegation(3);
         assert_eq!(result.permission, Permission::Deny);
+    }
+
+    #[test]
+    fn test_permission_checker_delegation_disabled() {
+        let mut config = PermissionConfig::new();
+        config.allow_delegation = false;
+        let checker = PermissionChecker::new(config);
+
+        let result = checker.check_delegation(0);
+        assert_eq!(result.permission, Permission::Deny);
+        assert!(result.reason.contains("disabled"));
+    }
+
+    #[test]
+    fn test_agent_permission_should_ask_for_tool() {
+        let perm = AgentPermission::new("general")
+            .with_permission(Permission::Ask)
+            .allow_tools(vec!["read".to_string()]);
+
+        assert!(perm.should_ask_for_tool("read"));
+        assert!(!perm.should_ask_for_tool("write")); // Not in allowed list
+    }
+
+    #[test]
+    fn test_agent_permission_should_ask_denied_tool() {
+        let perm = AgentPermission::new("general")
+            .with_permission(Permission::Ask)
+            .deny_tools(vec!["bash".to_string()]);
+
+        assert!(!perm.should_ask_for_tool("bash")); // Denied tools never ask
+    }
+
+    #[test]
+    fn test_agent_permission_should_ask_with_empty_allowed() {
+        let perm = AgentPermission::new("general").with_permission(Permission::Ask);
+
+        assert!(perm.should_ask_for_tool("any_tool"));
+    }
+
+    #[test]
+    fn test_permission_config_is_tool_allowed_default_allow() {
+        let mut config = PermissionConfig::new();
+        config.default_permission = Permission::Allow;
+
+        assert!(config.is_tool_allowed("unknown_agent", "any_tool"));
+    }
+
+    #[test]
+    fn test_permission_config_is_tool_allowed_default_deny() {
+        let mut config = PermissionConfig::new();
+        config.default_permission = Permission::Deny;
+
+        assert!(!config.is_tool_allowed("unknown_agent", "any_tool"));
+    }
+
+    #[test]
+    fn test_permission_config_should_ask_default() {
+        let mut config = PermissionConfig::new();
+        config.default_permission = Permission::Ask;
+
+        assert!(config.should_ask("unknown_agent", "any_tool"));
+    }
+
+    #[test]
+    fn test_permission_checker_check_main_entry() {
+        let mut config = PermissionConfig::new();
+        config.default_permission = Permission::Allow;
+        let checker = PermissionChecker::new(config);
+
+        let result = checker.check("agent1", "resource1", Some("subagent"));
+        assert_eq!(result.permission, Permission::Allow);
+    }
+
+    #[test]
+    fn test_permission_checker_check_with_ask() {
+        let mut config = PermissionConfig::new();
+        config.default_permission = Permission::Ask;
+        let checker = PermissionChecker::new(config);
+
+        let result = checker.check("agent1", "resource1", None);
+        assert_eq!(result.permission, Permission::Ask);
+    }
+
+    #[test]
+    fn test_permission_checker_check_with_deny() {
+        let mut config = PermissionConfig::new();
+        config.default_permission = Permission::Deny;
+        let checker = PermissionChecker::new(config);
+
+        let result = checker.check("agent1", "resource1", None);
+        assert_eq!(result.permission, Permission::Deny);
+    }
+
+    #[test]
+    fn test_permission_checker_with_default_config() {
+        let checker = PermissionChecker::with_default();
+        let result = checker.check_delegation(0);
+        assert_eq!(result.permission, Permission::Allow);
+    }
+
+    #[test]
+    fn test_permission_checker_config_accessor() {
+        let config = PermissionConfig::new();
+        let checker = PermissionChecker::new(config);
+        assert_eq!(checker.config().default_permission, Permission::Ask);
+    }
+
+    #[test]
+    fn test_permission_check_result_helpers() {
+        let allow = PermissionCheckResult::allow("because reasons");
+        assert_eq!(allow.permission, Permission::Allow);
+        assert_eq!(allow.reason, "because reasons");
+
+        let deny = PermissionCheckResult::deny("not allowed");
+        assert_eq!(deny.permission, Permission::Deny);
+
+        let ask = PermissionCheckResult::ask("please confirm");
+        assert_eq!(ask.permission, Permission::Ask);
+    }
+
+    #[test]
+    fn test_permission_serde_roundtrip() {
+        use serde_json;
+
+        let perm = Permission::Allow;
+        let json = serde_json::to_string(&perm).unwrap();
+        let parsed: Permission = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, Permission::Allow);
+    }
+
+    #[test]
+    fn test_agent_permission_serde_roundtrip() {
+        use serde_json;
+
+        let perm = AgentPermission::new("test")
+            .with_permission(Permission::Allow)
+            .allow_tools(vec!["read".to_string()]);
+
+        let json = serde_json::to_string(&perm).unwrap();
+        let parsed: AgentPermission = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.agent_type, "test");
+        assert_eq!(parsed.permission, Permission::Allow);
+    }
+
+    #[test]
+    fn test_permission_config_serde_roundtrip() {
+        use serde_json;
+
+        let config = PermissionConfig::new();
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: PermissionConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.default_permission, Permission::Ask);
+        assert!(parsed.allow_delegation);
     }
 }

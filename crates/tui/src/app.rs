@@ -9,11 +9,12 @@ pub enum AppMode {
     SessionList,
     Chat,
     Settings,
+    ModelPicker,
 }
 
 /// Main TUI application state
 #[derive(Debug)]
-pub struct OpencodeTui {
+pub struct RcodeTui {
     /// All available sessions
     pub sessions: Vec<Arc<Session>>,
     /// Currently active session ID
@@ -32,6 +33,14 @@ pub struct OpencodeTui {
     pub scroll_offset: usize,
     /// Search query for session list
     pub session_search: String,
+    /// Current streaming delta being accumulated (session_id -> text)
+    pub streaming_deltas: std::collections::HashMap<String, String>,
+    /// Model list for picker: (model_id, provider, enabled)
+    pub model_list: Vec<(String, String, bool)>,
+    /// Current index in model list
+    pub model_picker_index: usize,
+    /// Current provider filter index
+    pub model_picker_provider_index: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -41,7 +50,7 @@ pub enum ToolStatus {
     Failed(String),
 }
 
-impl OpencodeTui {
+impl RcodeTui {
     pub fn new() -> Self {
         Self {
             sessions: Vec::new(),
@@ -53,6 +62,10 @@ impl OpencodeTui {
             tool_status: std::collections::HashMap::new(),
             scroll_offset: 0,
             session_search: String::new(),
+            streaming_deltas: std::collections::HashMap::new(),
+            model_list: Vec::new(),
+            model_picker_index: 0,
+            model_picker_provider_index: 0,
         }
     }
 
@@ -99,9 +112,44 @@ impl OpencodeTui {
                 .collect()
         }
     }
+
+    /// Append streaming delta text for a session
+    pub fn append_streaming_delta(&mut self, session_id: &str, delta: &str) {
+        self.streaming_deltas
+            .entry(session_id.to_string())
+            .or_insert_with(String::new)
+            .push_str(delta);
+    }
+
+    /// Get the current streaming text for a session
+    pub fn get_streaming_text(&self, session_id: &str) -> Option<String> {
+        self.streaming_deltas.get(session_id).cloned()
+    }
+
+    /// Clear streaming delta for a session
+    pub fn clear_streaming_delta(&mut self, session_id: &str) {
+        self.streaming_deltas.remove(session_id);
+    }
+
+    /// Add a completed message to the display
+    pub fn add_message_to_display(&mut self, session_id: &str, message: Message) {
+        // Only add if this message is for the current session
+        if let Some(current) = &self.current_session {
+            if current.0 == session_id {
+                self.messages.push(message);
+                // Clear any streaming delta for this session since message is now complete
+                self.clear_streaming_delta(session_id);
+            }
+        }
+    }
+
+    /// Set running state
+    pub fn set_running(&mut self, running: bool) {
+        self.is_running = running;
+    }
 }
 
-impl Default for OpencodeTui {
+impl Default for RcodeTui {
     fn default() -> Self {
         Self::new()
     }

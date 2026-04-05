@@ -97,3 +97,32 @@ where
     tracing::info!("Shutdown complete");
     Ok(())
 }
+
+/// Run the server on a pre-bound listener with a oneshot shutdown signal.
+/// Does NOT install ctrl_c handler - caller manages shutdown.
+/// Returns the local socket address of the listener.
+pub async fn start_server_on_listener(
+    state: Arc<AppState>,
+    listener: tokio::net::TcpListener,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
+) -> anyhow::Result<std::net::SocketAddr> {
+    let app = create_app(state).await;
+    let addr = listener.local_addr()?;
+    
+    tracing::info!("Server listening on {}", addr);
+    
+    // Convert oneshot receiver to a future that completes on shutdown signal
+    let shutdown_future = async {
+        match shutdown.await {
+            Ok(()) => tracing::info!("Shutdown signal received via oneshot"),
+            Err(_) => tracing::info!("Shutdown sender dropped without sending signal"),
+        }
+    };
+    
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_future)
+        .await?;
+
+    tracing::info!("Shutdown complete");
+    Ok(addr)
+}

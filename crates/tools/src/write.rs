@@ -41,20 +41,20 @@ impl Tool for WriteTool {
     async fn execute(&self, args: serde_json::Value, context: &ToolContext) -> Result<ToolResult> {
         let path = args["path"]
             .as_str()
-            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'path' argument".into()))?;
+            .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'path' argument".into()))?;
         let content = args["content"]
             .as_str()
-            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'content' argument".into()))?;
+            .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'content' argument".into()))?;
         
         let full_path = context.cwd.join(path);
         
         if let Some(parent) = full_path.parent() {
             fs::create_dir_all(parent).await
-                .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to create directory: {}", e)))?;
+                .map_err(|e| rcode_core::RCodeError::Tool(format!("Failed to create directory: {}", e)))?;
         }
         
         fs::write(&full_path, content).await
-            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to write {}: {}", path, e)))?;
+            .map_err(|e| rcode_core::RCodeError::Tool(format!("Failed to write {}: {}", path, e)))?;
         
         Ok(ToolResult {
             title: format!("Written: {}", path),
@@ -62,5 +62,48 @@ impl Tool for WriteTool {
             metadata: None,
             attachments: vec![],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rcode_core::ToolContext;
+    use std::path::PathBuf;
+
+    fn ctx(cwd: &str) -> ToolContext {
+        ToolContext { session_id: "s1".into(), project_path: PathBuf::from(cwd), cwd: PathBuf::from(cwd), user_id: None, agent: "test".into() }
+    }
+
+    #[tokio::test]
+    async fn test_write_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = WriteTool::new();
+        let result = tool.execute(serde_json::json!({"path": "test.txt", "content": "hello"}), &ctx(dir.path().to_str().unwrap())).await.unwrap();
+        assert!(result.content.contains("5 bytes"));
+        assert_eq!(std::fs::read_to_string(dir.path().join("test.txt")).unwrap(), "hello");
+    }
+
+    #[tokio::test]
+    async fn test_write_creates_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = WriteTool::new();
+        let result = tool.execute(serde_json::json!({"path": "sub/dir/test.txt", "content": "nested"}), &ctx(dir.path().to_str().unwrap())).await.unwrap();
+        assert!(result.content.contains("6 bytes"));
+        assert_eq!(std::fs::read_to_string(dir.path().join("sub/dir/test.txt")).unwrap(), "nested");
+    }
+
+    #[tokio::test]
+    async fn test_write_missing_path() {
+        let tool = WriteTool::new();
+        let result = tool.execute(serde_json::json!({"content": "x"}), &ctx("/tmp")).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_write_missing_content() {
+        let tool = WriteTool::new();
+        let result = tool.execute(serde_json::json!({"path": "f.txt"}), &ctx("/tmp")).await;
+        assert!(result.is_err());
     }
 }

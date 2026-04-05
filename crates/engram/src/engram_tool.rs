@@ -82,29 +82,29 @@ impl Tool for EngramTool {
         })
     }
 
-    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolResult, rcode_core::OpenCodeError> {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolResult, rcode_core::RCodeError> {
         let action = args["action"]
             .as_str()
-            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'action' argument".into()))?;
+            .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'action' argument".into()))?;
 
         match action {
             "save" => {
                 let title = args["title"]
                     .as_str()
-                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'title' argument".into()))?;
+                    .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'title' argument".into()))?;
                 let content = args["content"]
                     .as_str()
-                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'content' argument".into()))?;
+                    .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'content' argument".into()))?;
                 let obs_type = args["type"]
                     .as_str()
                     .unwrap_or("discovery")
                     .parse()
-                    .map_err(|e: String| rcode_core::OpenCodeError::Tool(format!("Invalid type: {}", e)))?;
+                    .map_err(|e: String| rcode_core::RCodeError::Tool(format!("Invalid type: {}", e)))?;
                 let scope = args["scope"]
                     .as_str()
                     .unwrap_or("project")
                     .parse()
-                    .map_err(|e: String| rcode_core::OpenCodeError::Tool(format!("Invalid scope: {}", e)))?;
+                    .map_err(|e: String| rcode_core::RCodeError::Tool(format!("Invalid scope: {}", e)))?;
                 let topic = args["topic_key"].as_str().map(String::from);
                 let project = args["project"].as_str().map(String::from);
 
@@ -122,7 +122,7 @@ impl Tool for EngramTool {
                 obs = obs.with_session(context.session_id.clone());
 
                 let id = self.client.save(obs).await
-                    .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to save: {}", e)))?;
+                    .map_err(|e| rcode_core::RCodeError::Tool(format!("Failed to save: {}", e)))?;
 
                 Ok(ToolResult {
                     title: "Observation saved".to_string(),
@@ -135,13 +135,13 @@ impl Tool for EngramTool {
             "search" => {
                 let query = args["query"]
                     .as_str()
-                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'query' argument".into()))?;
+                    .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'query' argument".into()))?;
                 let limit = args["limit"]
                     .as_i64()
                     .unwrap_or(10) as usize;
 
                 let results = self.client.search(query, limit).await
-                    .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to search: {}", e)))?;
+                    .map_err(|e| rcode_core::RCodeError::Tool(format!("Failed to search: {}", e)))?;
 
                 if results.is_empty() {
                     return Ok(ToolResult {
@@ -182,7 +182,7 @@ impl Tool for EngramTool {
                     .unwrap_or(10) as usize;
 
                 let observations = self.client.get_context(limit).await
-                    .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to get context: {}", e)))?;
+                    .map_err(|e| rcode_core::RCodeError::Tool(format!("Failed to get context: {}", e)))?;
 
                 if observations.is_empty() {
                     return Ok(ToolResult {
@@ -219,10 +219,10 @@ impl Tool for EngramTool {
             "get" => {
                 let id = args["id"]
                     .as_i64()
-                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'id' argument".into()))?;
+                    .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'id' argument".into()))?;
 
                 let obs = self.client.get(id).await
-                    .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to get: {}", e)))?;
+                    .map_err(|e| rcode_core::RCodeError::Tool(format!("Failed to get: {}", e)))?;
 
                 match obs {
                     Some(obs) => Ok(ToolResult {
@@ -244,29 +244,29 @@ impl Tool for EngramTool {
                         })),
                         attachments: vec![],
                     }),
-                    None => Err(rcode_core::OpenCodeError::Tool(format!("Observation {} not found", id)))
+                    None => Err(rcode_core::RCodeError::Tool(format!("Observation {} not found", id)))
                 }
             }
 
             "update" => {
                 let id = args["id"]
                     .as_i64()
-                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'id' argument".into()))?;
+                    .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'id' argument".into()))?;
                 let title = args["title"]
                     .as_str()
-                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'title' argument".into()))?;
+                    .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'title' argument".into()))?;
                 let content = args["content"]
                     .as_str()
-                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'content' argument".into()))?;
+                    .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'content' argument".into()))?;
                 let obs_type = args["type"]
                     .as_str()
                     .unwrap_or("discovery")
                     .parse()
-                    .map_err(|e: String| rcode_core::OpenCodeError::Tool(format!("Invalid type: {}", e)))?;
+                    .map_err(|e: String| rcode_core::RCodeError::Tool(format!("Invalid type: {}", e)))?;
 
                 let obs = Observation::new(title.to_string(), content.to_string(), obs_type);
                 self.client.update(id, obs).await
-                    .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to update: {}", e)))?;
+                    .map_err(|e| rcode_core::RCodeError::Tool(format!("Failed to update: {}", e)))?;
 
                 Ok(ToolResult {
                     title: "Observation updated".to_string(),
@@ -279,10 +279,10 @@ impl Tool for EngramTool {
             "delete" => {
                 let id = args["id"]
                     .as_i64()
-                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'id' argument".into()))?;
+                    .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'id' argument".into()))?;
 
                 self.client.delete(id).await
-                    .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to delete: {}", e)))?;
+                    .map_err(|e| rcode_core::RCodeError::Tool(format!("Failed to delete: {}", e)))?;
 
                 Ok(ToolResult {
                     title: "Observation deleted".to_string(),
@@ -295,10 +295,10 @@ impl Tool for EngramTool {
             "topic" => {
                 let topic = args["topic_key"]
                     .as_str()
-                    .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'topic_key' argument".into()))?;
+                    .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'topic_key' argument".into()))?;
 
                 let observations = self.client.get_topic(topic).await
-                    .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to get topic: {}", e)))?;
+                    .map_err(|e| rcode_core::RCodeError::Tool(format!("Failed to get topic: {}", e)))?;
 
                 if observations.is_empty() {
                     return Ok(ToolResult {
@@ -336,7 +336,7 @@ impl Tool for EngramTool {
                 })
             }
 
-            _ => Err(rcode_core::OpenCodeError::Tool(
+            _ => Err(rcode_core::RCodeError::Tool(
                 format!("Unknown action: '{}'. Use: save, search, context, get, update, delete, topic", action)
             )),
         }
@@ -488,5 +488,236 @@ mod tests {
         });
         let get_result3 = tool.execute(get_args3, &ctx).await;
         assert!(get_result3.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_topic_action() {
+        let (tool, _dir) = create_test_tool();
+        let ctx = create_test_context();
+
+        // Save with topic_key
+        let save_args = serde_json::json!({
+            "action": "save",
+            "title": "Architecture decision",
+            "content": "Use SQLite for local storage",
+            "type": "decision",
+            "topic_key": "architecture/storage"
+        });
+        tool.execute(save_args, &ctx).await.unwrap();
+
+        // Query by topic
+        let topic_args = serde_json::json!({
+            "action": "topic",
+            "topic_key": "architecture/storage"
+        });
+        let result = tool.execute(topic_args, &ctx).await.unwrap();
+        assert!(result.content.contains("Architecture decision"));
+    }
+
+    #[tokio::test]
+    async fn test_topic_action_empty() {
+        let (tool, _dir) = create_test_tool();
+        let ctx = create_test_context();
+
+        let topic_args = serde_json::json!({
+            "action": "topic",
+            "topic_key": "nonexistent/topic"
+        });
+        let result = tool.execute(topic_args, &ctx).await.unwrap();
+        assert!(result.content.contains("No observations"));
+    }
+
+    #[tokio::test]
+    async fn test_missing_action_error() {
+        let (tool, _dir) = create_test_tool();
+        let ctx = create_test_context();
+
+        let args = serde_json::json!({});
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_invalid_action_error() {
+        let (tool, _dir) = create_test_tool();
+        let ctx = create_test_context();
+
+        let args = serde_json::json!({
+            "action": "invalid_action"
+        });
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_save_missing_title_error() {
+        let (tool, _dir) = create_test_tool();
+        let ctx = create_test_context();
+
+        let args = serde_json::json!({
+            "action": "save",
+            "content": "Some content"
+        });
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_save_missing_content_error() {
+        let (tool, _dir) = create_test_tool();
+        let ctx = create_test_context();
+
+        let args = serde_json::json!({
+            "action": "save",
+            "title": "Some title"
+        });
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_save_invalid_type_error() {
+        let (tool, _dir) = create_test_tool();
+        let ctx = create_test_context();
+
+        let args = serde_json::json!({
+            "action": "save",
+            "title": "Title",
+            "content": "Content",
+            "type": "invalid_type"
+        });
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_save_invalid_scope_error() {
+        let (tool, _dir) = create_test_tool();
+        let ctx = create_test_context();
+
+        let args = serde_json::json!({
+            "action": "save",
+            "title": "Title",
+            "content": "Content",
+            "scope": "invalid_scope"
+        });
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_search_missing_query_error() {
+        let (tool, _dir) = create_test_tool();
+        let ctx = create_test_context();
+
+        let args = serde_json::json!({
+            "action": "search"
+        });
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_search_empty_results() {
+        let (tool, _dir) = create_test_tool();
+        let ctx = create_test_context();
+
+        let args = serde_json::json!({
+            "action": "search",
+            "query": "nonexistent_query_result_xyz"
+        });
+        let result = tool.execute(args, &ctx).await.unwrap();
+        assert!(result.content.contains("No observations"));
+    }
+
+    #[tokio::test]
+    async fn test_get_missing_id_error() {
+        let (tool, _dir) = create_test_tool();
+        let ctx = create_test_context();
+
+        let args = serde_json::json!({
+            "action": "get"
+        });
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_get_nonexistent_id() {
+        let (tool, _dir) = create_test_tool();
+        let ctx = create_test_context();
+
+        let args = serde_json::json!({
+            "action": "get",
+            "id": 999999
+        });
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_update_missing_id_error() {
+        let (tool, _dir) = create_test_tool();
+        let ctx = create_test_context();
+
+        let args = serde_json::json!({
+            "action": "update",
+            "title": "Title",
+            "content": "Content"
+        });
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_delete_missing_id_error() {
+        let (tool, _dir) = create_test_tool();
+        let ctx = create_test_context();
+
+        let args = serde_json::json!({
+            "action": "delete"
+        });
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_topic_missing_topic_key_error() {
+        let (tool, _dir) = create_test_tool();
+        let ctx = create_test_context();
+
+        let args = serde_json::json!({
+            "action": "topic"
+        });
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_save_with_project_override() {
+        let (tool, _dir) = create_test_tool();
+        let ctx = create_test_context();
+
+        let args = serde_json::json!({
+            "action": "save",
+            "title": "Test",
+            "content": "Test content",
+            "project": "custom-project"
+        });
+        let result = tool.execute(args, &ctx).await.unwrap();
+        // Result should indicate success (contains observation id)
+        assert!(result.title.contains("saved") || result.content.contains("#"));
+    }
+
+    #[tokio::test]
+    async fn test_context_empty() {
+        let (tool, _dir) = create_test_tool();
+        let ctx = create_test_context();
+
+        let args = serde_json::json!({
+            "action": "context"
+        });
+        let result = tool.execute(args, &ctx).await.unwrap();
+        assert!(result.content.contains("No observations"));
     }
 }

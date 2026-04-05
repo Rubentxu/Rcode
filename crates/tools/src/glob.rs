@@ -37,7 +37,7 @@ impl Tool for GlobTool {
     async fn execute(&self, args: serde_json::Value, context: &ToolContext) -> Result<ToolResult> {
         let pattern = args["pattern"]
             .as_str()
-            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'pattern' argument".into()))?;
+            .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'pattern' argument".into()))?;
         
         let full_pattern = if pattern.starts_with('/') {
             pattern.to_string()
@@ -47,7 +47,7 @@ impl Tool for GlobTool {
         
         let mut matches = Vec::new();
         for entry in glob(&full_pattern)
-            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Glob error: {}", e)))? {
+            .map_err(|e| rcode_core::RCodeError::Tool(format!("Glob error: {}", e)))? {
             if let Ok(path) = entry {
                 matches.push(path.display().to_string());
             }
@@ -65,5 +65,53 @@ impl Tool for GlobTool {
             metadata: Some(serde_json::json!({ "count": matches.len() })),
             attachments: vec![],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rcode_core::ToolContext;
+    use std::path::PathBuf;
+
+    fn ctx(cwd: &str) -> ToolContext {
+        ToolContext { session_id: "s1".into(), project_path: PathBuf::from(cwd), cwd: PathBuf::from(cwd), user_id: None, agent: "test".into() }
+    }
+
+    #[tokio::test]
+    async fn test_glob_finds_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "").unwrap();
+        let tool = GlobTool::new();
+        let result = tool.execute(serde_json::json!({"pattern": "*.rs"}), &ctx(dir.path().to_str().unwrap())).await.unwrap();
+        assert!(result.content.contains("a.rs"));
+        assert!(result.content.contains("b.rs"));
+        assert_eq!(result.metadata.unwrap()["count"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_glob_no_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = GlobTool::new();
+        let result = tool.execute(serde_json::json!({"pattern": "*.xyz"}), &ctx(dir.path().to_str().unwrap())).await.unwrap();
+        assert_eq!(result.content, "No files matched");
+    }
+
+    #[tokio::test]
+    async fn test_glob_missing_pattern() {
+        let tool = GlobTool::new();
+        let result = tool.execute(serde_json::json!({}), &ctx("/tmp")).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_glob_absolute_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test.txt"), "").unwrap();
+        let tool = GlobTool::new();
+        let pattern = format!("{}/*.txt", dir.path().display());
+        let result = tool.execute(serde_json::json!({"pattern": &pattern}), &ctx("/tmp")).await.unwrap();
+        assert!(result.content.contains("test.txt"));
     }
 }

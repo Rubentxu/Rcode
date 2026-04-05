@@ -5,27 +5,31 @@ use clap::Args;
 use std::path::PathBuf;
 use std::sync::Arc;
 use rcode_server::{start_server, AppState};
-use rcode_providers::anthropic::AnthropicProvider;
+use rcode_providers::{parse_model_id, ProviderFactory};
 
 #[derive(Args)]
 pub struct Serve {
     #[arg(short, long, default_value = "4096")]
     port: u16,
     
-    #[arg(short, long, default_value = "127.0.0.1")]
+    #[arg(long, default_value = "127.0.0.1")]
     hostname: String,
 }
 
 impl Serve {
     pub async fn execute(&self, config_path: Option<&PathBuf>, no_config: bool) -> Result<()> {
-        let config = rcode_core::load_config(config_path.map(|p| p.clone()), no_config).await?;
+        let work_dir = std::env::current_dir().unwrap_or_default();
+        let config = rcode_core::load_config(config_path.map(|p| p.clone()), no_config, Some(work_dir)).await?;
         let state = Arc::new(AppState::with_config(config));
+
+        let config_ref = state.config.lock().unwrap();
+        let model_string = rcode_core::resolve_model_from_config(&config_ref, None, None)
+            .unwrap_or_else(|| "anthropic/claude-sonnet-4-5".to_string());
         
-        let anthropic = Arc::new(AnthropicProvider::new(
-            std::env::var("ANTHROPIC_API_KEY")
-                .expect("ANTHROPIC_API_KEY must be set"),
-        ));
-        state.providers.lock().unwrap().register(anthropic);
+        let (_provider_id, _) = parse_model_id(&model_string);
+        let (provider, _) = ProviderFactory::build(&model_string, Some(&config_ref))?;
+        drop(config_ref); // Release lock before registering provider
+        state.providers.lock().unwrap().register(provider);
         
         tracing::info!("Starting server on {}:{}", self.hostname, self.port);
         

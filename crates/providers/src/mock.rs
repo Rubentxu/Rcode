@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use rcode_core::{
     CompletionRequest, CompletionResponse, 
     StreamingResponse, ModelInfo, StreamingEvent, TokenUsage,
-    error::{Result, OpenCodeError},
+    error::{Result, RCodeError},
 };
 use rcode_core::provider::StopReason;
 use crate::LlmProvider;
@@ -23,7 +23,7 @@ pub struct Invocation {
 pub struct MockLlmProvider {
     pub invocation_count: AtomicUsize,
     pub next_response: std::sync::Mutex<Option<CompletionResponse>>,
-    pub next_error: std::sync::Mutex<Option<OpenCodeError>>,
+    pub next_error: std::sync::Mutex<Option<RCodeError>>,
     pub stream_events: std::sync::Mutex<Vec<StreamingEvent>>,
     pub invocation_history: std::sync::Mutex<Vec<Invocation>>,
     pub should_stream: std::sync::Mutex<bool>,
@@ -47,7 +47,7 @@ impl MockLlmProvider {
     }
 
     /// Set an error to return on next call
-    pub fn set_error(&self, error: OpenCodeError) {
+    pub fn set_error(&self, error: RCodeError) {
         *self.next_error.lock().unwrap() = Some(error);
     }
 
@@ -240,7 +240,7 @@ mod tests {
     async fn test_mock_provider_complete_error() {
         let provider = MockLlmProvider::new();
         
-        provider.set_error(OpenCodeError::Provider("Test error".to_string()));
+        provider.set_error(RCodeError::Provider("Test error".to_string()));
         
         let result = provider.complete(create_test_request()).await;
         assert!(result.is_err());
@@ -299,7 +299,73 @@ mod tests {
         
         assert_eq!(provider.invocation_count(), 0);
         provider.reset();
-        // After reset, invocation count should be 0
         assert_eq!(provider.invocation_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_mock_provider_default_response() {
+        let provider = MockLlmProvider::new();
+        let result = provider.complete(create_test_request()).await.unwrap();
+        assert_eq!(result.content, "Mock response");
+        assert_eq!(result.tool_calls.len(), 0);
+        assert!(matches!(result.stop_reason, StopReason::EndTurn));
+    }
+
+    #[tokio::test]
+    async fn test_mock_provider_stream_default() {
+        let provider = MockLlmProvider::new();
+        let result = provider.stream(create_test_request()).await.unwrap();
+        assert_eq!(provider.invocation_count(), 1);
+        drop(result);
+    }
+
+    #[tokio::test]
+    async fn test_mock_provider_stream_error() {
+        let provider = MockLlmProvider::new();
+        provider.set_error(RCodeError::Provider("Stream error".to_string()));
+        let result = provider.stream(create_test_request()).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_mock_provider_provider_id() {
+        let provider = MockLlmProvider::new();
+        assert_eq!(provider.provider_id(), "mock");
+    }
+
+    #[test]
+    fn test_mock_provider_model_info_none() {
+        let provider = MockLlmProvider::new();
+        let info = provider.model_info("unknown-model");
+        assert!(info.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_mock_provider_error_does_not_consume_response() {
+        let provider = MockLlmProvider::new();
+        provider.set_error(RCodeError::Provider("error".to_string()));
+        let result = provider.complete(create_test_request()).await;
+        assert!(result.is_err());
+        provider.set_response(create_test_response());
+        let result = provider.complete(create_test_request()).await.unwrap();
+        assert_eq!(result.content, "test response");
+        assert_eq!(provider.invocation_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_mock_provider_stream_collects_events() {
+        let provider = MockLlmProvider::new();
+        provider.set_stream_events(vec![
+            StreamingEvent::Text { delta: "A".to_string() },
+            StreamingEvent::Text { delta: "B".to_string() },
+            StreamingEvent::Finish {
+                stop_reason: StopReason::EndTurn,
+                usage: TokenUsage { input_tokens: 1, output_tokens: 2, total_tokens: Some(3) },
+            },
+        ]);
+        let response = provider.stream(create_test_request()).await.unwrap();
+        use tokio_stream::StreamExt;
+        let events: Vec<_> = response.events.collect().await;
+        assert_eq!(events.len(), 3);
     }
 }

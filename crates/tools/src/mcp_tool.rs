@@ -59,24 +59,24 @@ impl Tool for McpToolAdapter {
     async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let server = args["server"]
             .as_str()
-            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'server' argument".into()))?;
+            .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'server' argument".into()))?;
         
         let tool = args["tool"]
             .as_str()
-            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'tool' argument".into()))?;
+            .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'tool' argument".into()))?;
         
         let params = args["params"].clone();
 
         // Get the MCP client for this server
         let client = self.registry.get_server(server)
             .await
-            .ok_or_else(|| rcode_core::OpenCodeError::Tool(format!("MCP server '{}' not found", server)))?;
+            .ok_or_else(|| rcode_core::RCodeError::Tool(format!("MCP server '{}' not found", server)))?;
 
         let mut client = client.write().await;
 
         // Call the tool on the MCP server
         let result = client.call_tool(tool, params).await
-            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("MCP tool call failed: {}", e)))?;
+            .map_err(|e| rcode_core::RCodeError::Tool(format!("MCP tool call failed: {}", e)))?;
 
         let content = result.content_to_string();
 
@@ -96,7 +96,6 @@ impl Tool for McpToolAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use rcode_core::ToolContext;
 
     fn test_context() -> ToolContext {
@@ -144,5 +143,52 @@ mod tests {
 
         let result = adapter.execute(args, &test_context()).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_mcp_tool_adapter_server_not_found() {
+        let registry = Arc::new(McpServerRegistry::new());
+        let adapter = McpToolAdapter::new(registry);
+        
+        let args = serde_json::json!({
+            "server": "nonexistent-server",
+            "tool": "some_tool",
+            "params": {}
+        });
+
+        let result = adapter.execute(args, &test_context()).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("not found") || err.to_string().contains("nonexistent-server"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_tool_adapter_parameters_schema() {
+        let registry = Arc::new(McpServerRegistry::new());
+        let adapter = McpToolAdapter::new(registry);
+        
+        let schema = adapter.parameters();
+        assert!(schema.is_object());
+        let obj = schema.as_object().unwrap();
+        assert!(obj.contains_key("properties"));
+        
+        let props = obj.get("properties").unwrap().as_object().unwrap();
+        assert!(props.contains_key("server"));
+        assert!(props.contains_key("tool"));
+        assert!(props.contains_key("params"));
+        
+        let required = obj.get("required").unwrap().as_array().unwrap();
+        assert!(required.iter().any(|r| r == "server"));
+        assert!(required.iter().any(|r| r == "tool"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_tool_adapter_new() {
+        let registry = Arc::new(McpServerRegistry::new());
+        let adapter = McpToolAdapter::new(registry.clone());
+        // Should create successfully
+        assert_eq!(adapter.id(), "mcp");
+        assert_eq!(adapter.name(), "MCP Tools");
+        assert_eq!(adapter.description(), "Execute tools from MCP (Model Context Protocol) servers");
     }
 }

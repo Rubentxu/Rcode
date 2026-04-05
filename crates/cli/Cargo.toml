@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 rcode-core = { path = "../core" }
 rcode-session = { path = "../session" }
+rcode-storage = { path = "../storage" }
 rcode-event = { path = "../event" }
 rcode-providers = { path = "../providers" }
 rcode-tools = { path = "../tools" }

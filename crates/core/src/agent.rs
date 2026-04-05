@@ -32,6 +32,7 @@ pub struct AgentContext {
     pub project_path: std::path::PathBuf,
     pub cwd: std::path::PathBuf,
     pub user_id: Option<String>,
+    pub model_id: String,
     pub messages: Vec<Message>,
 }
 
@@ -40,6 +41,9 @@ pub struct AgentResult {
     pub message: Message,
     pub should_continue: bool,
     pub stop_reason: StopReason,
+    // G4: Token usage from the last LLM call
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::provider::TokenUsage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

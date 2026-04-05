@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 
-use rcode_core::{Tool, ToolContext, ToolResult, error::{Result, OpenCodeError}};
+use rcode_core::{Tool, ToolContext, ToolResult, error::{Result, RCodeError}};
 
 pub struct PlanTool;
 
@@ -41,7 +41,7 @@ impl Tool for PlanTool {
     async fn execute(&self, args: serde_json::Value, _context: &ToolContext) -> Result<ToolResult> {
         let operations = args["operations"]
             .as_array()
-            .ok_or_else(|| OpenCodeError::Validation {
+            .ok_or_else(|| RCodeError::Validation {
                 field: "operations".to_string(),
                 message: "Expected an array of operations".to_string(),
             })?;
@@ -65,5 +65,47 @@ impl Tool for PlanTool {
             metadata: None,
             attachments: vec![],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rcode_core::ToolContext;
+    use std::path::PathBuf;
+
+    fn ctx() -> ToolContext {
+        ToolContext { session_id: "s1".into(), project_path: PathBuf::from("/tmp"), cwd: PathBuf::from("/tmp"), user_id: None, agent: "test".into() }
+    }
+
+    #[tokio::test]
+    async fn test_plan_with_operations() {
+        let tool = PlanTool::new();
+        let result = tool.execute(serde_json::json!({"operations": ["read file", "edit file", "run tests"]}), &ctx()).await.unwrap();
+        assert_eq!(result.title, "Execution Plan");
+        assert!(result.content.contains("1. read file"));
+        assert!(result.content.contains("3. run tests"));
+        assert!(result.content.contains("Total: 3"));
+    }
+
+    #[tokio::test]
+    async fn test_plan_empty_operations() {
+        let tool = PlanTool::new();
+        let result = tool.execute(serde_json::json!({"operations": []}), &ctx()).await.unwrap();
+        assert!(result.content.contains("Total: 0"));
+    }
+
+    #[tokio::test]
+    async fn test_plan_missing_operations() {
+        let tool = PlanTool::new();
+        let result = tool.execute(serde_json::json!({}), &ctx()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_plan_non_string_elements() {
+        let tool = PlanTool::new();
+        let result = tool.execute(serde_json::json!({"operations": [1, 2, 3]}), &ctx()).await.unwrap();
+        assert!(result.content.contains("1. "));
     }
 }

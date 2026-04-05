@@ -6,8 +6,11 @@ edition.workspace = true
 [dependencies]
 rcode-core = { path = "../core" }
 rcode-session = { path = "../session" }
+rcode-storage = { path = "../storage" }
 rcode-agent = { path = "../agent" }
 rcode-event = { path = "../event" }
+rcode-providers = { path = "../providers" }
+rcode-tools = { path = "../tools" }
 ratatui = { version = "0.29", features = ["macros"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
 tokio.workspace = true

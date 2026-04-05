@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 rcode-core = { path = "../core" }
 rcode-event = { path = "../event" }
+rcode-session = { path = "../session" }
 rcode-providers = { path = "../providers" }
 rcode-tools = { path = "../tools" }
 tokio.workspace = true

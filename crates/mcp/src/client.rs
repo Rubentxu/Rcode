@@ -56,7 +56,7 @@ impl McpClient {
                 "protocolVersion": self.protocol_version,
                 "capabilities": {},
                 "clientInfo": {
-                    "name": "opencode-rust",
+                    "name": "rcode",
                     "version": "0.1.0"
                 }
             })),

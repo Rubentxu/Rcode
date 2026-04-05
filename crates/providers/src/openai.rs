@@ -116,20 +116,20 @@ impl LlmProvider for OpenAIProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| rcode_core::OpenCodeError::Provider(format!("Network error: {}", e)))?;
+            .map_err(|e| rcode_core::RCodeError::Provider(format!("Network error: {}", e)))?;
         
         // Check HTTP status
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(rcode_core::OpenCodeError::Provider(
+            return Err(rcode_core::RCodeError::Provider(
                 format!("OpenAI API error ({}): {}", status, error_text)
             ));
         }
         
         let openai_resp: serde_json::Value = response.json()
             .await
-            .map_err(|e| rcode_core::OpenCodeError::Provider(format!("Failed to parse response: {}", e)))?;
+            .map_err(|e| rcode_core::RCodeError::Provider(format!("Failed to parse response: {}", e)))?;
         
         let content = openai_resp["choices"][0]["message"]["content"]
             .as_str()
@@ -226,7 +226,7 @@ impl LlmProvider for OpenAIProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| rcode_core::OpenCodeError::Provider(format!("Network error: {}", e)))?;
+            .map_err(|e| rcode_core::RCodeError::Provider(format!("Network error: {}", e)))?;
 
         let (tx, rx) = mpsc::channel(1);
         let tx_clone = tx;

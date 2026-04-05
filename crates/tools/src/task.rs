@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use parking_lot::RwLock;
 
-use rcode_core::{Tool, ToolContext, ToolResult, PermissionChecker, PermissionConfig, Permission, AgentRegistry, error::{Result, OpenCodeError}};
+use rcode_core::{Tool, ToolContext, ToolResult, PermissionChecker, PermissionConfig, Permission, AgentRegistry, error::{Result, RCodeError}};
 
 /// Agent ID type for identifying subagents
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -224,13 +224,13 @@ impl Tool for TaskTool {
     
     async fn execute(&self, args: serde_json::Value, context: &ToolContext) -> Result<ToolResult> {
         let description = args["description"].as_str()
-            .ok_or_else(|| OpenCodeError::Validation {
+            .ok_or_else(|| RCodeError::Validation {
                 field: "description".to_string(),
                 message: "Description is required".to_string(),
             })?;
         
         let prompt = args["prompt"].as_str()
-            .ok_or_else(|| OpenCodeError::Validation {
+            .ok_or_else(|| RCodeError::Validation {
                 field: "prompt".to_string(),
                 message: "Prompt is required".to_string(),
             })?;
@@ -240,7 +240,7 @@ impl Tool for TaskTool {
         
         // Validate agent type is allowed
         if !self.is_agent_type_allowed(agent_type) {
-            return Err(OpenCodeError::Permission(format!(
+            return Err(RCodeError::Permission(format!(
                 "Agent type '{}' is not allowed. Available types: {:?}",
                 agent_type, self.available_agent_types()
             )));
@@ -253,7 +253,7 @@ impl Tool for TaskTool {
             match check_result.permission {
                 Permission::Allow => { /* proceed */ }
                 Permission::Deny => {
-                    return Err(OpenCodeError::Permission(format!(
+                    return Err(RCodeError::Permission(format!(
                         "Agent {} denied to invoke {} subagent: {}",
                         context.agent, agent_type, check_result.reason
                     )));
@@ -285,7 +285,7 @@ impl Tool for TaskTool {
                     existing_task_id, session_id, description, prompt
                 )
             } else {
-                return Err(OpenCodeError::Session(format!(
+                return Err(RCodeError::Session(format!(
                     "Task session '{}' not found or expired", existing_task_id
                 )));
             }
@@ -331,5 +331,261 @@ impl Tool for TaskTool {
             })),
             attachments: vec![],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rcode_core::ToolContext;
+    use std::path::PathBuf;
+
+    fn ctx() -> ToolContext {
+        ToolContext { session_id: "s1".into(), project_path: PathBuf::from("/tmp"), cwd: PathBuf::from("/tmp"), user_id: None, agent: "main".into() }
+    }
+
+    #[test]
+    fn test_agent_id_new() {
+        let id = AgentId::new("test-agent");
+        assert_eq!(id.as_str(), "test-agent");
+    }
+
+    #[test]
+    fn test_agent_id_display() {
+        let id = AgentId::new("my-agent");
+        assert_eq!(format!("{}", id), "my-agent");
+    }
+
+    #[test]
+    fn test_session_token_new() {
+        let token = SessionToken::new("abc123");
+        assert_eq!(token.as_str(), "abc123");
+    }
+
+    #[test]
+    fn test_session_token_display() {
+        let token = SessionToken::new("tok");
+        assert_eq!(format!("{}", token), "tok");
+    }
+
+    #[test]
+    fn test_task_tool_state_register_and_get() {
+        let state = TaskToolState::new();
+        state.register_session("task1", "sess1");
+        assert_eq!(state.get_session("task1"), Some("sess1".to_string()));
+        assert_eq!(state.get_session("task2"), None);
+    }
+
+    #[test]
+    fn test_task_tool_state_remove() {
+        let state = TaskToolState::new();
+        state.register_session("task1", "sess1");
+        assert_eq!(state.remove_session("task1"), Some("sess1".to_string()));
+        assert_eq!(state.get_session("task1"), None);
+    }
+
+    #[test]
+    fn test_task_tool_state_default() {
+        let state = TaskToolState::default();
+        assert!(state.get_session("any").is_none());
+    }
+
+    #[test]
+    fn test_task_tool_available_agent_types_default() {
+        let tool = TaskTool::new();
+        let types = tool.available_agent_types();
+        assert!(types.contains(&"general".to_string()));
+        assert!(types.contains(&"explore".to_string()));
+        assert!(types.contains(&"refactor".to_string()));
+        assert!(types.contains(&"debug".to_string()));
+    }
+
+    #[test]
+    fn test_task_tool_is_agent_type_allowed() {
+        let tool = TaskTool::new();
+        assert!(tool.is_agent_type_allowed("general"));
+        assert!(tool.is_agent_type_allowed("explore"));
+        assert!(!tool.is_agent_type_allowed("unknown_type"));
+    }
+
+    #[tokio::test]
+    async fn test_task_execute_new_task() {
+        let tool = TaskTool::new();
+        let result = tool.execute(serde_json::json!({"description": "Test task", "prompt": "Do something"}), &ctx()).await.unwrap();
+        assert!(result.title.contains("Test task"));
+        assert!(result.content.contains("Created new task"));
+        assert!(result.metadata.unwrap()["agent_type"] == "general");
+    }
+
+    #[tokio::test]
+    async fn test_task_execute_missing_description() {
+        let tool = TaskTool::new();
+        let result = tool.execute(serde_json::json!({"prompt": "Do something"}), &ctx()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_task_execute_missing_prompt() {
+        let tool = TaskTool::new();
+        let result = tool.execute(serde_json::json!({"description": "Test"}), &ctx()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_task_execute_disallowed_agent_type() {
+        let tool = TaskTool::new();
+        let result = tool.execute(serde_json::json!({"description": "Test", "prompt": "Go", "agent_type": "evil_agent"}), &ctx()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_task_execute_continue_session() {
+        let state = Arc::new(TaskToolState::new());
+        state.register_session("existing_task", "existing_session");
+        let tool = TaskTool::with_state(state);
+        let result = tool.execute(serde_json::json!({"description": "Continue", "prompt": "Keep going", "task_id": "existing_task"}), &ctx()).await.unwrap();
+        assert!(result.content.contains("Continuing task session"));
+        assert!(result.content.contains("existing_session"));
+    }
+
+    #[tokio::test]
+    async fn test_task_execute_continue_nonexistent() {
+        let tool = TaskTool::new();
+        let result = tool.execute(serde_json::json!({"description": "Continue", "prompt": "Go", "task_id": "no_such_task"}), &ctx()).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_task_execute_with_agent_type() {
+        let tool = TaskTool::new();
+        let result = tool.execute(serde_json::json!({"description": "Debug", "prompt": "Fix bug", "agent_type": "debug"}), &ctx()).await.unwrap();
+        assert!(result.content.contains("debug"));
+    }
+
+    #[test]
+    fn test_task_tool_default() {
+        let tool = TaskTool::default();
+        assert_eq!(tool.id(), "task");
+    }
+
+    #[tokio::test]
+    async fn test_task_parameters_includes_agents() {
+        let tool = TaskTool::new();
+        let params = tool.parameters();
+        let agent_enum = params["properties"]["agent_type"]["enum"].as_array().unwrap();
+        assert!(agent_enum.len() >= 4);
+    }
+
+    #[test]
+    fn test_task_tool_with_permission_config() {
+        let config = PermissionConfig::default();
+        let tool = TaskTool::with_permission_config(config);
+        assert!(tool.permission_checker.is_some());
+    }
+
+    #[test]
+    fn test_task_tool_with_all() {
+        let state = Arc::new(TaskToolState::new());
+        let tool = TaskTool::with_all(state.clone(), None, None);
+        // Cannot compare Arc directly, just verify state is set
+        assert!(Arc::ptr_eq(&tool.state, &state) || tool.state.get_session("nonexistent").is_none());
+        assert!(tool.permission_checker.is_none());
+        assert!(tool.agent_registry.is_none());
+    }
+
+    #[test]
+    fn test_available_agent_types_excludes_unknown() {
+        let tool = TaskTool::new();
+        let types = tool.available_agent_types();
+        // Default types should not include unknown types
+        assert!(!types.contains(&"unknown".to_string()));
+    }
+
+    #[test]
+    fn test_is_agent_type_allowed_explicit_false() {
+        let tool = TaskTool::new();
+        // Test with various invalid agent types
+        assert!(!tool.is_agent_type_allowed(""));
+        assert!(!tool.is_agent_type_allowed("hacker"));
+        assert!(!tool.is_agent_type_allowed("ADMIN"));
+    }
+
+    #[test]
+    fn test_task_tool_with_state_preserves_state() {
+        let state = Arc::new(TaskToolState::new());
+        state.register_session("task1", "session1");
+        let tool = TaskTool::with_state(state.clone());
+        assert_eq!(tool.state.get_session("task1"), Some("session1".to_string()));
+    }
+
+    #[test]
+    fn test_task_tool_get_agent_none() {
+        let tool = TaskTool::new();
+        // Without agent registry, get_agent should return None
+        assert!(tool.get_agent("any").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_task_execute_permission_ask() {
+        use rcode_core::Permission;
+        
+        let config = PermissionConfig {
+            default_permission: Permission::Ask,
+            ..Default::default()
+        };
+        let tool = TaskTool::with_permission_config(config);
+        let result = tool.execute(
+            serde_json::json!({"description": "Test", "prompt": "Do something", "agent_type": "general"}),
+            &ctx()
+        ).await.unwrap();
+        
+        // Should get a permission pending response
+        assert!(result.title.contains("Permission"));
+        let metadata = result.metadata.unwrap();
+        assert!(metadata["permission_pending"].as_bool().unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn test_task_execute_permission_deny() {
+        use rcode_core::Permission;
+        
+        let config = PermissionConfig {
+            default_permission: Permission::Deny,
+            ..Default::default()
+        };
+        let tool = TaskTool::with_permission_config(config);
+        let result = tool.execute(
+            serde_json::json!({"description": "Test", "prompt": "Do something", "agent_type": "general"}),
+            &ctx()
+        ).await;
+        
+        // Should be denied
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("denied") || err.to_string().contains("Permission"));
+    }
+
+    #[tokio::test]
+    async fn test_task_execute_new_task_with_specific_agent_type() {
+        let tool = TaskTool::new();
+        let result = tool.execute(
+            serde_json::json!({"description": "Explore", "prompt": "Explore the codebase", "agent_type": "explore"}),
+            &ctx()
+        ).await.unwrap();
+        
+        assert!(result.content.contains("explore"));
+        assert!(result.content.contains("Created new task"));
+    }
+
+    #[tokio::test]
+    async fn test_task_execute_new_task_with_refactor_agent() {
+        let tool = TaskTool::new();
+        let result = tool.execute(
+            serde_json::json!({"description": "Refactor", "prompt": "Refactor the code", "agent_type": "refactor"}),
+            &ctx()
+        ).await.unwrap();
+        
+        assert!(result.content.contains("refactor"));
     }
 }

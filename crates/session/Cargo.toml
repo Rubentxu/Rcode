@@ -15,7 +15,10 @@ anyhow.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 parking_lot = "0.12.5"
+async-trait.workspace = true
+dirs.workspace = true
+rusqlite = { version = "0.33", features = ["bundled"] }
 
 [dev-dependencies]
-rusqlite = { version = "0.33", features = ["bundled"] }
+rcode-providers = { path = "../providers" }
 tempfile.workspace = true

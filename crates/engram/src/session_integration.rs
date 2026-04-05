@@ -293,4 +293,102 @@ mod tests {
 
         assert!(id > 0);
     }
+
+    #[tokio::test]
+    async fn test_on_session_end_not_found() {
+        let (integration, _dir) = create_test_integration();
+        
+        // Should not error when session not found
+        let result = integration.on_session_end("nonexistent-session").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_on_session_end_success() {
+        let (integration, _dir) = create_test_integration();
+
+        let session = Session::new(
+            std::path::PathBuf::from("/test/project"),
+            "test-agent".to_string(),
+            "test-model".to_string(),
+        );
+        let session_id = session.id.0.clone();
+        integration.session_service.create(session);
+
+        // Add a message to the session
+        let msg = rcode_core::Message::user(
+            session_id.clone(),
+            vec![rcode_core::Part::Text { content: "Hello".to_string() }],
+        );
+        integration.session_service.add_message(&session_id, msg);
+
+        let result = integration.on_session_end(&session_id).await;
+        assert!(result.is_ok());
+
+        // Verify session summary was saved
+        let context = integration.get_relevant_context(std::path::Path::new("/test/project")).await.unwrap();
+        assert!(!context.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_search_relevant() {
+        let (integration, _dir) = create_test_integration();
+
+        let session = Session::new(
+            std::path::PathBuf::from("/test/project"),
+            "test-agent".to_string(),
+            "test-model".to_string(),
+        );
+        let session_id = session.id.0.clone();
+        integration.session_service.create(session);
+
+        // Save a decision
+        integration
+            .save_decision(
+                &session_id,
+                std::path::Path::new("/test/project"),
+                "Use SQLite",
+                "Because it's embedded",
+            )
+            .await
+            .unwrap();
+
+        // Search for it
+        let results = integration.search_relevant("SQLite", 10).await.unwrap();
+        assert!(!results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_engram_client_getter() {
+        let (integration, _dir) = create_test_integration();
+        let client = integration.engram_client();
+        assert!(Arc::strong_count(&client) >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_relevant_context_with_data() {
+        let (integration, _dir) = create_test_integration();
+
+        let session = Session::new(
+            std::path::PathBuf::from("/test/project"),
+            "test-agent".to_string(),
+            "test-model".to_string(),
+        );
+        let session_id = session.id.0.clone();
+        integration.session_service.create(session);
+
+        // Save something
+        integration
+            .save_decision(
+                &session_id,
+                std::path::Path::new("/test/project"),
+                "Test decision",
+                "Test rationale",
+            )
+            .await
+            .unwrap();
+
+        let context = integration.get_relevant_context(std::path::Path::new("/test/project")).await.unwrap();
+        assert!(context.contains("Test decision"));
+    }
 }

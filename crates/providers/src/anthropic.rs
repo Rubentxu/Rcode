@@ -101,10 +101,10 @@ impl LlmProvider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| rcode_core::OpenCodeError::Provider(format!("Network error: {}", e)))?;
+            .map_err(|e| rcode_core::RCodeError::Provider(format!("Network error: {}", e)))?;
         
         let resp: AnthropicResponse = response.json().await
-            .map_err(|e| rcode_core::OpenCodeError::Provider(format!("Parse error: {}", e)))?;
+            .map_err(|e| rcode_core::RCodeError::Provider(format!("Parse error: {}", e)))?;
         
         Ok(CompletionResponse {
             content: resp.content.first()
@@ -172,7 +172,7 @@ impl LlmProvider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| rcode_core::OpenCodeError::Provider(format!("Network error: {}", e)))?;
+            .map_err(|e| rcode_core::RCodeError::Provider(format!("Network error: {}", e)))?;
 
         let (tx, rx) = mpsc::channel(1);
         let tx_clone = tx;

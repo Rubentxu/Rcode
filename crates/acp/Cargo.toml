@@ -1,0 +1,21 @@
+[package]
+name = "rcode-acp"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rcode-core = { path = "../core" }
+rcode-session = { path = "../session" }
+rcode-event = { path = "../event" }
+rcode-agent = { path = "../agent" }
+rcode-tools = { path = "../tools" }
+rcode-providers = { path = "../providers" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+futures-util = "0.3"
+async-trait = "0.1"
+uuid = { workspace = true }

@@ -126,6 +126,7 @@ impl Default for AgentRegistry {
 mod tests {
     use super::*;
     use crate::agent_definition::AgentDefinition;
+    use tempfile::TempDir;
 
     fn create_test_agent(id: &str, name: &str) -> Arc<dyn Agent> {
         let def = AgentDefinition {
@@ -203,5 +204,92 @@ mod tests {
         let agents = registry.list();
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].id, "visible");
+    }
+
+    #[test]
+    fn test_contains_method() {
+        let registry = AgentRegistry::new();
+        assert!(!registry.contains("test-1"));
+        
+        let agent = create_test_agent("test-1", "Test Agent 1");
+        registry.register(agent);
+        
+        assert!(registry.contains("test-1"));
+        assert!(!registry.contains("nonexistent"));
+    }
+
+    #[test]
+    fn test_list_all_includes_hidden() {
+        let registry = AgentRegistry::new();
+
+        let def = AgentDefinition {
+            identifier: "hidden-agent".to_string(),
+            name: "Hidden Agent".to_string(),
+            description: "A hidden agent".to_string(),
+            when_to_use: "Testing".to_string(),
+            system_prompt: "You are hidden.".to_string(),
+            mode: crate::agent_definition::AgentMode::All,
+            hidden: true,
+            permission: Default::default(),
+            tools: vec![],
+            model: None,
+        };
+
+        let hidden = DynamicAgent::from_definition(def);
+        registry.register(hidden);
+        registry.register(create_test_agent("visible", "Visible Agent"));
+
+        let all_agents = registry.list_all();
+        assert_eq!(all_agents.len(), 2); // Both hidden and visible
+    }
+
+    #[test]
+    fn test_agent_ids() {
+        let registry = AgentRegistry::new();
+        registry.register(create_test_agent("agent-a", "Agent A"));
+        registry.register(create_test_agent("agent-b", "Agent B"));
+
+        let ids = registry.agent_ids();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"agent-a".to_string()));
+        assert!(ids.contains(&"agent-b".to_string()));
+    }
+
+    #[test]
+    fn test_len_and_is_empty() {
+        let registry = AgentRegistry::new();
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+
+        registry.register(create_test_agent("test-1", "Test"));
+        assert!(!registry.is_empty());
+        assert_eq!(registry.len(), 1);
+
+        registry.register(create_test_agent("test-2", "Test 2"));
+        assert_eq!(registry.len(), 2);
+    }
+
+    #[test]
+    fn test_unregister_nonexistent() {
+        let registry = AgentRegistry::new();
+        let removed = registry.unregister("nonexistent");
+        assert!(removed.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_load_all_empty_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let loader = AgentLoader::with_paths(vec![temp_dir.path().to_path_buf()]);
+        let registry = AgentRegistry::with_loader(loader);
+        
+        registry.load_all().await.unwrap();
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn test_with_loader_constructor() {
+        let loader = AgentLoader::new();
+        let registry = AgentRegistry::with_loader(loader);
+        assert!(registry.is_empty());
     }
 }

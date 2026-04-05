@@ -1,4 +1,5 @@
 import { createSignal, onMount, For, Show } from "solid-js";
+import { getApiBase } from "../api/config";
 
 interface Provider {
   id: string;
@@ -71,25 +72,34 @@ export function Settings(props: { onClose: () => void }) {
   const [customApiKey, setCustomApiKey] = createSignal("");
   const [customBaseUrl, setCustomBaseUrl] = createSignal("");
 
-  const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:4096";
-
   onMount(async () => {
     await loadProviders();
   });
 
   async function loadProviders() {
-    try {
-      const res = await fetch(`${API_BASE}/config/providers`);
-      if (res.ok) {
-        const data = await res.json();
-        setProviders(data.providers || []);
+    // Retry up to 5 times with 500ms backoff — the embedded backend
+    // binds the port instantly but Axum may take a moment to start.
+    const maxRetries = 5;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const res = await fetch(`${await getApiBase()}/config/providers`);
+        if (res.ok) {
+          const data = await res.json();
+          setProviders(data.providers || []);
+          setBackendUnreachable(false);
+          return;
+        }
+        // Non-OK response (e.g. 500) — not a connectivity issue
         setBackendUnreachable(false);
-      } else {
-        setBackendUnreachable(false);
+        return;
+      } catch (e) {
+        if (attempt < maxRetries - 1) {
+          await new Promise((r) => setTimeout(r, 500));
+          continue;
+        }
+        console.error("Failed to load providers after retries:", e);
+        setBackendUnreachable(true);
       }
-    } catch (e) {
-      console.error("Failed to load providers:", e);
-      setBackendUnreachable(true);
     }
   }
 
@@ -108,7 +118,7 @@ export function Settings(props: { onClose: () => void }) {
     if (url) body.base_url = url;
 
     try {
-      const res = await fetch(`${API_BASE}/config/providers/${providerId}`, {
+      const res = await fetch(`${await getApiBase()}/config/providers/${providerId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -146,7 +156,7 @@ export function Settings(props: { onClose: () => void }) {
     }
 
     try {
-      const res = await fetch(`${API_BASE}/config/providers/${customProviderId()}`, {
+      const res = await fetch(`${await getApiBase()}/config/providers/${customProviderId()}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -262,7 +272,7 @@ export function Settings(props: { onClose: () => void }) {
 
         <Show when={backendUnreachable()}>
           <div style="margin-bottom: 16px; padding: 10px 14px; background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.3); border-radius: var(--radius-md); font-size: 13px; color: var(--error);">
-            ⚠ Backend not available. Make sure the rcode server is running (<code>opencode serve</code>) or set <code>VITE_API_BASE</code> to the correct address.
+            ⚠ Backend not available. Make sure the rcode server is running (<code>rcode serve</code>) or set <code>VITE_API_BASE</code> to the correct address.
           </div>
         </Show>
 

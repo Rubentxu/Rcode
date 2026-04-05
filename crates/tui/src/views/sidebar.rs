@@ -6,7 +6,7 @@ use ratatui::{
 };
 use rcode_core::{Session, SessionStatus};
 
-use crate::app::OpencodeTui;
+use crate::app::RcodeTui;
 
 /// Sidebar view widget
 pub struct SidebarView {
@@ -21,7 +21,7 @@ impl SidebarView {
     }
 
     /// Handle selection navigation
-    pub fn next(&mut self, app: &OpencodeTui) {
+    pub fn next(&mut self, app: &RcodeTui) {
         let sessions = app.filtered_sessions();
         if sessions.is_empty() {
             return;
@@ -33,7 +33,7 @@ impl SidebarView {
         self.list_state.select(Some(i));
     }
 
-    pub fn previous(&mut self, app: &OpencodeTui) {
+    pub fn previous(&mut self, app: &RcodeTui) {
         let sessions = app.filtered_sessions();
         if sessions.is_empty() {
             return;
@@ -46,7 +46,7 @@ impl SidebarView {
     }
 
     /// Get selected session ID if any
-    pub fn selected_session(&self, app: &OpencodeTui) -> Option<Session> {
+    pub fn selected_session(&self, app: &RcodeTui) -> Option<Session> {
         self.list_state
             .selected()
             .and_then(|i| app.filtered_sessions().get(i).cloned())
@@ -59,7 +59,7 @@ impl SidebarView {
     }
 
     /// Render the sidebar
-    pub fn render(&mut self, app: &OpencodeTui, area: Rect, buf: &mut Buffer) {
+    pub fn render(&mut self, app: &RcodeTui, area: Rect, buf: &mut Buffer) {
         // Sidebar width - fixed 30 columns
         let sidebar_width = 30.min(area.width);
         let sidebar_area = Rect::new(area.x, area.y, sidebar_width, area.height);

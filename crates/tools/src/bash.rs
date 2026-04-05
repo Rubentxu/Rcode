@@ -49,7 +49,7 @@ impl Tool for BashTool {
     ) -> Result<ToolResult> {
         let command = args["command"]
             .as_str()
-            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'command' argument".into()))?;
+            .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'command' argument".into()))?;
         
         let cwd = context.cwd.clone();
         
@@ -61,7 +61,7 @@ impl Tool for BashTool {
             .stderr(Stdio::piped())
             .output()
             .await
-            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to execute: {}", e)))?;
+            .map_err(|e| rcode_core::RCodeError::Tool(format!("Failed to execute: {}", e)))?;
         
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -75,5 +75,44 @@ impl Tool for BashTool {
             })),
             attachments: vec![],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rcode_core::ToolContext;
+    use std::path::PathBuf;
+
+    fn ctx() -> ToolContext {
+        ToolContext { session_id: "s1".into(), project_path: PathBuf::from("/tmp"), cwd: PathBuf::from("/tmp"), user_id: None, agent: "test".into() }
+    }
+
+    #[tokio::test]
+    async fn test_bash_echo() {
+        let tool = BashTool::new();
+        let result = tool.execute(serde_json::json!({"command": "echo hello"}), &ctx()).await.unwrap();
+        assert!(result.content.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn test_bash_missing_command() {
+        let tool = BashTool::new();
+        let result = tool.execute(serde_json::json!({}), &ctx()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_bash_exit_code() {
+        let tool = BashTool::new();
+        let result = tool.execute(serde_json::json!({"command": "exit 42"}), &ctx()).await.unwrap();
+        assert_eq!(result.metadata.unwrap()["exit_code"], 42);
+    }
+
+    #[tokio::test]
+    async fn test_bash_stderr() {
+        let tool = BashTool::new();
+        let result = tool.execute(serde_json::json!({"command": "echo error >&2"}), &ctx()).await.unwrap();
+        assert!(result.metadata.unwrap()["stderr"].as_str().unwrap().contains("error"));
     }
 }

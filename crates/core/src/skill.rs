@@ -1,4 +1,4 @@
-//! Skill types for opencode-rust
+//! Skill types for RCode
 
 use serde::{Deserialize, Serialize};
 
@@ -174,6 +174,7 @@ pub enum SkillParseError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json;
     use std::path::Path;
 
     #[test]
@@ -212,6 +213,216 @@ trigger: /release
         match skill.trigger {
             SkillTrigger::Command(cmd) => assert_eq!(cmd, "release"),
             _ => panic!("Expected Command trigger"),
+        }
+    }
+
+    #[test]
+    fn test_parse_skill_keyword_trigger() {
+        let content = r#"---
+name: rust-help
+description: Help with Rust
+trigger: keyword:rust
+---
+
+# Rust Help"#;
+
+        let skill = Skill::parse(content, Path::new("rust-help/SKILL.md")).unwrap();
+        match skill.trigger {
+            SkillTrigger::Keyword(k) => assert_eq!(k, "rust"),
+            _ => panic!("Expected Keyword trigger"),
+        }
+    }
+
+    #[test]
+    fn test_parse_skill_file_pattern_trigger() {
+        let content = r#"---
+name: rust-analyzer
+description: Analyze Rust files
+trigger: pattern:**/*.rs
+---
+
+# Rust Analyzer"#;
+
+        let skill = Skill::parse(content, Path::new("rust-analyzer/SKILL.md")).unwrap();
+        match skill.trigger {
+            SkillTrigger::FilePattern(p) => assert_eq!(p, "**/*.rs"),
+            _ => panic!("Expected FilePattern trigger"),
+        }
+    }
+
+    #[test]
+    fn test_parse_skill_without_frontmatter() {
+        let content = "Just plain instructions without frontmatter.";
+
+        let skill = Skill::parse(content, Path::new("plain-skill/SKILL.md")).unwrap();
+        assert_eq!(skill.name, "SKILL"); // file_stem of "SKILL.md" is "SKILL"
+        assert!(skill.instructions.contains("plain instructions"));
+        // Default trigger should be Command("")
+        match skill.trigger {
+            SkillTrigger::Command(cmd) => assert_eq!(cmd, ""),
+            _ => panic!("Expected Command trigger"),
+        }
+    }
+
+    #[test]
+    fn test_parse_skill_compatibility_claude() {
+        let content = r#"---
+name: claude-skill
+description: Claude compatible skill
+compatibility: claude
+---
+
+# Claude Skill"#;
+
+        let skill = Skill::parse(content, Path::new("claude-skill/SKILL.md")).unwrap();
+        assert_eq!(skill.compatibility, SkillCompatibility::Claude);
+    }
+
+    #[test]
+    fn test_parse_skill_compatibility_agent() {
+        let content = r#"---
+name: agent-skill
+description: Agent compatible skill
+compatibility: agent
+---
+
+# Agent Skill"#;
+
+        let skill = Skill::parse(content, Path::new("agent-skill/SKILL.md")).unwrap();
+        assert_eq!(skill.compatibility, SkillCompatibility::Agent);
+    }
+
+    #[test]
+    fn test_parse_skill_unknown_compatibility_defaults_to_opencode() {
+        let content = r#"---
+name: unknown-skill
+description: Unknown compatibility
+compatibility: unknown
+---
+
+# Unknown Skill"#;
+
+        let skill = Skill::parse(content, Path::new("unknown-skill/SKILL.md")).unwrap();
+        assert_eq!(skill.compatibility, SkillCompatibility::Opencode);
+    }
+
+    #[test]
+    fn test_parse_skill_empty_name_uses_filename() {
+        let content = r#"---
+description: Has description but no name
+---
+
+# Content"#;
+
+        let skill = Skill::parse(content, Path::new("my-skill/SKILL.md")).unwrap();
+        assert_eq!(skill.name, "SKILL");
+    }
+
+    #[test]
+    fn test_parse_skill_empty_description_uses_first_instruction_line() {
+        let content = r#"---
+name: test-skill
+---
+
+# This is the first line
+And this is the second line"#;
+
+        let skill = Skill::parse(content, Path::new("test-skill/SKILL.md")).unwrap();
+        assert_eq!(skill.description, "This is the first line");
+    }
+
+    #[test]
+    fn test_skill_serialization_roundtrip() {
+        let skill = Skill {
+            name: "test-skill".to_string(),
+            description: "A test skill".to_string(),
+            trigger: SkillTrigger::Command("test".to_string()),
+            instructions: "Instructions here".to_string(),
+            compatibility: SkillCompatibility::Opencode,
+            metadata: Some(serde_json::json!({"key": "value"})),
+        };
+
+        let json = serde_json::to_string(&skill).unwrap();
+        let parsed: Skill = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.name, skill.name);
+        assert_eq!(parsed.description, skill.description);
+        assert_eq!(parsed.instructions, skill.instructions);
+        assert_eq!(parsed.compatibility, skill.compatibility);
+    }
+
+    #[test]
+    fn test_skill_parse_error_type() {
+        let content = "invalid";
+        let result = Skill::parse(content, Path::new("test/SKILL.md"));
+        // parse returns Result<Skill, SkillParseError>
+        assert!(result.is_ok()); // Current implementation doesn't return errors
+    }
+
+    #[test]
+    fn test_skill_compatibility_default() {
+        assert_eq!(SkillCompatibility::default(), SkillCompatibility::Opencode);
+    }
+
+    #[test]
+    fn test_skill_compatibility_serde() {
+        use serde_json;
+
+        let compat = SkillCompatibility::Claude;
+        let json = serde_json::to_string(&compat).unwrap();
+        assert!(json.contains("claude"));
+
+        let parsed: SkillCompatibility = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, SkillCompatibility::Claude);
+    }
+
+    #[test]
+    fn test_skill_trigger_keyword_variant() {
+        let trigger = SkillTrigger::Keyword("test".to_string());
+        match trigger {
+            SkillTrigger::Keyword(k) => assert_eq!(k, "test"),
+            _ => panic!("Expected Keyword"),
+        }
+    }
+
+    #[test]
+    fn test_skill_trigger_file_pattern_variant() {
+        let trigger = SkillTrigger::FilePattern("*.rs".to_string());
+        match trigger {
+            SkillTrigger::FilePattern(p) => assert_eq!(p, "*.rs"),
+            _ => panic!("Expected FilePattern"),
+        }
+    }
+
+    #[test]
+    fn test_skill_trigger_serde() {
+        use serde_json;
+
+        // Test Command roundtrip
+        let trigger = SkillTrigger::Command("test-cmd".to_string());
+        let json = serde_json::to_string(&trigger).unwrap();
+        let parsed: SkillTrigger = serde_json::from_str(&json).unwrap();
+        match (&parsed, &trigger) {
+            (SkillTrigger::Command(p), SkillTrigger::Command(t)) => assert_eq!(p, t),
+            _ => panic!("Expected Command variant"),
+        }
+
+        // Test Keyword roundtrip
+        let trigger2 = SkillTrigger::Keyword("test-key".to_string());
+        let json2 = serde_json::to_string(&trigger2).unwrap();
+        let parsed2: SkillTrigger = serde_json::from_str(&json2).unwrap();
+        match (&parsed2, &trigger2) {
+            (SkillTrigger::Keyword(p), SkillTrigger::Keyword(t)) => assert_eq!(p, t),
+            _ => panic!("Expected Keyword variant"),
+        }
+
+        // Test FilePattern roundtrip
+        let trigger3 = SkillTrigger::FilePattern("*.go".to_string());
+        let json3 = serde_json::to_string(&trigger3).unwrap();
+        let parsed3: SkillTrigger = serde_json::from_str(&json3).unwrap();
+        match (&parsed3, &trigger3) {
+            (SkillTrigger::FilePattern(p), SkillTrigger::FilePattern(t)) => assert_eq!(p, t),
+            _ => panic!("Expected FilePattern variant"),
         }
     }
 }

@@ -61,6 +61,7 @@ impl Agent for DynamicAgent {
             }),
             should_continue: false,
             stop_reason: StopReason::EndOfTurn,
+            usage: None,
         })
     }
 }

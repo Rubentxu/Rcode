@@ -54,10 +54,10 @@ impl Tool for SlashCommandTool {
 
     async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let params: CommandParams = serde_json::from_value(args)
-            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Invalid arguments: {}", e)))?;
+            .map_err(|e| rcode_core::RCodeError::Tool(format!("Invalid arguments: {}", e)))?;
 
         let command = self.registry.get(&params.name)
-            .ok_or_else(|| rcode_core::OpenCodeError::Tool(
+            .ok_or_else(|| rcode_core::RCodeError::Tool(
                 format!("Command '{}' not found. Available commands: {:?}", 
                     params.name, 
                     self.registry.list_all().iter().map(|c| &c.name).collect::<Vec<_>>()

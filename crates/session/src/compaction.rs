@@ -427,4 +427,234 @@ mod tests {
         }
         .needs_summarization());
     }
+
+    #[test]
+    fn test_needs_compaction_by_count_with_default() {
+        let config = CompactionConfig::default();
+        let messages: Vec<Message> = (0..51)
+            .map(|i| create_test_message(Role::User, &format!("Message {}", i)))
+            .collect();
+        assert!(needs_compaction_by_count(&messages, &config));
+    }
+
+    #[test]
+    fn test_needs_compaction_by_count_under() {
+        let config = CompactionConfig::default();
+        let messages: Vec<Message> = (0..30)
+            .map(|i| create_test_message(Role::User, &format!("Message {}", i)))
+            .collect();
+        assert!(!needs_compaction_by_count(&messages, &config));
+    }
+
+    #[test]
+    fn test_needs_compaction_by_tokens() {
+        let config = CompactionConfig::new(50, 100, 0.8, 5);
+        let messages: Vec<Message> = (0..30)
+            .map(|_i| {
+                create_test_message(
+                    Role::User,
+                    &"A very long message with lots of text content to exceed tokens",
+                )
+            })
+            .collect();
+        assert!(needs_compaction_by_tokens(&messages, &config));
+    }
+
+    #[test]
+    fn test_needs_compaction_by_tokens_under() {
+        let config = CompactionConfig::new(50, 100_000, 0.8, 5);
+        let messages = vec![create_test_message(Role::User, "short")];
+        assert!(!needs_compaction_by_tokens(&messages, &config));
+    }
+
+    #[test]
+    fn test_estimate_message_tokens_empty() {
+        assert_eq!(estimate_message_tokens(&[]), 0);
+    }
+
+    #[test]
+    fn test_estimate_message_tokens_single() {
+        let msg = create_test_message(Role::User, "Hello world");
+        let tokens = estimate_message_tokens(&[msg]);
+        assert!(tokens > 0);
+    }
+
+    #[test]
+    fn test_compaction_result_new() {
+        let summary = rcode_core::Message::assistant("s1".into(), vec![]);
+        let result = CompactionResult::new(100, 10, summary, 9000);
+        assert_eq!(result.original_count, 100);
+        assert_eq!(result.new_count, 10);
+        assert_eq!(result.tokens_saved, 9000);
+    }
+
+    #[test]
+    fn test_token_threshold() {
+        let config = CompactionConfig::new(50, 100, 0.8, 5);
+        assert_eq!(config.token_threshold(), 80);
+    }
+
+    #[test]
+    fn test_strategy_apply_empty() {
+        let strategy = CompactionStrategy::PreserveFirst { count: 5 };
+        let (preserved, to_summarize) = strategy.apply(&[]);
+        assert!(preserved.is_empty());
+        assert!(to_summarize.is_empty());
+    }
+
+    #[test]
+    fn test_strategy_apply_preserve_first_all() {
+        let messages: Vec<Message> = (0..5)
+            .map(|i| create_test_message(Role::User, &format!("Message {}", i)))
+            .collect();
+        let strategy = CompactionStrategy::PreserveFirst { count: 100 };
+        let (preserved, to_summarize) = strategy.apply(&messages);
+        assert_eq!(preserved.len(), 5);
+        assert!(to_summarize.is_empty());
+    }
+
+    #[test]
+    fn test_estimate_single_message_with_parts() {
+        let msg = Message {
+            id: rcode_core::MessageId("m1".into()),
+            session_id: "s1".into(),
+            role: Role::Assistant,
+            parts: vec![
+                Part::Text {
+                    content: "Hello world this is a test".into(),
+                },
+                Part::ToolCall {
+                    id: "tc1".into(),
+                    name: "bash".into(),
+                    arguments: Box::new(serde_json::json!({"command": "ls -la /tmp"})),
+                },
+            ],
+            created_at: chrono::Utc::now(),
+        };
+        let tokens = estimate_message_token_count(&msg);
+        assert!(tokens > 0);
+    }
+
+    #[test]
+    fn test_strategy_apply_summarize_older_under_preserved_recent() {
+        // When messages.len() <= preserved_recent, returns all as preserved
+        let messages: Vec<Message> = (0..5)
+            .map(|i| create_test_message(Role::User, &format!("Message {}", i)))
+            .collect();
+
+        let strategy = CompactionStrategy::SummarizeOlder {
+            preserved_recent: 10, // More than message count
+        };
+        let (preserved, to_summarize) = strategy.apply(&messages);
+
+        // All messages should be preserved, none to summarize
+        assert_eq!(preserved.len(), 5);
+        assert!(to_summarize.is_empty());
+    }
+
+    #[test]
+    fn test_strategy_apply_summarize_older_edge_case_boundaries() {
+        // Test boundary: when to_summarize_end == preserve_first
+        let messages: Vec<Message> = (0..6)
+            .map(|i| create_test_message(Role::User, &format!("Message {}", i)))
+            .collect();
+
+        let strategy = CompactionStrategy::SummarizeOlder {
+            preserved_recent: 5, // 6 - 5 = 1, which equals preserve_first (1)
+        };
+        let (preserved, to_summarize) = strategy.apply(&messages);
+
+        // Should return all as preserved since boundary case
+        assert_eq!(preserved.len(), 6);
+        assert!(to_summarize.is_empty());
+    }
+
+    #[test]
+    fn test_strategy_apply_truncate_middle_under_limit() {
+        // When messages <= preserved_recent + 2, returns all as preserved
+        let messages: Vec<Message> = (0..4)
+            .map(|i| create_test_message(Role::User, &format!("Message {}", i)))
+            .collect();
+
+        let strategy = CompactionStrategy::TruncateMiddle {
+            preserved_recent: 5, // More than available
+        };
+        let (preserved, to_truncate) = strategy.apply(&messages);
+
+        // All messages preserved since not enough to truncate
+        assert_eq!(preserved.len(), 4);
+        assert!(to_truncate.is_empty());
+    }
+
+    #[test]
+    fn test_strategy_apply_truncate_middle_at_boundary() {
+        // Exactly preserved_recent + 2 messages - at the boundary
+        let messages: Vec<Message> = (0..7)
+            .map(|i| create_test_message(Role::User, &format!("Message {}", i)))
+            .collect();
+
+        let strategy = CompactionStrategy::TruncateMiddle {
+            preserved_recent: 5, // 7 - 5 = 2, equals preserve_first
+        };
+        let (preserved, to_truncate) = strategy.apply(&messages);
+
+        // Should return all as preserved at boundary
+        assert_eq!(preserved.len(), 7);
+        assert!(to_truncate.is_empty());
+    }
+
+    #[test]
+    fn test_strategy_apply_hybrid_not_enough_to_summarize() {
+        // Hybrid: when to_summarize_end <= preserve_first, truncate middle path
+        let messages: Vec<Message> = (0..6)
+            .map(|i| create_test_message(Role::User, &format!("Message {}", i)))
+            .collect();
+
+        let strategy = CompactionStrategy::Hybrid {
+            preserved_recent: 5,
+            max_total: 3, // Less than message count to trigger compaction
+        };
+        let (preserved, to_summarize) = strategy.apply(&messages);
+
+        // With 6 messages, max_total=3, Hybrid tries to compact
+        // but to_summarize_end = 6 - 5 = 1, preserve_first = 1
+        // Since 1 <= 1, it should go to truncate middle path
+        // Result is first message + recent 5 = 6 (all preserved)
+        assert_eq!(preserved.len(), 6);
+        assert!(to_summarize.is_empty());
+    }
+
+    #[test]
+    fn test_estimate_message_tokens_with_attachment() {
+        let msg = Message {
+            id: rcode_core::MessageId("m1".into()),
+            session_id: "s1".into(),
+            role: Role::User,
+            parts: vec![Part::Attachment {
+                id: "att1".into(),
+                name: "document.pdf".into(),
+                mime_type: "application/pdf".into(),
+                content: vec![0u8; 100],
+            }],
+            created_at: chrono::Utc::now(),
+        };
+        let tokens = estimate_message_token_count(&msg);
+        // Should include attachment name and mime_type tokens + overhead
+        assert!(tokens > 0);
+    }
+
+    #[test]
+    fn test_estimate_message_tokens_with_reasoning() {
+        let msg = Message {
+            id: rcode_core::MessageId("m1".into()),
+            session_id: "s1".into(),
+            role: Role::Assistant,
+            parts: vec![Part::Reasoning {
+                content: "Let me think about this carefully...".into(),
+            }],
+            created_at: chrono::Utc::now(),
+        };
+        let tokens = estimate_message_token_count(&msg);
+        assert!(tokens > 0);
+    }
 }

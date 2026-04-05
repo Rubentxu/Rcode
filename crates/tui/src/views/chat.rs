@@ -6,7 +6,7 @@ use ratatui::{
 };
 use rcode_core::{Message, Part, Role};
 
-use crate::app::{OpencodeTui, ToolStatus};
+use crate::app::{RcodeTui, ToolStatus};
 
 /// Chat view widget
 pub struct ChatView {
@@ -19,24 +19,24 @@ impl ChatView {
     }
 
     /// Scroll up in message list
-    pub fn scroll_up(&mut self, app: &OpencodeTui) {
+    pub fn scroll_up(&mut self, app: &RcodeTui) {
         let max_scroll = app.messages.len().saturating_sub(1);
         self.scroll_offset = self.scroll_offset.saturating_sub(1).min(max_scroll);
     }
 
     /// Scroll down in message list
-    pub fn scroll_down(&mut self, _app: &OpencodeTui) {
+    pub fn scroll_down(&mut self, _app: &RcodeTui) {
         self.scroll_offset = self.scroll_offset.saturating_add(1);
     }
 
     /// Page up
-    pub fn page_up(&mut self, _app: &OpencodeTui) {
+    pub fn page_up(&mut self, _app: &RcodeTui) {
         let page_size = 10;
         self.scroll_offset = self.scroll_offset.saturating_sub(page_size);
     }
 
     /// Page down
-    pub fn page_down(&mut self, app: &OpencodeTui) {
+    pub fn page_down(&mut self, app: &RcodeTui) {
         let page_size = 10;
         self.scroll_offset = self
             .scroll_offset
@@ -50,15 +50,18 @@ impl ChatView {
     }
 
     /// Render the chat view
-    pub fn render(&mut self, app: &OpencodeTui, area: Rect, buf: &mut Buffer) {
+    pub fn render(&mut self, app: &RcodeTui, area: Rect, buf: &mut Buffer) {
         if app.current_session.is_none() {
             // No session selected - show welcome
             let welcome = Paragraph::new(
-                "Welcome to OpenCode Rust TUI\n\n\
+                "Welcome to RCode TUI\n\n\
                  Select a session from the sidebar or create a new one.\n\n\
                  Controls:\n\
                  • Ctrl+N: New session\n\
                  • Ctrl+S: Switch to selected session\n\
+                 • Ctrl+M: Cycle models\n\
+                 • Ctrl+Z: Undo last exchange\n\
+                 • Ctrl+Y: Redo last exchange\n\
                  • Ctrl+Q: Quit\n\
                  • ↑/↓: Navigate session list\n\
                  • PageUp/PageDown: Scroll chat",
@@ -108,7 +111,7 @@ impl ChatView {
         self.render_input_hint(app, input_area, buf);
     }
 
-    fn render_messages(&mut self, app: &OpencodeTui, area: Rect, buf: &mut Buffer) {
+    fn render_messages(&mut self, app: &RcodeTui, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
             .title(format!(
                 " Chat - {} ",
@@ -139,10 +142,40 @@ impl ChatView {
             .cloned()
             .collect();
 
-        let content: Vec<Line> = visible_messages
+        let mut content: Vec<Line> = visible_messages
             .iter()
             .flat_map(|msg| self.format_message(msg))
             .collect();
+
+        // If there's an active streaming delta, render it as an in-progress assistant message
+        if let Some(session) = app.current_session() {
+            if let Some(delta_text) = app.get_streaming_text(&session.id.0) {
+                // Add streaming indicator (blinking cursor effect via ▌)
+                let streaming_line = Line::from(vec![
+                    Span::styled(
+                        "[",
+                        Style::default()
+                            .fg(Color::Blue)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        "Assistant",
+                        Style::default()
+                            .fg(Color::Blue)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        "] ",
+                        Style::default()
+                            .fg(Color::Blue)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(delta_text),
+                    Span::raw("▌"),
+                ]);
+                content.push(streaming_line);
+            }
+        }
 
         let paragraph = Paragraph::new(content)
             .scroll((self.scroll_offset as u16, 0))
@@ -226,7 +259,7 @@ impl ChatView {
         lines
     }
 
-    fn render_status(&self, app: &OpencodeTui, area: Rect, buf: &mut Buffer) {
+    fn render_status(&self, app: &RcodeTui, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
             .title(" Status ")
             .borders(Borders::ALL)
@@ -236,6 +269,14 @@ impl ChatView {
         block.render(area, buf);
 
         let mut status_lines = Vec::new();
+
+        // Show current model
+        if let Some(session) = app.current_session() {
+            status_lines.push(Line::from(Span::styled(
+                format!("◆ Model: {}", session.model_id),
+                Style::default().fg(Color::Cyan),
+            )));
+        }
 
         if app.is_running {
             status_lines.push(Line::from(Span::styled(
@@ -258,7 +299,8 @@ impl ChatView {
             )));
         }
 
-        if status_lines.is_empty() {
+        if status_lines.len() == 1 {
+            // Only model shown, add ready status
             status_lines.push(Line::from(Span::styled(
                 "● Ready",
                 Style::default().fg(Color::Gray),
@@ -271,7 +313,7 @@ impl ChatView {
         para.render(inner, buf);
     }
 
-    fn render_input_hint(&self, app: &OpencodeTui, area: Rect, buf: &mut Buffer) {
+    fn render_input_hint(&self, app: &RcodeTui, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
             .title(" Input ")
             .borders(Borders::ALL)

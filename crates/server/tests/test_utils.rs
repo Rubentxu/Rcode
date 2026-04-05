@@ -5,7 +5,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 use rcode_server::{create_app, AppState};
-use rcode_core::{Session, SessionId, OpencodeConfig, Part, Message};
+use rcode_core::{Session, SessionId, RcodeConfig, Part, Message};
 
 pub struct TestApp {
     pub state: Arc<AppState>,
@@ -15,7 +15,7 @@ pub struct TestApp {
 
 impl TestApp {
     pub async fn new() -> Self {
-        let config = OpencodeConfig::default();
+        let config = RcodeConfig::default();
         let state = Arc::new(AppState::with_config(config));
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 

@@ -4,7 +4,7 @@ use jsonschema::Validator;
 use serde_json::Value;
 use thiserror::Error;
 
-use rcode_core::error::OpenCodeError;
+use rcode_core::error::RCodeError;
 
 /// Validation error with field and message details
 #[derive(Error, Debug, Clone)]
@@ -16,13 +16,13 @@ pub enum ValidationError {
     Message(String),
 }
 
-impl From<ValidationError> for OpenCodeError {
+impl From<ValidationError> for RCodeError {
     fn from(err: ValidationError) -> Self {
         match err {
             ValidationError::Field { field, message } => {
-                OpenCodeError::Validation { field, message }
+                RCodeError::Validation { field, message }
             }
-            ValidationError::Message(msg) => OpenCodeError::Validation {
+            ValidationError::Message(msg) => RCodeError::Validation {
                 field: String::new(),
                 message: msg,
             },
@@ -71,7 +71,7 @@ impl ToolValidator {
     }
 
     /// Validate tool arguments by schema name and parameters
-    pub fn validate_with_schema(args: &Value, schema: &Value) -> Result<(), OpenCodeError> {
+    pub fn validate_with_schema(args: &Value, schema: &Value) -> Result<(), RCodeError> {
         Self::validate(args, schema)?;
         Ok(())
     }

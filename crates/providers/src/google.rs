@@ -90,19 +90,19 @@ impl LlmProvider for GoogleProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| rcode_core::OpenCodeError::Provider(format!("Network error: {}", e)))?;
+            .map_err(|e| rcode_core::RCodeError::Provider(format!("Network error: {}", e)))?;
 
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(rcode_core::OpenCodeError::Provider(
+            return Err(rcode_core::RCodeError::Provider(
                 format!("Google API error ({}): {}", status, error_text)
             ));
         }
 
         let gemini_resp: GeminiResponse = response.json()
             .await
-            .map_err(|e| rcode_core::OpenCodeError::Provider(format!("Parse error: {}", e)))?;
+            .map_err(|e| rcode_core::RCodeError::Provider(format!("Parse error: {}", e)))?;
 
         let content = gemini_resp.candidates
             .first()
@@ -177,7 +177,7 @@ impl LlmProvider for GoogleProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| rcode_core::OpenCodeError::Provider(format!("Network error: {}", e)))?;
+            .map_err(|e| rcode_core::RCodeError::Provider(format!("Network error: {}", e)))?;
 
         let (tx, rx) = mpsc::channel(1);
         let tx_clone = tx;

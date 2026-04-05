@@ -51,16 +51,16 @@ impl Tool for SkillTool {
     async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
         let skill_name = args["skill"]
             .as_str()
-            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'skill' argument".into()))?;
+            .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'skill' argument".into()))?;
         
         let prompt = args["prompt"]
             .as_str()
-            .ok_or_else(|| rcode_core::OpenCodeError::Tool("Missing 'prompt' argument".into()))?;
+            .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'prompt' argument".into()))?;
 
         // Load the skill
         let skill = self.registry.get(skill_name).await
-            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Failed to load skill: {}", e)))?
-            .ok_or_else(|| rcode_core::OpenCodeError::Tool(format!("Skill '{}' not found", skill_name)))?;
+            .map_err(|e| rcode_core::RCodeError::Tool(format!("Failed to load skill: {}", e)))?
+            .ok_or_else(|| rcode_core::RCodeError::Tool(format!("Skill '{}' not found", skill_name)))?;
 
         // Build the response with skill instructions
         let trigger_str = match &skill.trigger {

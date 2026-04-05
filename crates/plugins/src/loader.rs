@@ -100,7 +100,7 @@ impl PluginLibraryLoader {
         
         // Get the plugin factory symbol
         let factory: libloading::Symbol<PluginFactory> = unsafe {
-            library.get(b"opencode_plugin_create")
+            library.get(b"rcode_plugin_create")
                 .map_err(|e| PluginError::SymbolNotFound(format!("Failed to get factory symbol: {}", e)))?
         };
         

@@ -175,7 +175,7 @@ impl Tool for MockTool {
                 })
             }
         } else {
-            Err(rcode_core::OpenCodeError::Tool(
+            Err(rcode_core::RCodeError::Tool(
                 config.error.unwrap_or_else(|| "Mock tool error".to_string())
             ))
         }
@@ -244,7 +244,7 @@ mod tests {
         ).await;
         
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), rcode_core::OpenCodeError::Tool(_)));
+        assert!(matches!(result.unwrap_err(), rcode_core::RCodeError::Tool(_)));
     }
 
     #[tokio::test]

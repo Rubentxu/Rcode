@@ -10,7 +10,7 @@ use rcode_core::SlashCommand;
 pub fn default_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
-    // Global opencode commands
+    // Global user commands (config dir)
     if let Some(home) = dirs::home_dir() {
         paths.push(home.join(".config/opencode/commands"));
     }
@@ -191,5 +191,88 @@ description: A nested command
         let discovery = CommandDiscovery::with_paths(vec![commands_dir]);
         let commands = discovery.discover_commands().await.unwrap();
         assert_eq!(commands.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_discover_commands_nonexistent_directory() {
+        let discovery = CommandDiscovery::with_paths(vec![PathBuf::from("/nonexistent/path")]);
+        let commands = discovery.discover_commands().await.unwrap();
+        assert!(commands.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_discover_commands_deduplicates_by_name() {
+        let temp = TempDir::new().unwrap();
+        let commands_dir = temp.path().join("commands");
+        fs::create_dir_all(&commands_dir).unwrap();
+        
+        fs::write(
+            commands_dir.join("same-name.md"),
+            r#"---
+name: duplicate
+description: First command
+---
+
+# First
+"#
+        ).unwrap();
+
+        // Create subdir first, then write file
+        fs::create_dir_all(commands_dir.join("subdir")).unwrap();
+        fs::write(
+            commands_dir.join("subdir/same-name.md"),
+            r#"---
+name: duplicate
+description: Second command (should be deduplicated)
+---
+
+# Second
+"#
+        ).unwrap();
+
+        let discovery = CommandDiscovery::with_paths(vec![commands_dir]);
+        let commands = discovery.discover_commands().await.unwrap();
+        // Should only have 1 since they have the same name
+        assert_eq!(commands.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_discover_commands_invalid_file() {
+        let temp = TempDir::new().unwrap();
+        let commands_dir = temp.path().join("commands");
+        fs::create_dir_all(&commands_dir).unwrap();
+        
+        // Write an invalid markdown file (missing required frontmatter)
+        fs::write(
+            commands_dir.join("invalid.md"),
+            r#"# Not valid command
+This doesn't have frontmatter.
+"#
+        ).unwrap();
+
+        let discovery = CommandDiscovery::with_paths(vec![commands_dir]);
+        // Should not error - might still parse or might skip, just verify no panic
+        let result = discovery.discover_commands().await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_default_search_paths() {
+        let paths = default_search_paths();
+        // Should return at least one path (home dir or cwd based)
+        assert!(!paths.is_empty());
+    }
+
+    #[test]
+    fn test_command_discovery_default() {
+        let discovery = CommandDiscovery::default();
+        assert!(!discovery.search_paths.is_empty());
+    }
+
+    #[test]
+    fn test_command_discovery_with_paths() {
+        let paths = vec![PathBuf::from("/custom/path")];
+        let discovery = CommandDiscovery::with_paths(paths.clone());
+        assert_eq!(discovery.search_paths, paths);
     }
 }

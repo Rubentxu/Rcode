@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::app::OpencodeTui;
+use crate::app::RcodeTui;
 
 /// Input view widget for multi-line text input
 pub struct InputView {
@@ -18,13 +18,13 @@ impl InputView {
     }
 
     /// Handle character input
-    pub fn insert_char(&mut self, c: char, app: &mut OpencodeTui) {
+    pub fn insert_char(&mut self, c: char, app: &mut RcodeTui) {
         app.input_buffer.insert(self.cursor_position, c);
         self.cursor_position += 1;
     }
 
     /// Handle backspace
-    pub fn backspace(&mut self, app: &mut OpencodeTui) {
+    pub fn backspace(&mut self, app: &mut RcodeTui) {
         if self.cursor_position > 0 && !app.input_buffer.is_empty() {
             app.input_buffer.remove(self.cursor_position - 1);
             self.cursor_position -= 1;
@@ -32,7 +32,7 @@ impl InputView {
     }
 
     /// Handle delete
-    pub fn delete(&mut self, app: &mut OpencodeTui) {
+    pub fn delete(&mut self, app: &mut RcodeTui) {
         if self.cursor_position < app.input_buffer.len() {
             app.input_buffer.remove(self.cursor_position);
         }
@@ -46,7 +46,7 @@ impl InputView {
     }
 
     /// Move cursor right
-    pub fn move_cursor_right(&mut self, app: &OpencodeTui) {
+    pub fn move_cursor_right(&mut self, app: &RcodeTui) {
         if self.cursor_position < app.input_buffer.len() {
             self.cursor_position += 1;
         }
@@ -58,18 +58,18 @@ impl InputView {
     }
 
     /// Move cursor to end
-    pub fn move_cursor_to_end(&mut self, app: &OpencodeTui) {
+    pub fn move_cursor_to_end(&mut self, app: &RcodeTui) {
         self.cursor_position = app.input_buffer.len();
     }
 
     /// Clear input
-    pub fn clear(&mut self, app: &mut OpencodeTui) {
+    pub fn clear(&mut self, app: &mut RcodeTui) {
         app.input_buffer.clear();
         self.cursor_position = 0;
     }
 
     /// Get the message to send (and clear input)
-    pub fn take_message(&mut self, app: &mut OpencodeTui) -> Option<String> {
+    pub fn take_message(&mut self, app: &mut RcodeTui) -> Option<String> {
         if app.input_buffer.trim().is_empty() {
             return None;
         }
@@ -79,7 +79,7 @@ impl InputView {
     }
 
     /// Render the input area
-    pub fn render(&self, app: &OpencodeTui, area: Rect, buf: &mut Buffer) {
+    pub fn render(&self, app: &RcodeTui, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
             .title(" Message Input ")
             .borders(Borders::ALL)

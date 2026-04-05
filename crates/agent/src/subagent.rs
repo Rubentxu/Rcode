@@ -251,4 +251,176 @@ mod tests {
         let active = manager.list_active();
         assert_eq!(active.len(), 1);
     }
+
+    #[test]
+    fn test_get_by_session_id() {
+        let manager = SubagentManager::new();
+        let agent = Arc::new(MockAgent::new("test_agent"));
+        
+        let subagent_id = manager.create_subagent("task_1", "general", agent.clone()).unwrap();
+        
+        // Get the session ID for the task
+        let session_id = manager.get_session_for_task("task_1").unwrap();
+        
+        // Now find subagent by session ID
+        let found_id = manager.get_by_session_id(&session_id);
+        assert!(found_id.is_some());
+        assert_eq!(found_id.unwrap(), subagent_id);
+    }
+
+    #[test]
+    fn test_get_by_session_id_not_found() {
+        let manager = SubagentManager::new();
+        let session_id = rcode_core::SessionId::new();
+        let found_id = manager.get_by_session_id(&session_id);
+        assert!(found_id.is_none());
+    }
+
+    #[test]
+    fn test_update_status() {
+        let manager = SubagentManager::new();
+        let agent = Arc::new(MockAgent::new("test_agent"));
+        
+        let subagent_id = manager.create_subagent("task_1", "general", agent.clone()).unwrap();
+        
+        // Initially should be Pending
+        let active = manager.list_active();
+        assert_eq!(active.len(), 1);
+        
+        // Update to Running
+        let updated = manager.update_status(&subagent_id, SubagentStatus::Running);
+        assert!(updated);
+        
+        // Still active since Running
+        let active = manager.list_active();
+        assert_eq!(active.len(), 1);
+        
+        // Update to Completed
+        let updated = manager.update_status(&subagent_id, SubagentStatus::Completed);
+        assert!(updated);
+        
+        // No longer active since Completed
+        let active = manager.list_active();
+        assert_eq!(active.len(), 0);
+    }
+
+    #[test]
+    fn test_update_status_not_found() {
+        let manager = SubagentManager::new();
+        let fake_id = SubagentId::new("fake_id");
+        let updated = manager.update_status(&fake_id, SubagentStatus::Running);
+        assert!(!updated);
+    }
+
+    #[test]
+    fn test_remove_by_task_id() {
+        let manager = SubagentManager::new();
+        let agent = Arc::new(MockAgent::new("test_agent"));
+        
+        let _subagent_id = manager.create_subagent("task_1", "general", agent.clone()).unwrap();
+        
+        assert!(manager.has_task("task_1"));
+        
+        let removed = manager.remove_by_task_id("task_1");
+        assert!(removed.is_some());
+        
+        assert!(!manager.has_task("task_1"));
+    }
+
+    #[test]
+    fn test_remove_by_task_id_not_found() {
+        let manager = SubagentManager::new();
+        let removed = manager.remove_by_task_id("nonexistent_task");
+        assert!(removed.is_none());
+    }
+
+    #[test]
+    fn test_subagent_id_new_and_as_str() {
+        let id = SubagentId::new("test_id");
+        assert_eq!(id.as_str(), "test_id");
+    }
+
+    #[test]
+    fn test_subagent_id_display() {
+        let id = SubagentId::new("display_test");
+        let displayed = format!("{}", id);
+        assert_eq!(displayed, "display_test");
+    }
+
+    #[test]
+    fn test_subagent_id_clone_and_equality() {
+        let id1 = SubagentId::new("same_id");
+        let id2 = id1.clone();
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_subagent_status_all_variants() {
+        // Just verify all variants can be created
+        let _pending = SubagentStatus::Pending;
+        let _running = SubagentStatus::Running;
+        let _completed = SubagentStatus::Completed;
+        let _failed = SubagentStatus::Failed;
+        let _cancelled = SubagentStatus::Cancelled;
+    }
+
+    #[test]
+    fn test_subagent_instance_fields() {
+        let manager = SubagentManager::new();
+        let agent = Arc::new(MockAgent::new("test_agent"));
+        
+        let subagent_id = manager.create_subagent("task_1", "general", agent.clone()).unwrap();
+        
+        // Access the internal instance through remove
+        let instance = manager.remove(&subagent_id).unwrap();
+        assert_eq!(instance.id, subagent_id);
+        assert_eq!(instance.agent_type, "general");
+        assert_eq!(instance.status, SubagentStatus::Pending);
+    }
+
+    #[test]
+    fn test_get_by_task_id() {
+        let manager = SubagentManager::new();
+        let agent = Arc::new(MockAgent::new("test_agent"));
+        
+        let subagent_id = manager.create_subagent("task_1", "general", agent.clone()).unwrap();
+        
+        let found_id = manager.get_by_task_id("task_1");
+        assert!(found_id.is_some());
+        assert_eq!(found_id.unwrap(), subagent_id);
+    }
+
+    #[test]
+    fn test_get_by_task_id_not_found() {
+        let manager = SubagentManager::new();
+        let found_id = manager.get_by_task_id("nonexistent");
+        assert!(found_id.is_none());
+    }
+
+    #[test]
+    fn test_has_task() {
+        let manager = SubagentManager::new();
+        let agent = Arc::new(MockAgent::new("test_agent"));
+        
+        assert!(!manager.has_task("task_1"));
+        
+        let _subagent_id = manager.create_subagent("task_1", "general", agent.clone()).unwrap();
+        
+        assert!(manager.has_task("task_1"));
+    }
+
+    #[test]
+    fn test_get_nonexistent_subagent() {
+        let manager = SubagentManager::new();
+        let fake_id = SubagentId::new("nonexistent");
+        let agent = manager.get(&fake_id);
+        assert!(agent.is_none());
+    }
+
+    #[test]
+    fn test_manager_default() {
+        let manager = SubagentManager::default();
+        // Should be empty
+        assert_eq!(manager.list_active().len(), 0);
+    }
 }

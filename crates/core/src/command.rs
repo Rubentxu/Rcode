@@ -1,4 +1,4 @@
-//! Slash command types for opencode-rust
+//! Slash command types for RCode
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;

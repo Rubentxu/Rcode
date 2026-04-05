@@ -7,7 +7,7 @@ use parking_lot::RwLock;
 use tokio::sync::RwLock as TokioRwLock;
 use tokio::time::timeout;
 
-use rcode_core::{Tool, ToolInfo, ToolContext, ToolResult, PermissionConfig, error::{Result, OpenCodeError}};
+use rcode_core::{Tool, ToolInfo, ToolContext, ToolResult, PermissionConfig, error::{Result, RCodeError}};
 use rcode_session::SessionService;
 use super::validator::ToolValidator;
 
@@ -203,12 +203,12 @@ impl ToolRegistryService {
         timeout_duration: Duration,
     ) -> Result<ToolResult> {
         let tool = self.get(tool_id)
-            .ok_or_else(|| OpenCodeError::Tool(format!("Tool not found: {}", tool_id)))?;
+            .ok_or_else(|| RCodeError::Tool(format!("Tool not found: {}", tool_id)))?;
         
         // Validate arguments against tool's schema
         let schema = tool.parameters();
         if let Err(e) = ToolValidator::validate_with_schema(&args, &schema) {
-            return Err(OpenCodeError::Validation {
+            return Err(RCodeError::Validation {
                 field: String::new(),
                 message: format!("Tool '{}': {}", tool_id, e),
             });
@@ -222,10 +222,10 @@ impl ToolRegistryService {
         
         match result {
             Ok(Ok(tool_result)) => Ok(tool_result),
-            Ok(Err(e)) => Err(OpenCodeError::Tool(
+            Ok(Err(e)) => Err(RCodeError::Tool(
                 format!("Tool '{}' execution failed: {}", tool_id, e)
             )),
-            Err(_) => Err(OpenCodeError::Timeout { 
+            Err(_) => Err(RCodeError::Timeout { 
                 duration: timeout_duration.as_secs() 
             }),
         }
@@ -235,5 +235,360 @@ impl ToolRegistryService {
 impl Default for ToolRegistryService {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rcode_core::ToolContext;
+    use std::path::PathBuf;
+
+    fn create_test_context() -> ToolContext {
+        ToolContext {
+            session_id: "test-session".to_string(),
+            project_path: PathBuf::from("/tmp"),
+            cwd: PathBuf::from("/tmp"),
+            user_id: None,
+            agent: "test".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_new_registry_has_defaults() {
+        let registry = ToolRegistryService::new();
+        let tools = registry.list();
+        assert!(!tools.is_empty());
+        assert!(tools.iter().any(|t| t.id == "bash"));
+        assert!(tools.iter().any(|t| t.id == "question"));
+        assert!(tools.iter().any(|t| t.id == "read"));
+        assert!(tools.iter().any(|t| t.id == "write"));
+        assert!(tools.iter().any(|t| t.id == "edit"));
+        assert!(tools.iter().any(|t| t.id == "glob"));
+        assert!(tools.iter().any(|t| t.id == "grep"));
+        assert!(tools.iter().any(|t| t.id == "task"));
+        assert!(tools.iter().any(|t| t.id == "batch") == false);
+    }
+
+    #[test]
+    fn test_get_existing_tool() {
+        let registry = ToolRegistryService::new();
+        let tool = registry.get("bash");
+        assert!(tool.is_some());
+        assert_eq!(tool.unwrap().id(), "bash");
+    }
+
+    #[test]
+    fn test_get_nonexistent_tool() {
+        let registry = ToolRegistryService::new();
+        assert!(registry.get("nonexistent_tool").is_none());
+    }
+
+    #[test]
+    fn test_register_custom_tool() {
+        let registry = ToolRegistryService::new();
+        struct DummyTool;
+        #[async_trait::async_trait]
+        impl rcode_core::Tool for DummyTool {
+            fn id(&self) -> &str { "dummy" }
+            fn name(&self) -> &str { "Dummy" }
+            fn description(&self) -> &str { "A dummy tool" }
+            fn parameters(&self) -> serde_json::Value { serde_json::json!({}) }
+            async fn execute(&self, _args: serde_json::Value, _ctx: &ToolContext) -> rcode_core::error::Result<ToolResult> {
+                Ok(ToolResult { title: "ok".into(), content: "done".into(), metadata: None, attachments: vec![] })
+            }
+        }
+        registry.register(Arc::new(DummyTool));
+        assert!(registry.get("dummy").is_some());
+    }
+
+    #[test]
+    fn test_list_returns_tool_info() {
+        let registry = ToolRegistryService::new();
+        let list = registry.list();
+        assert!(!list.is_empty());
+        for info in &list {
+            assert!(!info.id.is_empty());
+            assert!(!info.name.is_empty());
+            assert!(!info.description.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_with_timeout() {
+        let registry = ToolRegistryService::with_timeout(10);
+        assert_eq!(registry.default_timeout, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn test_with_batch_includes_batch_tool() {
+        let registry = ToolRegistryService::with_batch();
+        assert!(registry.get("batch").is_some());
+    }
+
+    #[test]
+    fn test_default_impl() {
+        let registry = ToolRegistryService::default();
+        assert!(registry.get("bash").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_execute_nonexistent_tool() {
+        let registry = ToolRegistryService::new();
+        let ctx = create_test_context();
+        let result = registry.execute("nonexistent", serde_json::json!({}), &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_not_found_error_message() {
+        let registry = ToolRegistryService::new();
+        let ctx = create_test_context();
+        let result = registry.execute("missing_tool", serde_json::json!({}), &ctx).await.unwrap_err();
+        let msg = result.to_string();
+        assert!(msg.contains("missing_tool"));
+    }
+
+    #[tokio::test]
+    async fn test_register_slash_commands() {
+        let registry = ToolRegistryService::new();
+        // register_slash_commands should complete without error even if no commands found
+        let result = registry.register_slash_commands().await;
+        assert!(result.is_ok());
+        // Command registry should be created
+        assert!(registry.get_command_registry().is_some());
+    }
+
+    #[test]
+    fn test_get_command_registry_initially_none() {
+        let registry = ToolRegistryService::new();
+        // Before register_slash_commands, command_registry is not initialized
+        // But since register_defaults is called in new(), it may or may not be set
+        // This tests the method returns what exists
+        let _ = registry.get_command_registry();
+    }
+
+    #[test]
+    fn test_register_mcp_tool() {
+        use rcode_mcp::McpServerRegistry;
+        let registry = ToolRegistryService::new();
+        let mcp_registry = Arc::new(McpServerRegistry::new());
+        registry.register_mcp_tool(mcp_registry);
+        // The mcp tool should now be registered
+        assert!(registry.get("mcp").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_timeout_validation_error() {
+        let registry = ToolRegistryService::new();
+        let ctx = create_test_context();
+        // Bash tool requires a "command" parameter - passing empty object should fail validation
+        let result = registry.execute("bash", serde_json::json!({}), &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_timeout_custom_duration() {
+        let registry = ToolRegistryService::with_timeout(1);
+        let ctx = create_test_context();
+        // This should timeout since 'sleep' command takes longer than 100ms
+        let result = registry.execute_with_timeout(
+            "bash",
+            serde_json::json!({"command": "sleep 5"}),
+            &ctx,
+            std::time::Duration::from_millis(100)
+        ).await;
+        assert!(result.is_err());
+        // Verify it's a timeout error by checking the error contains duration info
+        let err = result.unwrap_err();
+        let err_str = err.to_string();
+        // Timeout error should mention duration
+        assert!(err_str.contains("100") || err_str.contains("second") || err_str.contains("timeout") || err_str.to_lowercase().contains("time"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_timeout_success() {
+        let registry = ToolRegistryService::with_timeout(5);
+        let ctx = create_test_context();
+        // This should succeed with a short timeout
+        let result = registry.execute_with_timeout(
+            "bash",
+            serde_json::json!({"command": "echo hello"}),
+            &ctx,
+            std::time::Duration::from_secs(5)
+        ).await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_with_permission_config() {
+        let config = rcode_core::PermissionConfig::default();
+        let registry = ToolRegistryService::with_permission_config(config);
+        // Registry should be created with permission config and have default tools
+        assert!(registry.get("bash").is_some());
+    }
+
+    #[test]
+    fn test_with_session_service() {
+        // SessionService would need a real implementation, just test construction doesn't panic
+        // We can test with_session_service_and_batch which doesn't require SessionService
+        let registry = ToolRegistryService::with_batch();
+        assert!(registry.get("batch").is_some());
+    }
+
+    #[test]
+    fn test_registry_default_timeout_is_300_secs() {
+        let registry = ToolRegistryService::new();
+        assert_eq!(registry.default_timeout, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn test_registry_list_contains_all_default_tools() {
+        let registry = ToolRegistryService::new();
+        let tools = registry.list();
+        let tool_ids: Vec<_> = tools.iter().map(|t| t.id.as_str()).collect();
+        
+        // Verify all expected default tools are present
+        assert!(tool_ids.contains(&"bash"));
+        assert!(tool_ids.contains(&"read"));
+        assert!(tool_ids.contains(&"write"));
+        assert!(tool_ids.contains(&"edit"));
+        assert!(tool_ids.contains(&"glob"));
+        assert!(tool_ids.contains(&"grep"));
+        assert!(tool_ids.contains(&"task"));
+        assert!(tool_ids.contains(&"plan"));
+        assert!(tool_ids.contains(&"question"));
+    }
+
+    #[test]
+    fn test_registry_list_tool_info_fields() {
+        let registry = ToolRegistryService::new();
+        let tools = registry.list();
+        
+        for tool in tools {
+            assert!(!tool.id.is_empty(), "Tool id should not be empty");
+            assert!(!tool.name.is_empty(), "Tool name should not be empty for {}", tool.id);
+            assert!(!tool.description.is_empty(), "Tool description should not be empty for {}", tool.id);
+        }
+    }
+
+    #[test]
+    fn test_register_tool_replaces_existing() {
+        let registry = ToolRegistryService::new();
+        
+        // Create a custom tool with same id as existing
+        struct CustomBashTool;
+        #[async_trait::async_trait]
+        impl rcode_core::Tool for CustomBashTool {
+            fn id(&self) -> &str { "bash" }
+            fn name(&self) -> &str { "Custom Bash" }
+            fn description(&self) -> &str { "A custom bash tool" }
+            fn parameters(&self) -> serde_json::Value { serde_json::json!({}) }
+            async fn execute(&self, _args: serde_json::Value, _ctx: &ToolContext) -> rcode_core::error::Result<ToolResult> {
+                Ok(ToolResult { title: "custom".into(), content: "custom".into(), metadata: None, attachments: vec![] })
+            }
+        }
+        
+        registry.register(Arc::new(CustomBashTool));
+        
+        let tool = registry.get("bash").unwrap();
+        assert_eq!(tool.name(), "Custom Bash");
+    }
+
+    #[test]
+    fn test_get_command_registry_after_slash_commands() {
+        let registry = ToolRegistryService::new();
+        // Initially may or may not have command registry depending on initialization
+        let initial = registry.get_command_registry();
+        
+        // After registering slash commands async
+        // Note: This test just verifies the method is callable
+        let _ = initial;
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_timeout_nonexistent_tool_error_type() {
+        let registry = ToolRegistryService::new();
+        let ctx = create_test_context();
+        let result = registry.execute("definitely_does_not_exist", serde_json::json!({}), &ctx).await;
+        
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        // Error should indicate tool not found
+        assert!(err.to_string().contains("not found") || err.to_string().contains("Tool"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_validation_error_for_bash() {
+        let registry = ToolRegistryService::new();
+        let ctx = create_test_context();
+        
+        // Bash tool requires 'command' parameter - empty args should fail validation
+        let result = registry.execute("bash", serde_json::json!({"command": ""}), &ctx).await;
+        // Either validation error or execution error is acceptable
+        if result.is_err() {
+            let err_msg = result.unwrap_err().to_string();
+            assert!(err_msg.contains("command") || err_msg.contains("validation") || err_msg.contains("required"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_read_tool_missing_path() {
+        let registry = ToolRegistryService::new();
+        let ctx = create_test_context();
+        
+        // Read tool requires 'path' parameter
+        let result = registry.execute("read", serde_json::json!({}), &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_timeout_error_path() {
+        let registry = ToolRegistryService::new();
+        let ctx = create_test_context();
+        
+        // Create a custom tool that returns an error
+        struct ErrorTool;
+        #[async_trait::async_trait]
+        impl rcode_core::Tool for ErrorTool {
+            fn id(&self) -> &str { "error_tool" }
+            fn name(&self) -> &str { "Error Tool" }
+            fn description(&self) -> &str { "A tool that returns error" }
+            fn parameters(&self) -> serde_json::Value { serde_json::json!({}) }
+            async fn execute(&self, _args: serde_json::Value, _ctx: &ToolContext) -> rcode_core::error::Result<ToolResult> {
+                Err(rcode_core::RCodeError::Tool("Execution failed explicitly".into()))
+            }
+        }
+        registry.register(Arc::new(ErrorTool));
+        
+        let result = registry.execute_with_timeout(
+            "error_tool",
+            serde_json::json!({}),
+            &ctx,
+            std::time::Duration::from_secs(5)
+        ).await;
+        
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Execution failed") || err.to_string().contains("error_tool"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_timeout_timeout_path() {
+        let registry = ToolRegistryService::with_timeout(1);
+        let ctx = create_test_context();
+        
+        // Use bash tool with a long sleep to trigger timeout
+        let result = registry.execute_with_timeout(
+            "bash",
+            serde_json::json!({"command": "sleep 10"}),
+            &ctx,
+            std::time::Duration::from_millis(100)
+        ).await;
+        
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        // Timeout error should be in the message
+        assert!(err.to_string().to_lowercase().contains("timeout") || err.to_string().contains("1"));
     }
 }

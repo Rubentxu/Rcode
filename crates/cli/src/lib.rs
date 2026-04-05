@@ -1,4 +1,4 @@
-//! OpenCode CLI library
+//! RCode CLI library
 
 pub mod commands;
 

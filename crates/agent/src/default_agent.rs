@@ -59,6 +59,7 @@ impl Agent for DefaultAgent {
             }),
             should_continue: false,
             stop_reason: StopReason::EndOfTurn,
+            usage: None,
         })
     }
     
@@ -70,6 +71,8 @@ impl Agent for DefaultAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rcode_core::{Message, Part};
+    use std::path::PathBuf;
 
     #[test]
     fn test_default_agent_creation() {
@@ -82,5 +85,84 @@ mod tests {
     fn test_default_agent_with_custom_prompt() {
         let agent = DefaultAgent::with_system_prompt("Custom prompt");
         assert_eq!(agent.system_prompt(), "Custom prompt");
+    }
+
+    #[tokio::test]
+    async fn test_default_agent_run_with_messages() {
+        let agent = DefaultAgent::new();
+        let mut ctx = rcode_core::AgentContext {
+            session_id: "test-session".to_string(),
+            project_path: PathBuf::from("/tmp"),
+            cwd: PathBuf::from("/tmp"),
+            user_id: None,
+            model_id: "claude-sonnet-4-5".to_string(),
+            messages: vec![
+                Message::user("test-session".to_string(), vec![
+                    Part::Text { content: "Hello".to_string() }
+                ]),
+            ],
+        };
+        
+        let result = agent.run(&mut ctx).await.unwrap();
+        
+        assert!(!result.should_continue);
+        assert!(matches!(result.stop_reason, StopReason::EndOfTurn));
+        // Message should be the last one - which is the user message since that's what was added
+        assert_eq!(result.message.role, rcode_core::message::Role::User);
+    }
+
+    #[tokio::test]
+    async fn test_default_agent_run_with_empty_messages() {
+        let agent = DefaultAgent::new();
+        let mut ctx = rcode_core::AgentContext {
+            session_id: "test-session".to_string(),
+            project_path: PathBuf::from("/tmp"),
+            cwd: PathBuf::from("/tmp"),
+            user_id: None,
+            model_id: "claude-sonnet-4-5".to_string(),
+            messages: vec![],
+        };
+        
+        let result = agent.run(&mut ctx).await.unwrap();
+        
+        assert!(!result.should_continue);
+        // Should create an empty assistant message
+        assert_eq!(result.message.role, rcode_core::message::Role::Assistant);
+        assert!(result.message.parts.is_empty());
+    }
+
+    #[test]
+    fn test_default_agent_description() {
+        let agent = DefaultAgent::new();
+        assert_eq!(agent.description(), "A helpful AI coding assistant");
+    }
+
+    #[test]
+    fn test_default_agent_default_impl() {
+        let agent = DefaultAgent::default();
+        assert_eq!(agent.id(), "default");
+    }
+
+    #[test]
+    fn test_default_agent_supported_tools() {
+        let agent = DefaultAgent::new();
+        // Default returns empty vec
+        let tools = agent.supported_tools();
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_default_agent_is_hidden() {
+        let agent = DefaultAgent::new();
+        // Default returns false
+        assert!(!agent.is_hidden());
+    }
+
+    #[test]
+    fn test_default_agent_system_prompt_contains_guidance() {
+        let agent = DefaultAgent::new();
+        let prompt = agent.system_prompt();
+        assert!(prompt.contains("helpful"));
+        assert!(prompt.contains("tools"));
     }
 }

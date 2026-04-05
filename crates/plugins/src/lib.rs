@@ -1,6 +1,6 @@
-//! Plugin system for opencode-rust
+//! Plugin system for RCode
 //!
-//! This crate provides a plugin architecture for extending opencode capabilities
+//! This crate provides a plugin architecture for extending RCode capabilities
 //! through dynamically loaded plugins.
 
 pub mod error;

@@ -1,7 +1,9 @@
 //! TUI binary entry point
 
+use rcode_core::RcodeConfig;
 use rcode_event::EventBus;
-use rcode_session::SessionService;
+use rcode_session::create_default_session_service;
+use rcode_tools::ToolRegistryService;
 use rcode_tui::run;
 use std::sync::Arc;
 
@@ -17,8 +19,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Create shared services
     let event_bus = Arc::new(EventBus::new(100));
-    let session_service = Arc::new(SessionService::new(event_bus.clone()));
+    let session_service = Arc::new(create_default_session_service(event_bus.clone()));
+    let tools = Arc::new(ToolRegistryService::with_session_service(session_service.clone()));
+    let config = RcodeConfig::default();
 
     // Run the TUI
-    run(session_service, event_bus).await
+    run(session_service, event_bus, tools, config).await
 }

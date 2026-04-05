@@ -8,7 +8,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use opencode_lsp::{LspClient, LanguageServerRegistry};
+//! use rcode_lsp::{LspClient, LanguageServerRegistry};
 //!
 //! // Start a Rust language server
 //! let registry = LanguageServerRegistry::new();

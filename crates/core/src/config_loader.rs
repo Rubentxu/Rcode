@@ -1,4 +1,4 @@
-//! OpenCode-style configuration file loading
+//! RCode-style configuration file loading
 //!
 //! Implements cascading config merge from multiple sources:
 //! 1. ~/.config/opencode/config.json
@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 
-use super::{OpencodeConfig, AgentConfig};
+use super::{RcodeConfig, AgentConfig};
 
 fn strip_json_comments(input: &str) -> String {
     use std::io::Read;
@@ -68,7 +68,7 @@ fn deep_merge(target: &mut serde_json::Value, source: &serde_json::Value) {
     }
 }
 
-fn merge_configs(base: &OpencodeConfig, overlay: &OpencodeConfig) -> OpencodeConfig {
+fn merge_configs(base: &RcodeConfig, overlay: &RcodeConfig) -> RcodeConfig {
     let base_json = serde_json::to_value(base).unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
     let overlay_json = serde_json::to_value(overlay).unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
     
@@ -78,11 +78,11 @@ fn merge_configs(base: &OpencodeConfig, overlay: &OpencodeConfig) -> OpencodeCon
     serde_json::from_value(merged).unwrap_or_else(|_| overlay.clone())
 }
 
-fn parse_config_file(content: &str) -> Result<OpencodeConfig> {
+fn parse_config_file(content: &str) -> Result<RcodeConfig> {
     parse_jsonc(content)
 }
 
-fn load_config_file(path: &Path) -> Result<OpencodeConfig> {
+fn load_config_file(path: &Path) -> Result<RcodeConfig> {
     let content = std::fs::read_to_string(path).context(format!("Failed to read config file: {:?}", path))?;
     parse_config_file(&content)
 }
@@ -119,12 +119,12 @@ pub async fn load_config(
     config_path: Option<PathBuf>,
     no_config: bool,
     work_dir: Option<PathBuf>,
-) -> Result<OpencodeConfig> {
+) -> Result<RcodeConfig> {
     if no_config {
-        return Ok(OpencodeConfig::default());
+        return Ok(RcodeConfig::default());
     }
 
-    let mut result = OpencodeConfig::default();
+    let mut result = RcodeConfig::default();
     let work_directory = work_dir.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
     if let Some(config_dir) = get_config_dir() {
@@ -209,7 +209,7 @@ pub async fn load_config(
     Ok(result)
 }
 
-pub fn resolve_model_from_config(config: &OpencodeConfig, cli_model: Option<&str>, agent_name: Option<&str>) -> Option<String> {
+pub fn resolve_model_from_config(config: &RcodeConfig, cli_model: Option<&str>, agent_name: Option<&str>) -> Option<String> {
     if let Some(model) = cli_model.filter(|m| !m.is_empty()) {
         return Some(model.to_string());
     }
@@ -331,7 +331,7 @@ mod config_path_tests {
 ///
 /// Only writes the `providers` section (api_key / base_url) on top of the
 /// existing file so we don't overwrite unrelated settings (agents, models…).
-pub fn save_config(config: &OpencodeConfig) -> Result<(), String> {
+pub fn save_config(config: &RcodeConfig) -> Result<(), String> {
     let config_path = resolve_config_path()
         .unwrap_or_else(|| {
             // Default: create ~/.config/opencode/opencode.json
@@ -395,7 +395,7 @@ mod tests {
         }"#;
         
         let stripped = strip_json_comments(jsonc);
-        let config: OpencodeConfig = serde_json::from_str(&stripped).unwrap();
+        let config: RcodeConfig = serde_json::from_str(&stripped).unwrap();
         assert_eq!(config.model, Some("anthropic/claude-3-5-sonnet".to_string()));
     }
 
@@ -452,7 +452,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_model_prefers_cli() {
-        let mut config = OpencodeConfig::default();
+        let mut config = RcodeConfig::default();
         config.model = Some("anthropic/claude-3-5-sonnet".to_string());
         
         let resolved = resolve_model_from_config(&config, Some("openai/gpt-4o"), None);
@@ -461,7 +461,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_model_prefers_agent_specific() {
-        let mut config = OpencodeConfig::default();
+        let mut config = RcodeConfig::default();
         config.model = Some("anthropic/claude-3-5-sonnet".to_string());
         
         let mut agent_config = AgentConfig::default();

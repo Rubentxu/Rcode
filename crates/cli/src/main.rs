@@ -7,7 +7,7 @@ use commands::{Run, Serve, Tui, Acp};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "opencode")]
+#[command(name = "rcode")]
 #[command(version = "0.1.0")]
 #[command(about = "AI coding agent", long_about = None)]
 struct Cli {

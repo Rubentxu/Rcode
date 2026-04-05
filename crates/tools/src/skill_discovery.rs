@@ -10,7 +10,7 @@ use rcode_core::Skill;
 pub fn default_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
-    // Global opencode skills
+    // Global user skills (config dir)
     if let Some(home) = dirs::home_dir() {
         paths.push(home.join(".config/opencode/skills"));
     }
@@ -210,5 +210,151 @@ description: A test skill
         let skills = discovery.find_skills().await.unwrap();
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "test-skill");
+    }
+
+    #[tokio::test]
+    async fn test_find_skills_empty_dir() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("empty");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let discovery = SkillDiscovery::with_paths(vec![skills_dir]);
+        let skills = discovery.find_skills().await.unwrap();
+        assert!(skills.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_find_skills_nonexistent_dir() {
+        let discovery = SkillDiscovery::with_paths(vec![PathBuf::from("/nonexistent/path")]);
+        let skills = discovery.find_skills().await.unwrap();
+        assert!(skills.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_load_skill_by_name() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(skills_dir.join("my-skill")).unwrap();
+        fs::write(
+            skills_dir.join("my-skill/SKILL.md"),
+            r#"---
+name: my-skill
+description: Test
+---
+# My Skill
+"#
+        ).unwrap();
+        let discovery = SkillDiscovery::with_paths(vec![skills_dir]);
+        let skill = discovery.load_skill("my-skill").await.unwrap();
+        assert!(skill.is_some());
+        assert_eq!(skill.unwrap().name, "my-skill");
+    }
+
+    #[tokio::test]
+    async fn test_load_skill_not_found() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let discovery = SkillDiscovery::with_paths(vec![skills_dir]);
+        let skill = discovery.load_skill("nonexistent").await.unwrap();
+        assert!(skill.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_find_skills_deduplicates() {
+        let temp = TempDir::new().unwrap();
+        let dir1 = temp.path().join("d1");
+        let dir2 = temp.path().join("d2");
+        for dir in &[&dir1, &dir2] {
+            fs::create_dir_all(dir.join("dup")).unwrap();
+            fs::write(dir.join("dup/SKILL.md"), "---\nname: dup\ndescription: x\n---\n# Dup\n").unwrap();
+        }
+        let discovery = SkillDiscovery::with_paths(vec![dir1, dir2]);
+        let skills = discovery.find_skills().await.unwrap();
+        assert_eq!(skills.len(), 1);
+    }
+
+    #[test]
+    fn test_default_search_paths() {
+        let paths = default_search_paths();
+        assert!(!paths.is_empty());
+    }
+
+    #[test]
+    fn test_with_project_path() {
+        let discovery = SkillDiscovery::new().with_project_path(PathBuf::from("/tmp"));
+        let paths = discovery.all_search_paths();
+        assert!(!paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_load_skill_file_not_found() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let discovery = SkillDiscovery::with_paths(vec![skills_dir]);
+        
+        // Try to load a skill that doesn't exist
+        let skill = discovery.load_skill("nonexistent_skill").await.unwrap();
+        assert!(skill.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_find_skills_handles_read_dir_error() {
+        // Use a path that's not readable (should just skip it)
+        let discovery = SkillDiscovery::with_paths(vec![PathBuf::from("/proc/1/fd")]);
+        let result = discovery.find_skills().await;
+        // Should not panic, may return empty or partial results
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_default_search_paths_includes_home() {
+        let paths = default_search_paths();
+        // Should have at least one path
+        assert!(!paths.is_empty());
+    }
+
+    #[test]
+    fn test_all_search_paths_without_project() {
+        let discovery = SkillDiscovery::new();
+        let paths = discovery.all_search_paths();
+        // Should return global paths when no project is set
+        assert!(!paths.is_empty());
+    }
+
+    #[test]
+    fn test_all_search_paths_with_nonexistent_project() {
+        let discovery = SkillDiscovery::new().with_project_path(PathBuf::from("/nonexistent/path/123"));
+        let paths = discovery.all_search_paths();
+        // Should still return global paths
+        assert!(!paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_find_skills_in_dir_with_invalid_skill_file() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(skills_dir.join("bad-skill")).unwrap();
+        fs::write(skills_dir.join("bad-skill/SKILL.md"), "not valid frontmatter").unwrap();
+        
+        let discovery = SkillDiscovery::with_paths(vec![skills_dir]);
+        let skills = discovery.find_skills().await.unwrap();
+        // Should skip the invalid skill and not return it
+        assert!(skills.is_empty() || !skills.iter().any(|s| s.name == "bad-skill"));
+    }
+
+    #[tokio::test]
+    async fn test_find_skills_multiple_dirs() {
+        let temp = TempDir::new().unwrap();
+        let dir1 = temp.path().join("d1");
+        let dir2 = temp.path().join("d2");
+        fs::create_dir_all(dir1.join("skill1")).unwrap();
+        fs::create_dir_all(dir2.join("skill2")).unwrap();
+        fs::write(dir1.join("skill1/SKILL.md"), "---\nname: skill1\ndescription: s1\n---\n# S1\n").unwrap();
+        fs::write(dir2.join("skill2/SKILL.md"), "---\nname: skill2\ndescription: s2\n---\n# S2\n").unwrap();
+        
+        let discovery = SkillDiscovery::with_paths(vec![dir1, dir2]);
+        let skills = discovery.find_skills().await.unwrap();
+        assert_eq!(skills.len(), 2);
     }
 }

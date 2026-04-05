@@ -18,7 +18,7 @@ use rcode_core::{
     PaginationParams, PaginatedMessages, AgentContext, save_config, ProviderConfig,
 };
 use rcode_agent::{AgentExecutor, DefaultAgent};
-use rcode_providers::{ProviderFactory, ModelInfo};
+use rcode_providers::ProviderFactory;
 
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -316,18 +316,44 @@ pub async fn sse_session_events(
     Ok(Sse::new(stream))
 }
 
+/// Response for GET /models
+#[derive(serde::Serialize)]
+pub struct ListModelsResponse {
+    pub models: Vec<CatalogModelDto>,
+}
+
+#[derive(serde::Serialize)]
+pub struct CatalogModelDto {
+    pub id: String,
+    pub provider: String,
+    pub display_name: String,
+    pub has_credentials: bool,
+    pub source: String,
+    pub enabled: bool,
+}
+
 /// GET /models - List all available models
 pub async fn list_models(
     State(state): State<Arc<AppState>>,
-) -> Json<ListModelsResponse> {
-    let config = state.config.lock().unwrap();
-    let models = ProviderFactory::list_models(&config);
-    Json(ListModelsResponse { models })
-}
-
-#[derive(Debug, Serialize)]
-pub struct ListModelsResponse {
-    pub models: Vec<ModelInfo>,
+) -> axum::Json<ListModelsResponse> {
+    use rcode_providers::catalog::ModelCatalogService;
+    
+    let config = (*state.config.lock().unwrap()).clone();
+    let catalog = ModelCatalogService::new();
+    let models = catalog.list_models(&config).await;
+    
+    let dto_models: Vec<CatalogModelDto> = models.into_iter().map(|m| {
+        CatalogModelDto {
+            id: m.id,
+            provider: m.provider,
+            display_name: m.display_name,
+            has_credentials: m.has_credentials,
+            source: format!("{:?}", m.source).to_lowercase(),
+            enabled: m.enabled,
+        }
+    }).collect();
+    
+    axum::Json(ListModelsResponse { models: dto_models })
 }
 
 /// POST /connect - Switch the active model for a session
@@ -335,19 +361,8 @@ pub async fn connect_session(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ConnectRequest>,
 ) -> Result<Json<ConnectResponse>, ServerError> {
-    // Validate the model_id exists in available models
-    let config = state.config.lock().unwrap();
-    let available_models = ProviderFactory::list_models(&config);
-    let model_exists = available_models.iter().any(|m| m.id == req.model_id);
-    
-    if !model_exists {
-        return Err(ServerError::bad_request(&format!(
-            "Model '{}' is not available. Use GET /models to see available models.",
-            req.model_id
-        )));
-    }
-    
-    // Verify session exists
+    // Don't validate model existence against list — just verify session exists
+    // and update the model. Let inference fail if model is invalid.
     let _session = state.session_service.get(&SessionId(req.session_id.clone()))
         .ok_or_else(|| ServerError::not_found())?;
     

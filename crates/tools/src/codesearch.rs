@@ -62,7 +62,7 @@ impl Tool for CodesearchTool {
     
     async fn execute(&self, args: serde_json::Value, context: &ToolContext) -> Result<ToolResult> {
         let params: CodesearchParams = serde_json::from_value(args)
-            .map_err(|e| rcode_core::OpenCodeError::Tool(format!("Invalid parameters: {}", e)))?;
+            .map_err(|e| rcode_core::RCodeError::Tool(format!("Invalid parameters: {}", e)))?;
         
         let search_path: PathBuf = params.path
             .map(PathBuf::from)
@@ -112,5 +112,62 @@ impl Tool for CodesearchTool {
             })),
             attachments: vec![],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rcode_core::ToolContext;
+    use std::path::PathBuf;
+    use std::io::Write;
+
+    fn ctx_with_project(path: &str) -> ToolContext {
+        ToolContext { session_id: "s1".into(), project_path: PathBuf::from(path), cwd: PathBuf::from(path), user_id: None, agent: "test".into() }
+    }
+
+    #[tokio::test]
+    async fn test_codesearch_finds_pattern() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.rs");
+        let mut f = std::fs::File::create(&file_path).unwrap();
+        writeln!(f, "fn hello() {{}}").unwrap();
+        writeln!(f, "fn world() {{}}").unwrap();
+
+        let tool = CodesearchTool::new();
+        let result = tool.execute(serde_json::json!({"query": "hello"}), &ctx_with_project(dir.path().to_str().unwrap())).await.unwrap();
+        assert!(result.content.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn test_codesearch_no_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.rs");
+        std::fs::write(&file_path, "fn hello() {}").unwrap();
+
+        let tool = CodesearchTool::new();
+        let result = tool.execute(serde_json::json!({"query": "nonexistent_pattern_xyz"}), &ctx_with_project(dir.path().to_str().unwrap())).await.unwrap();
+        assert!(result.content.contains("No code found"));
+    }
+
+    #[tokio::test]
+    async fn test_codesearch_invalid_params() {
+        let tool = CodesearchTool::new();
+        let result = tool.execute(serde_json::json!({"query": 123}), &ctx_with_project("/tmp")).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_codesearch_respects_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..10 {
+            let file_path = dir.path().join(format!("test{}.rs", i));
+            std::fs::write(&file_path, "fn match_me() {}").unwrap();
+        }
+
+        let tool = CodesearchTool::new();
+        let result = tool.execute(serde_json::json!({"query": "match_me", "limit": 2}), &ctx_with_project(dir.path().to_str().unwrap())).await.unwrap();
+        let count = result.metadata.unwrap()["result_count"].as_u64().unwrap();
+        assert!(count <= 2);
     }
 }

@@ -51,7 +51,7 @@ impl Tool for EditTool {
         let content = fs::read_to_string(&full_path).await?;
         
         if !content.contains(old_text) {
-            return Err(rcode_core::OpenCodeError::Tool(
+            return Err(rcode_core::RCodeError::Tool(
                 format!("Text not found in file: {}", path)
             ));
         }
@@ -65,5 +65,42 @@ impl Tool for EditTool {
             metadata: None,
             attachments: vec![],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rcode_core::ToolContext;
+    use std::path::PathBuf;
+
+    fn ctx(cwd: &str) -> ToolContext {
+        ToolContext { session_id: "s1".into(), project_path: PathBuf::from(cwd), cwd: PathBuf::from(cwd), user_id: None, agent: "test".into() }
+    }
+
+    #[tokio::test]
+    async fn test_edit_replace() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test.txt"), "hello world").unwrap();
+        let tool = EditTool::new();
+        let result = tool.execute(serde_json::json!({"path": "test.txt", "old_text": "hello", "new_text": "goodbye"}), &ctx(dir.path().to_str().unwrap())).await.unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("test.txt")).unwrap(), "goodbye world");
+        assert!(result.content.contains("Replaced"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_text_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test.txt"), "hello world").unwrap();
+        let tool = EditTool::new();
+        let result = tool.execute(serde_json::json!({"path": "test.txt", "old_text": "missing", "new_text": "x"}), &ctx(dir.path().to_str().unwrap())).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_edit_nonexistent_file() {
+        let tool = EditTool::new();
+        let result = tool.execute(serde_json::json!({"path": "nope.txt", "old_text": "a", "new_text": "b"}), &ctx("/tmp")).await;
+        assert!(result.is_err());
     }
 }

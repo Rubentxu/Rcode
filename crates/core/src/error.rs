@@ -1,4 +1,4 @@
-//! Error types for opencode-rust
+//! Error types for RCode
 
 use thiserror::Error;
 
@@ -24,7 +24,7 @@ pub enum ProviderError {
 }
 
 #[derive(Error, Debug)]
-pub enum OpenCodeError {
+pub enum RCodeError {
     #[error("Agent error: {0}")]
     Agent(String),
 
@@ -59,4 +59,4 @@ pub enum OpenCodeError {
     Json(#[from] serde_json::Error),
 }
 
-pub type Result<T> = std::result::Result<T, OpenCodeError>;
+pub type Result<T> = std::result::Result<T, RCodeError>;

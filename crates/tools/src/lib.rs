@@ -1,4 +1,4 @@
-//! Built-in tools for opencode-rust
+//! Built-in tools for RCode
 
 pub mod bash;
 pub mod batch;
