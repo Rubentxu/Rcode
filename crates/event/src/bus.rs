@@ -38,6 +38,18 @@ pub enum Event {
     PluginInstalled { plugin_id: String, version: String },
     PluginActivated { plugin_id: String },
     PluginDeactivated { plugin_id: String, reason: String },
+    PermissionRequested {
+        request_id: Uuid,
+        session_id: String,
+        tool_name: String,
+        tool_input: serde_json::Value,
+    },
+    PermissionResolved {
+        request_id: Uuid,
+        session_id: String,
+        granted: bool,
+        reason: Option<String>,
+    },
 }
 
 impl Event {
@@ -64,6 +76,8 @@ impl Event {
             Event::PluginInstalled { .. } => "plugin_installed",
             Event::PluginActivated { .. } => "plugin_activated",
             Event::PluginDeactivated { .. } => "plugin_deactivated",
+            Event::PermissionRequested { .. } => "permission_requested",
+            Event::PermissionResolved { .. } => "permission_resolved",
         }
     }
     
@@ -90,6 +104,8 @@ impl Event {
             Event::PluginInstalled { .. } => None,
             Event::PluginActivated { .. } => None,
             Event::PluginDeactivated { .. } => None,
+            Event::PermissionRequested { session_id, .. } => Some(session_id),
+            Event::PermissionResolved { session_id, .. } => Some(session_id),
         }
     }
 }

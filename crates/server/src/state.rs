@@ -1,5 +1,9 @@
 //! Application state
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use rcode_agent::permissions::InteractivePermissionService;
 use rcode_core::RcodeConfig;
 use rcode_event::EventBus;
 use rcode_providers::catalog::ModelCatalogService;
@@ -8,18 +12,20 @@ use rcode_session::SessionService;
 use rcode_storage::{schema, MessageRepository, SessionRepository};
 use rcode_tools::ToolRegistryService;
 use rusqlite::Connection;
-use std::sync::{Arc, Mutex};
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::cancellation::CancellationRegistry;
 
 pub struct AppState {
     pub session_service: Arc<SessionService>,
     pub event_bus: Arc<EventBus>,
-    pub providers: Arc<Mutex<ProviderRegistry>>,
+    pub providers: Arc<std::sync::Mutex<ProviderRegistry>>,
     pub tools: Arc<ToolRegistryService>,
     pub config: Arc<std::sync::Mutex<RcodeConfig>>,
     pub catalog: Arc<ModelCatalogService>,
     pub cancellation: Arc<CancellationRegistry>,
+    /// Map of session_id to InteractivePermissionService for interactive permission approval
+    pub permission_services: Arc<TokioMutex<HashMap<String, Arc<InteractivePermissionService>>>>,
 }
 
 fn create_storage_path() -> std::path::PathBuf {
@@ -52,11 +58,14 @@ impl AppState {
                 return Self {
                     session_service: session_service.clone(),
                     event_bus,
-                    providers: Arc::new(Mutex::new(ProviderRegistry::new())),
-                    tools: Arc::new(ToolRegistryService::with_session_service(session_service)),
-                    config: Arc::new(Mutex::new(config)),
+                    providers: Arc::new(std::sync::Mutex::new(ProviderRegistry::new())),
+                    tools: Arc::new(ToolRegistryService::with_session_service(
+                        session_service.clone(),
+                    )),
+                    config: Arc::new(std::sync::Mutex::new(config)),
                     catalog: Arc::new(ModelCatalogService::new()),
                     cancellation: Arc::new(CancellationRegistry::new()),
+                    permission_services: Arc::new(TokioMutex::new(HashMap::new())),
                 };
             }
         };
@@ -70,11 +79,14 @@ impl AppState {
             return Self {
                 session_service: session_service.clone(),
                 event_bus,
-                providers: Arc::new(Mutex::new(ProviderRegistry::new())),
-                tools: Arc::new(ToolRegistryService::with_session_service(session_service)),
-                config: Arc::new(Mutex::new(config)),
+                providers: Arc::new(std::sync::Mutex::new(ProviderRegistry::new())),
+                tools: Arc::new(ToolRegistryService::with_session_service(
+                    session_service.clone(),
+                )),
+                config: Arc::new(std::sync::Mutex::new(config)),
                 catalog: Arc::new(ModelCatalogService::new()),
                 cancellation: Arc::new(CancellationRegistry::new()),
+                permission_services: Arc::new(TokioMutex::new(HashMap::new())),
             };
         }
 
@@ -87,11 +99,14 @@ impl AppState {
                 return Self {
                     session_service: session_service.clone(),
                     event_bus,
-                    providers: Arc::new(Mutex::new(ProviderRegistry::new())),
-                    tools: Arc::new(ToolRegistryService::with_session_service(session_service)),
-                    config: Arc::new(Mutex::new(config)),
+                    providers: Arc::new(std::sync::Mutex::new(ProviderRegistry::new())),
+                    tools: Arc::new(ToolRegistryService::with_session_service(
+                        session_service.clone(),
+                    )),
+                    config: Arc::new(std::sync::Mutex::new(config)),
                     catalog: Arc::new(ModelCatalogService::new()),
                     cancellation: Arc::new(CancellationRegistry::new()),
+                    permission_services: Arc::new(TokioMutex::new(HashMap::new())),
                 };
             }
         };
@@ -108,11 +123,14 @@ impl AppState {
         Self {
             session_service: session_service.clone(),
             event_bus,
-            providers: Arc::new(Mutex::new(ProviderRegistry::new())),
-            tools: Arc::new(ToolRegistryService::with_session_service(session_service)),
-            config: Arc::new(Mutex::new(config)),
+            providers: Arc::new(std::sync::Mutex::new(ProviderRegistry::new())),
+            tools: Arc::new(ToolRegistryService::with_session_service(
+                session_service.clone(),
+            )),
+            config: Arc::new(std::sync::Mutex::new(config)),
             catalog: Arc::new(ModelCatalogService::new()),
             cancellation: Arc::new(CancellationRegistry::new()),
+            permission_services: Arc::new(TokioMutex::new(HashMap::new())),
         }
     }
 }

@@ -48,6 +48,8 @@ pub async fn create_app(state: Arc<AppState>) -> Router {
         .route("/terminal/exec", post(routes::terminal::exec_terminal_command))
         .route("/session/:id/diffs", get(routes::diff::list_diffs))
         .route("/session/:id/diff/:file", get(routes::diff::get_diff))
+        .route("/permission/:request_id/grant", post(routes::permission_grant))
+        .route("/permission/:request_id/deny", post(routes::permission_deny))
         .with_state(state)
         .layer(cors)
 }

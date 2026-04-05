@@ -10,9 +10,11 @@ use axum::{
 };
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::state::AppState;
 use crate::error::ServerError;
+use rcode_agent::permissions::InteractivePermissionService;
 use rcode_core::{
     Session, SessionId, SessionStatus, Message, Part, MessageId, 
     PaginationParams, PaginatedMessages, AgentContext, save_config, ProviderConfig,
@@ -291,6 +293,8 @@ pub async fn submit_prompt(
     let agent: Arc<dyn rcode_core::Agent> = Arc::new(DefaultAgent::new());
     
     // Build the executor with all overrides
+    // Note: InteractivePermissionService wiring is pending due to type inference issues
+    // with axum Handler trait. Using AutoPermissionService for now.
     let mut executor = AgentExecutor::new(
         agent,
         provider,
@@ -744,4 +748,48 @@ pub async fn update_provider(
     }
 
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// ========== Permission Grant/Deny Endpoints ==========
+
+/// POST /permission/:request_id/grant - Grant permission for a pending request
+pub async fn permission_grant(
+    State(state): State<Arc<AppState>>,
+    Path(request_id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, ServerError> {
+    // Search for the permission service that has this pending request
+    let perm_services = state.permission_services.lock().await;
+    
+    for (_session_id, perm_service) in perm_services.iter() {
+        if perm_service.grant(request_id).await.is_ok() {
+            return Ok(Json(serde_json::json!({
+                "ok": true,
+                "request_id": request_id.to_string(),
+                "granted": true,
+            })));
+        }
+    }
+    
+    Err(ServerError::not_found())
+}
+
+/// POST /permission/:request_id/deny - Deny permission for a pending request
+pub async fn permission_deny(
+    State(state): State<Arc<AppState>>,
+    Path(request_id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, ServerError> {
+    // Search for the permission service that has this pending request
+    let perm_services = state.permission_services.lock().await;
+    
+    for (_session_id, perm_service) in perm_services.iter() {
+        if perm_service.deny(request_id).await.is_ok() {
+            return Ok(Json(serde_json::json!({
+                "ok": true,
+                "request_id": request_id.to_string(),
+                "granted": false,
+            })));
+        }
+    }
+    
+    Err(ServerError::not_found())
 }
