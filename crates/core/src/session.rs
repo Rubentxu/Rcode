@@ -51,8 +51,10 @@ impl SessionStatus {
     /// Valid status transitions
     pub fn can_transition_to(&self, new_status: SessionStatus) -> bool {
         match self {
-            // From Idle, can go to Running
-            SessionStatus::Idle => matches!(new_status, SessionStatus::Running),
+            // From Idle, can go to Running or Aborted (abort on idle session is a no-op but valid)
+            SessionStatus::Idle => {
+                matches!(new_status, SessionStatus::Running | SessionStatus::Aborted)
+            }
             // From Running, can go to Idle (for reuse), Completed, Aborted
             SessionStatus::Running => {
                 matches!(

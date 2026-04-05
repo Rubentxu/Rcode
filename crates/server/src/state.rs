@@ -10,6 +10,8 @@ use rcode_tools::ToolRegistryService;
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 
+use crate::cancellation::CancellationRegistry;
+
 pub struct AppState {
     pub session_service: Arc<SessionService>,
     pub event_bus: Arc<EventBus>,
@@ -17,6 +19,7 @@ pub struct AppState {
     pub tools: Arc<ToolRegistryService>,
     pub config: Arc<std::sync::Mutex<RcodeConfig>>,
     pub catalog: Arc<ModelCatalogService>,
+    pub cancellation: Arc<CancellationRegistry>,
 }
 
 fn create_storage_path() -> std::path::PathBuf {
@@ -53,6 +56,7 @@ impl AppState {
                     tools: Arc::new(ToolRegistryService::with_session_service(session_service)),
                     config: Arc::new(Mutex::new(config)),
                     catalog: Arc::new(ModelCatalogService::new()),
+                    cancellation: Arc::new(CancellationRegistry::new()),
                 };
             }
         };
@@ -70,6 +74,7 @@ impl AppState {
                 tools: Arc::new(ToolRegistryService::with_session_service(session_service)),
                 config: Arc::new(Mutex::new(config)),
                 catalog: Arc::new(ModelCatalogService::new()),
+                cancellation: Arc::new(CancellationRegistry::new()),
             };
         }
 
@@ -86,6 +91,7 @@ impl AppState {
                     tools: Arc::new(ToolRegistryService::with_session_service(session_service)),
                     config: Arc::new(Mutex::new(config)),
                     catalog: Arc::new(ModelCatalogService::new()),
+                    cancellation: Arc::new(CancellationRegistry::new()),
                 };
             }
         };
@@ -106,6 +112,7 @@ impl AppState {
             tools: Arc::new(ToolRegistryService::with_session_service(session_service)),
             config: Arc::new(Mutex::new(config)),
             catalog: Arc::new(ModelCatalogService::new()),
+            cancellation: Arc::new(CancellationRegistry::new()),
         }
     }
 }

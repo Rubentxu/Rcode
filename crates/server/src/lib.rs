@@ -3,6 +3,7 @@
 pub mod routes;
 pub mod state;
 pub mod error;
+pub mod cancellation;
 
 pub use state::AppState;
 pub use error::ServerError;
@@ -36,6 +37,7 @@ pub async fn create_app(state: Arc<AppState>) -> Router {
         .route("/session/:id/prompt", post(routes::submit_prompt))
         .route("/session/:id/abort", post(routes::abort_session))
         .route("/session/:id/events", get(routes::sse_session_events))
+        .route("/session/:id/children", get(routes::get_session_children))
         .route("/event", get(routes::sse_events))
         .route("/models", get(routes::list_models))
         .route("/connect", post(routes::connect_session))

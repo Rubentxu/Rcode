@@ -45,22 +45,41 @@ pub async fn create_session(
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<Json<Session>, ServerError> {
     let model = state.config.lock().unwrap().effective_model().unwrap_or("claude-sonnet-4-5").to_string();
-    let session = Session::new(
-        req.project_path.into(),
-        req.agent_id.unwrap_or_else(|| "build".to_string()),
-        req.model_id.unwrap_or_else(|| model),
-    );
-    let session = state.session_service.create(session);
+    
+    let session = if let Some(ref parent_id) = req.parent_id {
+        // T11: Create child session inheriting parent's project_path
+        // project_path is optional for child sessions - inherited from parent
+        let agent_id = req.agent_id.unwrap_or_else(|| "build".to_string());
+        let model_id = req.model_id.unwrap_or_else(|| model.clone());
+        state.session_service
+            .create_child(parent_id, agent_id, model_id)
+            .map_err(|_e| ServerError::not_found())?
+    } else {
+        // Original behavior: create top-level session
+        // project_path is required for top-level sessions
+        let project_path = req.project_path
+            .ok_or_else(|| ServerError::bad_request("project_path is required for top-level sessions"))?;
+        let session = Session::new(
+            project_path.into(),
+            req.agent_id.unwrap_or_else(|| "build".to_string()),
+            req.model_id.unwrap_or_else(|| model),
+        );
+        state.session_service.create(session)
+    };
+    
     Ok(Json(session.as_ref().clone()))
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionRequest {
-    pub project_path: String,
+    #[serde(default)]
+    pub project_path: Option<String>,
     #[serde(default)]
     pub agent_id: Option<String>,
     #[serde(default)]
     pub model_id: Option<String>,
+    #[serde(default)]
+    pub parent_id: Option<String>,
 }
 
 pub async fn get_session(
@@ -70,6 +89,19 @@ pub async fn get_session(
     let session = state.session_service.get(&SessionId(id))
         .ok_or_else(|| ServerError::not_found())?;
     Ok(Json(session.as_ref().clone()))
+}
+
+/// T12: Get child sessions for a parent session
+pub async fn get_session_children(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<Session>>, ServerError> {
+    // First verify the parent session exists
+    let _session = state.session_service.get(&SessionId(id.clone()))
+        .ok_or_else(|| ServerError::not_found())?;
+    
+    let children = state.session_service.get_children(&id);
+    Ok(Json(children.into_iter().map(|s| (*s).clone()).collect()))
 }
 
 pub async fn delete_session(
@@ -122,12 +154,18 @@ pub async fn submit_prompt(
     Path(id): Path<String>,
     Json(req): Json<PromptRequest>,
 ) -> Result<Json<PromptResponse>, ServerError> {
+    // T4: Check for concurrent prompt — reject if session already has active executor run
+    if state.cancellation.is_active(&id) {
+        return Err(ServerError::conflict("session already running"));
+    }
+
     // D5: Check session exists first
     let session = state.session_service.get(&SessionId(id.clone()))
         .ok_or_else(|| ServerError::not_found())?;
     
     // D5: Build provider FIRST, before setting Running status
-    let model_id = session.model_id.clone();
+    // Use req.model_id if provided, otherwise use session.model_id
+    let model_id = req.model_id.clone().unwrap_or_else(|| session.model_id.clone());
     let config = state.config.lock().map_err(|e| ServerError::internal(e.to_string()))?;
     let (provider, effective_model) = match ProviderFactory::build(&model_id, Some(&*config)) {
         Ok((p, m)) => (p, m),
@@ -143,6 +181,9 @@ pub async fn submit_prompt(
         return Err(ServerError::conflict("Session is already running or in an invalid state"));
     }
     
+    // T4: Register cancellation token BEFORE spawning
+    let token = state.cancellation.register(&id);
+    
     // D5: Track pre-existing message count for deduplication (captured after provider built)
     let pre_existing_count = state.session_service.get_messages(&id).len();
     let message = Message::user(id.clone(), vec![Part::Text {
@@ -157,12 +198,17 @@ pub async fn submit_prompt(
     let agent: Arc<dyn rcode_core::Agent> = Arc::new(DefaultAgent::new());
     
     // Build the executor
-    let executor = AgentExecutor::new(
+    let mut executor = AgentExecutor::new(
         agent,
         provider,
         Arc::clone(&state.tools),
     )
     .with_event_bus(Arc::clone(&state.event_bus));
+    
+    // T9: Apply model override if provided in request
+    if let Some(ref model_override) = req.model_id {
+        executor = executor.with_model_override(model_override.clone());
+    }
     
     // Create agent context
     let cwd = std::env::current_dir()
@@ -180,15 +226,21 @@ pub async fn submit_prompt(
     // Run the executor in a spawned task to avoid blocking the server
     let session_service = Arc::clone(&state.session_service);
     let event_bus = Arc::clone(&state.event_bus);
+    let cancellation = Arc::clone(&state.cancellation);
+    let session_id_clone = id.clone();
     
     tokio::spawn(async move {
-        let result = executor.run(&mut ctx).await;
+        // T4: Run with cancellation token
+        let result = executor.run_with_cancellation(&mut ctx, token).await;
+        
+        // T4: Deregister token when executor finishes (finally block equivalent)
+        cancellation.remove(&session_id_clone);
         
         // D2: Persist only NEW assistant messages (not previously persisted)
         let new_messages = ctx.messages.iter().skip(pre_existing_count);
         for msg in new_messages {
             if msg.role == rcode_core::Role::Assistant {
-                session_service.add_message(&id, msg.clone());
+                session_service.add_message(&session_id_clone, msg.clone());
             }
         }
         
@@ -203,12 +255,12 @@ pub async fn submit_prompt(
                     + (completion_toks as f64 * 15.0 / 1_000_000.0);
                 
                 // Update session in memory
-                if let Some(session) = session_service.get(&rcode_core::SessionId(id.clone())) {
+                if let Some(session) = session_service.get(&rcode_core::SessionId(session_id_clone.clone())) {
                     let mut session_mut = (*session).clone();
                     session_mut.add_usage(prompt_toks, completion_toks, cost);
                     // Persist to storage
                     if let Some(repo) = session_service.session_repo() {
-                        let _ = repo.update_usage(&id, session_mut.prompt_tokens, 
+                        let _ = repo.update_usage(&session_id_clone, session_mut.prompt_tokens, 
                             session_mut.completion_tokens, session_mut.total_cost_usd);
                     }
                 }
@@ -216,19 +268,23 @@ pub async fn submit_prompt(
         }
         
         match result {
-            Ok(_) => {
-                // G5: Set to Idle so session can accept new prompts
-                let _ = session_service.update_status(&id, SessionStatus::Idle);
+            Ok(agent_result) => {
+                // G5: If user cancelled (via abort), set to Aborted; otherwise set to Idle
+                if matches!(agent_result.stop_reason, rcode_core::agent::StopReason::UserStopped) {
+                    let _ = session_service.update_status(&session_id_clone, SessionStatus::Aborted);
+                } else {
+                    let _ = session_service.update_status(&session_id_clone, SessionStatus::Idle);
+                }
             }
             Err(e) => {
                 tracing::error!("Agent execution failed: {}", e);
-                let _ = session_service.update_status(&id, SessionStatus::Aborted);
+                let _ = session_service.update_status(&session_id_clone, SessionStatus::Aborted);
             }
         }
         
         // Publish agent finished event
         event_bus.publish(rcode_event::Event::AgentFinished {
-            session_id: id,
+            session_id: session_id_clone,
         });
     });
     
@@ -241,6 +297,8 @@ pub async fn submit_prompt(
 #[derive(Debug, Deserialize)]
 pub struct PromptRequest {
     pub prompt: String,
+    #[serde(default)]
+    pub model_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -253,6 +311,9 @@ pub async fn abort_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<()>, ServerError> {
+    // T5: Cancel the executor if there's an active run
+    state.cancellation.cancel(&id);
+    
     let updated = state.session_service.update_status(&id, SessionStatus::Aborted);
     if !updated {
         return Err(ServerError::invalid_transition("Cannot abort session in current state"));

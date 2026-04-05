@@ -164,6 +164,16 @@ impl SessionService {
             .collect()
     }
 
+    /// T12: Get child sessions for a given parent session ID
+    pub fn get_children(&self, parent_id: &str) -> Vec<Arc<Session>> {
+        self.sessions
+            .read()
+            .values()
+            .filter(|s| s.parent_id.as_deref() == Some(parent_id))
+            .cloned()
+            .collect()
+    }
+
     /// Internal add_message that can optionally clear the redo stack
     fn add_message_internal(&self, session_id: &str, message: Message, clear_redo: bool) {
         // Persist to SQLite if storage is configured
