@@ -237,35 +237,94 @@ pub fn parse_model_id(model: &str) -> (String, String) {
     }
 }
 
+/// Find the highest-precedence existing path from a list of candidates,
+/// checking in the same order that load_config() applies precedence.
+fn find_highest_existing_path(candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates.iter().find(|p| p.exists()).cloned()
+}
+
 /// Resolve the config path to save to disk.
 ///
-/// Priority (first existing path wins):
-///   1. Project-level .opencode/opencode.json
-///   2. Global ~/.config/opencode/opencode.json  (same dir load_config reads)
+/// Mirrors the precedence order that `load_config()` uses when merging files,
+/// so saved provider keys are read back correctly on the next server restart.
+///
+/// Priority (first existing path wins, highest precedence first):
+///   1. Global ~/.config/opencode/managed/opencode.json   ← load_config merges last = highest
+///   2. Global ~/.config/opencode/managed/opencode.jsonc
+///   3. Project .opencode/opencode.jsonc
+///   4. Project .opencode/opencode.json
+///   5. Global ~/.config/opencode/config.json
+///   6. Global ~/.config/opencode/opencode.json
+///   7. Global ~/.config/opencode/opencode.jsonc
 ///
 /// Falls back to creating ~/.config/opencode/opencode.json when none exist.
-fn resolve_config_path() -> Option<PathBuf> {
-    // Project-level first
-    let candidates = [
-        ".opencode/opencode.json",
-        ".opencode/opencode.jsonc",
-    ];
-    for candidate in &candidates {
-        if std::path::Path::new(candidate).exists() {
-            return Some(PathBuf::from(candidate));
+pub fn resolve_config_path() -> Option<PathBuf> {
+    let work_dir = std::env::current_dir().ok();
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    // 1-2: Global managed dir — applied LAST by load_config so it has highest precedence.
+    if let Some(managed_dir) = get_managed_config_dir() {
+        candidates.push(managed_dir.join("opencode.json"));
+        candidates.push(managed_dir.join("opencode.jsonc"));
+    }
+
+    // 3-4: Project-level .opencode/ (walk up from cwd, stop at first .opencode dir).
+    if let Some(ref wd) = work_dir {
+        for ancestor in wd.ancestors() {
+            let opencode_dir = ancestor.join(".opencode");
+            if opencode_dir.is_dir() {
+                candidates.push(opencode_dir.join("opencode.jsonc"));
+                candidates.push(opencode_dir.join("opencode.json"));
+                break;
+            }
+            if ancestor.join(".git").exists() {
+                break;
+            }
         }
     }
 
-    // Global config — use the same directory that load_config reads from so
-    // saved keys are picked up on the next server restart.
+    // 5-7: Global ~/.config/opencode/ (same files load_config reads globally).
     if let Some(config_dir) = dirs::config_dir() {
-        let global = config_dir.join("opencode").join("opencode.json");
-        if global.exists() {
-            return Some(global);
-        }
+        let opencode_dir = config_dir.join("opencode");
+        candidates.push(opencode_dir.join("config.json"));
+        candidates.push(opencode_dir.join("opencode.json"));
+        candidates.push(opencode_dir.join("opencode.jsonc"));
     }
 
-    None
+    find_highest_existing_path(&candidates)
+}
+
+#[cfg(test)]
+mod config_path_tests {
+    use super::*;
+
+    #[test]
+    fn test_find_highest_existing_path_returns_first_match() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path();
+
+        let candidates = vec![
+            base.join("a.txt"),
+            base.join("b.txt"),
+            base.join("c.txt"),
+        ];
+        std::fs::write(base.join("b.txt"), "test").unwrap();
+
+        assert_eq!(find_highest_existing_path(&candidates), Some(base.join("b.txt")));
+    }
+
+    #[test]
+    fn test_find_highest_existing_path_returns_none_when_no_match() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path();
+
+        let candidates = vec![
+            base.join("a.txt"),
+            base.join("b.txt"),
+        ];
+
+        assert_eq!(find_highest_existing_path(&candidates), None);
+    }
 }
 
 /// Save config to disk at the resolved config path.

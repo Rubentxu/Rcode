@@ -407,12 +407,26 @@ pub async fn update_config(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UpdateConfigRequest>,
 ) -> Result<Json<serde_json::Value>, ServerError> {
+    // Clone the current config FIRST to avoid mutating state before save succeeds.
+    let mut config = {
+        let guard = state.config.lock().map_err(|e| ServerError::internal(e.to_string()))?;
+        (*guard).clone()
+    };
+
+    // Apply changes to the clone (not the live state)
     if let Some(model) = req.model {
-        state.config.lock().unwrap().model = Some(model);
+        config.model = Some(model);
     }
-    // Persist to disk
-    let config = state.config.lock().unwrap();
-    let _ = save_config(&config);
+
+    // Persist the clone to disk. If this fails, live state is untouched.
+    save_config(&config).map_err(|e| ServerError::internal(e))?;
+
+    // Only update live state AFTER successful disk write
+    {
+        let mut guard = state.config.lock().map_err(|e| ServerError::internal(e.to_string()))?;
+        *guard = config;
+    }
+
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -424,9 +438,15 @@ pub async fn get_providers(
 
     // Returns true if the provider has an API key set via env var OR in the
     // in-memory config (which may have been saved via PUT /config/providers/:id).
+    // Checks both *_API_KEY and *_AUTH_TOKEN to align with runtime credential resolution
+    // in crates/providers/src/credentials.rs.
     let check_has_key = |provider_id: &str| -> bool {
         let env_key = format!("{}_API_KEY", provider_id.to_uppercase().replace('-', "_"));
         if std::env::var(&env_key).is_ok() {
+            return true;
+        }
+        let auth_key = format!("{}_AUTH_TOKEN", provider_id.to_uppercase().replace('-', "_"));
+        if std::env::var(&auth_key).is_ok() {
             return true;
         }
         config
@@ -516,20 +536,33 @@ pub async fn update_provider(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UpdateProviderRequest>,
 ) -> Result<Json<serde_json::Value>, ServerError> {
-    let mut config = state.config.lock().unwrap();
+    // Clone the current config FIRST to avoid mutating state before save succeeds.
+    let mut config = {
+        let guard = state.config.lock().map_err(|e| ServerError::internal(e.to_string()))?;
+        (*guard).clone()
+    };
+
+    // Apply changes to the clone (not the live state)
     let provider_config = config
         .providers
         .entry(provider_id.clone())
         .or_insert_with(ProviderConfig::default);
-    
+
     if let Some(api_key) = req.api_key {
         provider_config.api_key = Some(api_key);
     }
     if let Some(base_url) = req.base_url {
         provider_config.base_url = Some(base_url);
     }
-    
-    // Persist to disk
-    let _ = save_config(&config);
+
+    // Persist the clone to disk. If this fails, live state is untouched.
+    save_config(&config).map_err(|e| ServerError::internal(e))?;
+
+    // Only update live state AFTER successful disk write
+    {
+        let mut guard = state.config.lock().map_err(|e| ServerError::internal(e.to_string()))?;
+        *guard = config;
+    }
+
     Ok(Json(serde_json::json!({ "ok": true })))
 }

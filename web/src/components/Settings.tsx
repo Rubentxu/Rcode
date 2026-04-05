@@ -63,6 +63,7 @@ export function Settings(props: { onClose: () => void }) {
   const [saving, setSaving] = createSignal(false);
   const [saveError, setSaveError] = createSignal<string | null>(null);
   const [saveSuccess, setSaveSuccess] = createSignal(false);
+  const [backendUnreachable, setBackendUnreachable] = createSignal(false);
 
   // Custom provider form state
   const [showCustomForm, setShowCustomForm] = createSignal(false);
@@ -82,9 +83,13 @@ export function Settings(props: { onClose: () => void }) {
       if (res.ok) {
         const data = await res.json();
         setProviders(data.providers || []);
+        setBackendUnreachable(false);
+      } else {
+        setBackendUnreachable(false);
       }
     } catch (e) {
       console.error("Failed to load providers:", e);
+      setBackendUnreachable(true);
     }
   }
 
@@ -150,7 +155,11 @@ export function Settings(props: { onClose: () => void }) {
         }),
       });
 
-      if (!res.ok) return;
+      if (!res.ok) {
+        const text = await res.text().catch(() => "Unknown error");
+        setSaveError(`Server error ${res.status}: ${text}`);
+        return;
+      }
 
       setCustomProviderId("");
       setCustomApiKey("");
@@ -158,7 +167,7 @@ export function Settings(props: { onClose: () => void }) {
       setShowCustomForm(false);
       await loadProviders();
     } catch (e) {
-      console.error("Failed to add custom provider:", e);
+      setSaveError(`Network error: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -250,6 +259,12 @@ export function Settings(props: { onClose: () => void }) {
             ✕
           </button>
         </div>
+
+        <Show when={backendUnreachable()}>
+          <div style="margin-bottom: 16px; padding: 10px 14px; background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.3); border-radius: var(--radius-md); font-size: 13px; color: var(--error);">
+            ⚠ Backend not available. Make sure the rcode server is running (<code>opencode serve</code>) or set <code>VITE_API_BASE</code> to the correct address.
+          </div>
+        </Show>
 
         <h3 style="color: var(--text-primary); margin-bottom: 12px;">Providers</h3>
 
