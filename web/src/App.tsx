@@ -5,6 +5,7 @@ import SessionView from "./components/SessionView";
 import EmptySessionView from "./components/EmptySessionView";
 import Terminal from "./components/Terminal";
 import { Settings } from "./components/Settings";
+import { ToastContainer, showToast } from "./components/Toast";
 import { getApiBase } from "./api/config";
 
 export interface Session {
@@ -183,15 +184,50 @@ export default function App() {
         
         // Try to parse error response from backend
         let errorMsg = `Request failed: ${response.status}`;
+        let errorCode = "";
         try {
           const errorData = await response.json();
-          errorMsg = errorData.message || errorData.code || errorMsg;
+          errorMsg = errorData.message || errorMsg;
+          errorCode = errorData.code || "";
         } catch {
           // Use status text if JSON parsing fails
           errorMsg = `${response.status} ${response.statusText}`;
         }
         
         console.error(`Prompt failed: ${errorMsg}`);
+        
+        // Show toast notification with helpful error message
+        if (errorMsg.includes("API key") || errorMsg.includes("No API key")) {
+          showToast({
+            type: "error",
+            message: `API key not configured for this model. Go to Settings to configure your API key.`,
+            duration: 8000,
+          });
+        } else if (errorMsg.includes("Unknown provider")) {
+          showToast({
+            type: "error",
+            message: `Unknown model provider. Check Settings to configure a valid model.`,
+            duration: 6000,
+          });
+        } else if (errorCode === "SESSION_ALREADY_RUNNING" || response.status === 409) {
+          showToast({
+            type: "warning",
+            message: `Session is already processing. Please wait or abort the current run.`,
+            duration: 5000,
+          });
+        } else if (response.status === 500) {
+          showToast({
+            type: "error",
+            message: `Server error: ${errorMsg}`,
+            duration: 6000,
+          });
+        } else {
+          showToast({
+            type: "error",
+            message: errorMsg,
+            duration: 5000,
+          });
+        }
         
         // Reload sessions to get accurate status
         loadSessions();
@@ -203,6 +239,11 @@ export default function App() {
       console.error("Failed to submit prompt:", e);
       // Remove the user message since the request failed completely
       setMessages((prev) => prev.slice(0, -1));
+      showToast({
+        type: "error",
+        message: `Network error: Could not connect to server. Make sure the backend is running.`,
+        duration: 6000,
+      });
     } finally {
       setIsLoading(false);
     }
@@ -301,6 +342,7 @@ export default function App() {
       <Show when={showSettings()}>
         <Settings onClose={() => setShowSettings(false)} />
       </Show>
+      <ToastContainer />
     </div>
   );
 }
