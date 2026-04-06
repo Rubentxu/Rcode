@@ -121,17 +121,38 @@ impl McpClient {
     }
 
     /// Call a tool on the MCP server
+    /// 
+    /// The `session_context` parameter, if provided, will be merged into the
+    /// arguments sent to the MCP server under the key "_session_id".
     pub async fn call_tool(
         &mut self,
         name: &str,
         arguments: Value,
+        session_context: Option<String>,
     ) -> Result<McpToolResult> {
+        // Merge session context into arguments if provided
+        let final_arguments = if let Some(session_id) = session_context {
+            let mut args = arguments;
+            if let Some(obj) = args.as_object_mut() {
+                obj.insert("_session_id".to_string(), serde_json::json!(session_id));
+            } else {
+                // If arguments wasn't an object, wrap it
+                args = serde_json::json!({
+                    "_session_id": session_id,
+                    "_original_arguments": args
+                });
+            }
+            args
+        } else {
+            arguments
+        };
+
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             method: "tools/call".to_string(),
             params: Some(serde_json::json!({
                 "name": name,
-                "arguments": arguments
+                "arguments": final_arguments
             })),
             id: Some(Value::Number(2.into())),
         };

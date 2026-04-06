@@ -56,7 +56,7 @@ impl Tool for McpToolAdapter {
         })
     }
 
-    async fn execute(&self, args: Value, _context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<ToolResult> {
         let server = args["server"]
             .as_str()
             .ok_or_else(|| rcode_core::RCodeError::Tool("Missing 'server' argument".into()))?;
@@ -74,8 +74,8 @@ impl Tool for McpToolAdapter {
 
         let mut client = client.write().await;
 
-        // Call the tool on the MCP server
-        let result = client.call_tool(tool, params).await
+        // Call the tool on the MCP server, passing session context
+        let result = client.call_tool(tool, params, Some(context.session_id.clone())).await
             .map_err(|e| rcode_core::RCodeError::Tool(format!("MCP tool call failed: {}", e)))?;
 
         let content = result.content_to_string();

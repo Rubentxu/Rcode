@@ -62,11 +62,15 @@ impl McpServerRegistry {
     }
 
     /// Call a tool on a specific server
+    /// 
+    /// The `session_context` parameter, if provided, will be passed to the
+    /// MCP client and merged into the tool arguments.
     pub async fn call_tool(
         &self,
         server_name: &str,
         tool_name: &str,
         arguments: serde_json::Value,
+        session_context: Option<String>,
     ) -> Result<super::types::McpToolResult> {
         let client = self
             .get_server(server_name)
@@ -74,7 +78,7 @@ impl McpServerRegistry {
             .ok_or_else(|| super::error::McpError::Connection(format!("Server not found: {}", server_name)))?;
 
         let mut client = client.write().await;
-        client.call_tool(tool_name, arguments).await
+        client.call_tool(tool_name, arguments, session_context).await
     }
 }
 

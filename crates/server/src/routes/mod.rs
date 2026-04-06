@@ -218,6 +218,8 @@ pub async fn submit_prompt(
     
     // Get auto_compact setting for executor
     let auto_compact = config.auto_compact;
+    let compact_threshold_messages = config.compact_threshold_messages;
+    let compact_keep_messages = config.compact_keep_messages;
     
     // Resolve title model: small_model > model_for_agent("title") > effective_model
     let title_model = config.effective_small_model()
@@ -323,6 +325,11 @@ pub async fn submit_prompt(
     // Apply auto_compact setting if enabled
     if auto_compact {
         executor = executor.with_auto_compact(true);
+        
+        // Apply custom compaction thresholds if specified
+        if let (Some(threshold), Some(keep)) = (compact_threshold_messages, compact_keep_messages) {
+            executor = executor.with_compaction_thresholds(threshold, keep);
+        }
     }
     
     // Create agent context

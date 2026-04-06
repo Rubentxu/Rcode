@@ -70,6 +70,18 @@ pub struct RcodeConfig {
     #[serde(rename = "auto_compact", default)]
     pub auto_compact: bool,
 
+    /// Maximum messages before triggering compaction.
+    /// Only used when auto_compact is enabled.
+    /// Defaults to 50.
+    #[serde(rename = "compact_threshold_messages", default)]
+    pub compact_threshold_messages: Option<usize>,
+
+    /// Number of messages to keep after compaction.
+    /// Only used when auto_compact is enabled.
+    /// Defaults to 20.
+    #[serde(rename = "compact_keep_messages", default)]
+    pub compact_keep_messages: Option<usize>,
+
     #[serde(rename = "disabled_providers", default)]
     pub disabled_providers: Option<Vec<String>>,
 
@@ -500,5 +512,51 @@ mod tests {
 
         let config: RcodeConfig = serde_json::from_str(json).unwrap();
         assert!(!config.auto_compact);
+    }
+
+    #[test]
+    fn test_rcode_config_compaction_thresholds_default_to_none() {
+        let config = RcodeConfig::default();
+        assert!(config.compact_threshold_messages.is_none());
+        assert!(config.compact_keep_messages.is_none());
+    }
+
+    #[test]
+    fn test_rcode_config_compaction_thresholds_deserialization() {
+        let json = r#"{
+            "auto_compact": true,
+            "compact_threshold_messages": 100,
+            "compact_keep_messages": 30
+        }"#;
+
+        let config: RcodeConfig = serde_json::from_str(json).unwrap();
+        assert!(config.auto_compact);
+        assert_eq!(config.compact_threshold_messages, Some(100));
+        assert_eq!(config.compact_keep_messages, Some(30));
+    }
+
+    #[test]
+    fn test_rcode_config_compaction_thresholds_partial_deserialization() {
+        let json = r#"{
+            "auto_compact": true,
+            "compact_threshold_messages": 75
+        }"#;
+
+        let config: RcodeConfig = serde_json::from_str(json).unwrap();
+        assert!(config.auto_compact);
+        assert_eq!(config.compact_threshold_messages, Some(75));
+        assert_eq!(config.compact_keep_messages, None);
+    }
+
+    #[test]
+    fn test_rcode_config_compaction_thresholds_only_keep() {
+        let json = r#"{
+            "compact_keep_messages": 25
+        }"#;
+
+        let config: RcodeConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.auto_compact);
+        assert_eq!(config.compact_threshold_messages, None);
+        assert_eq!(config.compact_keep_messages, Some(25));
     }
 }
