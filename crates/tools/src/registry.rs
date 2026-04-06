@@ -98,9 +98,9 @@ impl ToolRegistryService {
         self.register(Arc::new(super::glob::GlobTool::new()));
         self.register(Arc::new(super::grep::GrepTool::new()));
         
-        // Register TaskTool with permission config if provided
-        if let Some(ref config) = self.permission_config {
-            self.register(Arc::new(super::task::TaskTool::with_permission_config(config.clone())));
+        // Register TaskTool with session_service if provided, otherwise without
+        if let Some(ref service) = session_service {
+            self.register(Arc::new(super::task::TaskTool::with_session_service(service.clone())));
         } else {
             self.register(Arc::new(super::task::TaskTool::new()));
         }

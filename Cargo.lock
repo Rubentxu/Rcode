@@ -1941,6 +1941,7 @@ dependencies = [
  "rcode-core",
  "rcode-event",
  "rcode-mcp",
+ "rcode-providers",
  "rcode-session",
  "regex",
  "reqwest",

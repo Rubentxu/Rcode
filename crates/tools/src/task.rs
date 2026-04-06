@@ -5,6 +5,17 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use rcode_core::{Tool, ToolContext, ToolResult, PermissionChecker, PermissionConfig, Permission, AgentRegistry, error::{Result, RCodeError}};
+use rcode_session::SessionService;
+use rcode_event::EventBus;
+use rcode_providers::ProviderRegistry;
+
+use super::registry::ToolRegistryService;
+
+/// System prompt for task sub-agents with read-only tools
+pub const TASK_SYSTEM_PROMPT: &str = "You are a research agent. Your task is to investigate and return findings. You have access to read-only tools: glob, grep, read, webfetch. Use them to search the codebase. Return a concise summary of your findings.";
+
+/// Read-only tools allowed for task sub-agents
+pub const READONLY_TOOLS: &[&str] = &["glob", "grep", "read", "webfetch"];
 
 /// Agent ID type for identifying subagents
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -89,6 +100,14 @@ pub struct TaskTool {
     permission_checker: Option<Arc<PermissionChecker>>,
     /// Agent registry for looking up agents
     agent_registry: Option<Arc<AgentRegistry>>,
+    /// Session service for creating child sessions
+    session_service: Option<Arc<SessionService>>,
+    /// Tool registry for subagent execution
+    tool_registry: Option<Arc<ToolRegistryService>>,
+    /// Event bus for publishing events
+    event_bus: Option<Arc<EventBus>>,
+    /// Provider registry for model resolution
+    provider_registry: Option<Arc<ProviderRegistry>>,
 }
 
 impl TaskTool {
@@ -98,6 +117,10 @@ impl TaskTool {
             state: Arc::new(TaskToolState::new()),
             permission_checker: None,
             agent_registry: None,
+            session_service: None,
+            tool_registry: None,
+            event_bus: None,
+            provider_registry: None,
         }
     }
     
@@ -107,6 +130,10 @@ impl TaskTool {
             state,
             permission_checker: None,
             agent_registry: None,
+            session_service: None,
+            tool_registry: None,
+            event_bus: None,
+            provider_registry: None,
         }
     }
     
@@ -116,6 +143,10 @@ impl TaskTool {
             state: Arc::new(TaskToolState::new()),
             permission_checker: Some(Arc::new(PermissionChecker::new(permission_config))),
             agent_registry: None,
+            session_service: None,
+            tool_registry: None,
+            event_bus: None,
+            provider_registry: None,
         }
     }
 
@@ -125,6 +156,10 @@ impl TaskTool {
             state: Arc::new(TaskToolState::new()),
             permission_checker: None,
             agent_registry: Some(registry),
+            session_service: None,
+            tool_registry: None,
+            event_bus: None,
+            provider_registry: None,
         }
     }
 
@@ -138,7 +173,51 @@ impl TaskTool {
             state,
             permission_checker,
             agent_registry: registry,
+            session_service: None,
+            tool_registry: None,
+            event_bus: None,
+            provider_registry: None,
         }
+    }
+
+    /// Create a TaskTool with services for real delegation
+    pub fn with_services(
+        state: Arc<TaskToolState>,
+        session_service: Arc<SessionService>,
+        tool_registry: Arc<ToolRegistryService>,
+        event_bus: Arc<EventBus>,
+        provider_registry: Arc<ProviderRegistry>,
+    ) -> Self {
+        Self {
+            state,
+            permission_checker: None,
+            agent_registry: None,
+            session_service: Some(session_service),
+            tool_registry: Some(tool_registry),
+            event_bus: Some(event_bus),
+            provider_registry: Some(provider_registry),
+        }
+    }
+
+    /// Create a TaskTool with session service for child session creation
+    pub fn with_session_service(session_service: Arc<SessionService>) -> Self {
+        Self {
+            state: Arc::new(TaskToolState::new()),
+            permission_checker: None,
+            agent_registry: None,
+            session_service: Some(session_service),
+            tool_registry: None,
+            event_bus: None,
+            provider_registry: None,
+        }
+    }
+
+    /// Check if all delegation services are available
+    pub fn has_delegation_services(&self) -> bool {
+        self.session_service.is_some()
+            && self.tool_registry.is_some()
+            && self.event_bus.is_some()
+            && self.provider_registry.is_some()
     }
     
     /// Get available agent types from registry if available
@@ -299,18 +378,44 @@ impl Tool for TaskTool {
                 agent_type
             );
             
-            // Generate a new session ID for this task
-            let session_id = format!("session_{}_{}_{}", 
-                context.session_id,
-                new_task_id,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            );
-            
-            // Register the session for potential continuation
-            self.state.register_session(&new_task_id, &session_id);
+            // Use real SessionService if available to create a proper child session
+            let session_id = if let Some(ref session_service) = self.session_service {
+                // Create a real child session via SessionService
+                match session_service.create_child(&context.session_id, agent_type.to_string(), "claude-sonnet-4-5".to_string()) {
+                    Ok(child_session) => {
+                        let real_session_id = child_session.id.0.clone();
+                        // Register the real session for potential continuation
+                        self.state.register_session(&new_task_id, &real_session_id);
+                        real_session_id
+                    }
+                    Err(e) => {
+                        // Fall back to synthetic session ID if child creation fails
+                        let synthetic_id = format!("session_{}_{}_{}", 
+                            context.session_id,
+                            new_task_id,
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_nanos()
+                        );
+                        tracing::warn!("Failed to create child session: {}. Using synthetic ID: {}", e, synthetic_id);
+                        self.state.register_session(&new_task_id, &synthetic_id);
+                        synthetic_id
+                    }
+                }
+            } else {
+                // Fall back to synthetic session ID when no SessionService available
+                let synthetic_id = format!("session_{}_{}_{}", 
+                    context.session_id,
+                    new_task_id,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos()
+                );
+                self.state.register_session(&new_task_id, &synthetic_id);
+                synthetic_id
+            };
             
             // Get agent info if available
             let agent_info = self.get_agent(agent_type)
@@ -587,5 +692,95 @@ mod tests {
         ).await.unwrap();
         
         assert!(result.content.contains("refactor"));
+    }
+
+    // ========== Service Injection Tests ==========
+
+    #[test]
+    fn test_task_tool_with_session_service() {
+        let event_bus = Arc::new(rcode_event::EventBus::new(1));
+        let session_service = Arc::new(rcode_session::SessionService::new(event_bus));
+        let tool = TaskTool::with_session_service(session_service.clone());
+        
+        // Tool should have session_service but not full delegation services
+        assert!(!tool.has_delegation_services());
+    }
+
+    #[test]
+    fn test_task_tool_has_delegation_services_false_when_no_services() {
+        let tool = TaskTool::new();
+        assert!(!tool.has_delegation_services());
+    }
+
+    #[test]
+    fn test_task_tool_has_delegation_services_false_when_partial() {
+        let event_bus = Arc::new(rcode_event::EventBus::new(1));
+        let session_service = Arc::new(rcode_session::SessionService::new(event_bus));
+        let tool = TaskTool::with_session_service(session_service);
+        
+        // Only session_service, missing tool_registry, event_bus, provider_registry
+        assert!(!tool.has_delegation_services());
+    }
+
+    #[test]
+    fn test_task_tool_has_delegation_services_requires_all() {
+        // Verify that has_delegation_services checks all four services
+        let tool = TaskTool::new();
+        
+        // None of the services are set
+        assert!(tool.session_service.is_none());
+        assert!(tool.tool_registry.is_none());
+        assert!(tool.event_bus.is_none());
+        assert!(tool.provider_registry.is_none());
+    }
+
+    #[test]
+    fn test_task_system_prompt_defined() {
+        assert!(!TASK_SYSTEM_PROMPT.is_empty());
+        assert!(TASK_SYSTEM_PROMPT.contains("research agent"));
+        assert!(TASK_SYSTEM_PROMPT.contains("glob"));
+        assert!(TASK_SYSTEM_PROMPT.contains("grep"));
+        assert!(TASK_SYSTEM_PROMPT.contains("read"));
+        assert!(TASK_SYSTEM_PROMPT.contains("webfetch"));
+    }
+
+    #[test]
+    fn test_readonly_tools_defined() {
+        assert_eq!(READONLY_TOOLS.len(), 4);
+        assert!(READONLY_TOOLS.contains(&"glob"));
+        assert!(READONLY_TOOLS.contains(&"grep"));
+        assert!(READONLY_TOOLS.contains(&"read"));
+        assert!(READONLY_TOOLS.contains(&"webfetch"));
+    }
+
+    #[tokio::test]
+    async fn test_task_execute_with_real_session_service() {
+        // Create a real session service
+        let event_bus = Arc::new(rcode_event::EventBus::new(1));
+        let session_service = Arc::new(rcode_session::SessionService::new(event_bus));
+        
+        // Create a parent session first so create_child can find it
+        let parent = rcode_core::Session::new(
+            std::path::PathBuf::from("/tmp"),
+            "parent".to_string(),
+            "claude-sonnet-4-5".to_string(),
+        );
+        let parent_id = parent.id.0.clone();
+        session_service.create(parent);
+        
+        let tool = TaskTool::with_session_service(session_service);
+        let mut context = ctx();
+        context.session_id = parent_id;
+        
+        let result = tool.execute(
+            serde_json::json!({"description": "Test task", "prompt": "Do something"}),
+            &context
+        ).await.unwrap();
+        
+        // Should contain real session info
+        assert!(result.content.contains("Created new task"));
+        // The session_id should be a real one created by session_service
+        // Not a synthetic one like "session_s1_task_xxx_xxx"
+        assert!(!result.content.contains("session_s1_task_"));
     }
 }

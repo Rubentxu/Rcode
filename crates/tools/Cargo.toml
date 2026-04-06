@@ -8,6 +8,7 @@ rcode-core = { path = "../core" }
 rcode-event = { path = "../event" }
 rcode-mcp = { path = "../mcp" }
 rcode-session = { path = "../session" }
+rcode-providers = { path = "../providers" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
