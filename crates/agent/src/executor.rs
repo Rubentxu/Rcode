@@ -72,6 +72,9 @@ pub struct AgentExecutorBuilder {
     allowed_tools: Option<Vec<String>>,
     agent_definition: Option<Arc<rcode_core::AgentDefinition>>,
     permission_service: Option<Arc<dyn PermissionService>>,
+    auto_compact: bool,
+    max_messages_before_compact: usize,
+    messages_to_keep_after_compact: usize,
 }
 
 impl AgentExecutorBuilder {
@@ -87,6 +90,9 @@ impl AgentExecutorBuilder {
             allowed_tools: None,
             agent_definition: None,
             permission_service: None,
+            auto_compact: false,
+            max_messages_before_compact: 50,
+            messages_to_keep_after_compact: 20,
         }
     }
     
@@ -156,6 +162,21 @@ impl AgentExecutorBuilder {
         self
     }
     
+    /// Enable or disable automatic message compaction
+    pub fn with_auto_compact(mut self, enabled: bool) -> Self {
+        self.auto_compact = enabled;
+        self
+    }
+    
+    /// Set compaction thresholds
+    /// - max_before: maximum messages before triggering compaction (default 50)
+    /// - keep_after: number of messages to keep after compaction (default 20)
+    pub fn with_compaction_thresholds(mut self, max_before: usize, keep_after: usize) -> Self {
+        self.max_messages_before_compact = max_before;
+        self.messages_to_keep_after_compact = keep_after;
+        self
+    }
+    
     pub fn build(self) -> AgentExecutor {
         AgentExecutor {
             agent: self.agent,
@@ -167,6 +188,9 @@ impl AgentExecutorBuilder {
             reasoning_effort: self.reasoning_effort,
             allowed_tools: self.allowed_tools,
             permission_service: self.permission_service,
+            auto_compact: self.auto_compact,
+            max_messages_before_compact: self.max_messages_before_compact,
+            messages_to_keep_after_compact: self.messages_to_keep_after_compact,
         }
     }
 }
@@ -182,6 +206,9 @@ pub struct AgentExecutor {
     reasoning_effort: Option<String>,
     allowed_tools: Option<Vec<String>>,
     permission_service: Option<Arc<dyn PermissionService>>,
+    auto_compact: bool,
+    max_messages_before_compact: usize,
+    messages_to_keep_after_compact: usize,
 }
 
 impl AgentExecutor {
@@ -200,6 +227,9 @@ impl AgentExecutor {
             reasoning_effort: None,
             allowed_tools: None,
             permission_service: None,
+            auto_compact: false,
+            max_messages_before_compact: 50,
+            messages_to_keep_after_compact: 20,
         }
     }
 
@@ -230,6 +260,21 @@ impl AgentExecutor {
 
     pub fn with_permission_service(mut self, svc: Arc<dyn PermissionService>) -> Self {
         self.permission_service = Some(svc);
+        self
+    }
+
+    /// Enable or disable automatic message compaction
+    pub fn with_auto_compact(mut self, enabled: bool) -> Self {
+        self.auto_compact = enabled;
+        self
+    }
+
+    /// Set compaction thresholds
+    /// - max_before: maximum messages before triggering compaction (default 50)
+    /// - keep_after: number of messages to keep after compaction (default 20)
+    pub fn with_compaction_thresholds(mut self, max_before: usize, keep_after: usize) -> Self {
+        self.max_messages_before_compact = max_before;
+        self.messages_to_keep_after_compact = keep_after;
         self
     }
 
@@ -319,6 +364,36 @@ impl AgentExecutor {
         } else {
             tools_list
         };
+        
+        // Auto-compaction: truncate messages if threshold exceeded (simple truncation v1)
+        // For v1, we do simple truncation rather than LLM-based summarization
+        if self.auto_compact && ctx.messages.len() > self.max_messages_before_compact {
+            warn!("Message count {} exceeds threshold {}, performing simple compaction",
+                  ctx.messages.len(), self.max_messages_before_compact);
+            
+            let keep_count = self.messages_to_keep_after_compact;
+            if keep_count < ctx.messages.len() {
+                // Keep the last N messages and insert a summary marker
+                let summary_message = Message::assistant(
+                    ctx.session_id.clone(),
+                    vec![Part::Text {
+                        content: format!(
+                            "[Previous {} messages summarized due to length]", 
+                            ctx.messages.len() - keep_count
+                        )
+                    }],
+                );
+                
+                // Truncate to last N messages and prepend summary
+                let new_messages: Vec<Message> = std::iter::once(summary_message)
+                    .chain(ctx.messages.iter().skip(ctx.messages.len() - keep_count).cloned())
+                    .collect();
+                ctx.messages = new_messages;
+                
+                warn!("Compacted messages to {} (summary + last {} messages)", 
+                      ctx.messages.len(), keep_count);
+            }
+        }
         
         let request = rcode_core::CompletionRequest {
             model,
@@ -1515,5 +1590,216 @@ mod tests {
             .with_reasoning_effort("high".to_string());
         
         assert_eq!(executor.reasoning_effort.as_deref().unwrap(), "high");
+    }
+
+    #[test]
+    fn test_agent_executor_auto_compact_defaults_to_false() {
+        let agent: Arc<dyn Agent> = Arc::new(MockTestAgent::new("test"));
+        let provider: Arc<dyn rcode_providers::LlmProvider> = Arc::new(MockLlmProvider::new());
+        let tools = Arc::new(ToolRegistryService::new());
+        
+        let executor = AgentExecutor::new(agent, provider, tools);
+        
+        assert!(!executor.auto_compact);
+        assert_eq!(executor.max_messages_before_compact, 50);
+        assert_eq!(executor.messages_to_keep_after_compact, 20);
+    }
+
+    #[test]
+    fn test_agent_executor_with_auto_compact_enabled() {
+        let agent: Arc<dyn Agent> = Arc::new(MockTestAgent::new("test"));
+        let provider: Arc<dyn rcode_providers::LlmProvider> = Arc::new(MockLlmProvider::new());
+        let tools = Arc::new(ToolRegistryService::new());
+        
+        let executor = AgentExecutor::new(agent, provider, tools)
+            .with_auto_compact(true);
+        
+        assert!(executor.auto_compact);
+    }
+
+    #[test]
+    fn test_agent_executor_with_compaction_thresholds() {
+        let agent: Arc<dyn Agent> = Arc::new(MockTestAgent::new("test"));
+        let provider: Arc<dyn rcode_providers::LlmProvider> = Arc::new(MockLlmProvider::new());
+        let tools = Arc::new(ToolRegistryService::new());
+        
+        let executor = AgentExecutor::new(agent, provider, tools)
+            .with_compaction_thresholds(100, 30);
+        
+        assert_eq!(executor.max_messages_before_compact, 100);
+        assert_eq!(executor.messages_to_keep_after_compact, 30);
+    }
+
+    #[test]
+    fn test_agent_executor_builder_auto_compact_defaults() {
+        let agent: Arc<dyn Agent> = Arc::new(MockTestAgent::new("test"));
+        let provider: Arc<dyn rcode_providers::LlmProvider> = Arc::new(MockLlmProvider::new());
+        let tools = Arc::new(ToolRegistryService::new());
+        
+        let executor = AgentExecutorBuilder::new(agent, provider, tools).build();
+        
+        assert!(!executor.auto_compact);
+        assert_eq!(executor.max_messages_before_compact, 50);
+        assert_eq!(executor.messages_to_keep_after_compact, 20);
+    }
+
+    #[test]
+    fn test_agent_executor_builder_with_auto_compact() {
+        let agent: Arc<dyn Agent> = Arc::new(MockTestAgent::new("test"));
+        let provider: Arc<dyn rcode_providers::LlmProvider> = Arc::new(MockLlmProvider::new());
+        let tools = Arc::new(ToolRegistryService::new());
+        
+        let executor = AgentExecutorBuilder::new(agent, provider, tools)
+            .with_auto_compact(true)
+            .with_compaction_thresholds(75, 25)
+            .build();
+        
+        assert!(executor.auto_compact);
+        assert_eq!(executor.max_messages_before_compact, 75);
+        assert_eq!(executor.messages_to_keep_after_compact, 25);
+    }
+
+    #[tokio::test]
+    async fn test_executor_compacts_messages_when_threshold_exceeded_and_enabled() {
+        let agent = Arc::new(MockTestAgent::new("test"));
+        let provider = Arc::new(MockLlmProvider::new());
+        let tools = Arc::new(ToolRegistryService::new());
+        
+        // Set threshold to 5 messages, keep 3
+        let executor = AgentExecutor::new(agent, provider.clone(), tools)
+            .with_auto_compact(true)
+            .with_compaction_thresholds(5, 3);
+        
+        // Create context with 10 messages (exceeds threshold of 5)
+        let mut ctx = AgentContext {
+            session_id: "test-session".to_string(),
+            project_path: PathBuf::from("/tmp/test"),
+            cwd: PathBuf::from("/tmp/test"),
+            user_id: None,
+            model_id: "claude-sonnet-4-5".to_string(),
+            messages: (0..10).map(|i| {
+                Message::user("test-session".to_string(), vec![
+                    Part::Text { content: format!("Message {}", i) }
+                ])
+            }).collect(),
+        };
+        
+        // Provider returns simple text response
+        provider.set_stream_events(vec![
+            StreamingEvent::Text { delta: "Hello".to_string() },
+            StreamingEvent::Finish { 
+                stop_reason: CoreStopReason::EndTurn, 
+                usage: TokenUsage { 
+                    input_tokens: 10, 
+                    output_tokens: 5, 
+                    total_tokens: Some(15) 
+                },
+            },
+        ]);
+        
+        let result = executor.run(&mut ctx).await;
+        assert!(result.is_ok());
+        
+        // After compaction, messages should be: 1 summary + 3 kept = 4 total
+        // Original: 10 messages, threshold: 5, keep: 3, so 10 - 3 = 7 summarized
+        // Messages after compaction: [summary marker] + [last 3 messages (index 7, 8, 9)]
+        // Then the assistant response is added, making it 5 total
+        assert_eq!(ctx.messages.len(), 5, "Should have summary + 3 kept + 1 assistant response");
+        
+        // First message should be the summary marker
+        assert!(matches!(
+            ctx.messages[0].parts[0],
+            Part::Text { content: ref s } if s.contains("Previous 7 messages summarized")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_executor_does_not_compact_when_disabled() {
+        let agent = Arc::new(MockTestAgent::new("test"));
+        let provider = Arc::new(MockLlmProvider::new());
+        let tools = Arc::new(ToolRegistryService::new());
+        
+        // auto_compact is false by default
+        let executor = AgentExecutor::new(agent, provider.clone(), tools);
+        
+        // Create context with 10 messages (exceeds default threshold of 50)
+        let mut ctx = AgentContext {
+            session_id: "test-session".to_string(),
+            project_path: PathBuf::from("/tmp/test"),
+            cwd: PathBuf::from("/tmp/test"),
+            user_id: None,
+            model_id: "claude-sonnet-4-5".to_string(),
+            messages: (0..10).map(|i| {
+                Message::user("test-session".to_string(), vec![
+                    Part::Text { content: format!("Message {}", i) }
+                ])
+            }).collect(),
+        };
+        
+        // Provider returns simple text response
+        provider.set_stream_events(vec![
+            StreamingEvent::Text { delta: "Hello".to_string() },
+            StreamingEvent::Finish { 
+                stop_reason: CoreStopReason::EndTurn, 
+                usage: TokenUsage { 
+                    input_tokens: 10, 
+                    output_tokens: 5, 
+                    total_tokens: Some(15) 
+                },
+            },
+        ]);
+        
+        let result = executor.run(&mut ctx).await;
+        assert!(result.is_ok());
+        
+        // Messages should NOT be compacted - we started with 10, added 1 assistant = 11
+        // Plus tool results were not added since no tool calls
+        assert_eq!(ctx.messages.len(), 11, "Should not compact when disabled");
+    }
+
+    #[tokio::test]
+    async fn test_executor_does_not_compact_when_under_threshold() {
+        let agent = Arc::new(MockTestAgent::new("test"));
+        let provider = Arc::new(MockLlmProvider::new());
+        let tools = Arc::new(ToolRegistryService::new());
+        
+        // Enable compaction but set high threshold
+        let executor = AgentExecutor::new(agent, provider.clone(), tools)
+            .with_auto_compact(true)
+            .with_compaction_thresholds(100, 20); // threshold 100, we have only 3
+        
+        // Create context with only 3 messages (under threshold of 100)
+        let mut ctx = AgentContext {
+            session_id: "test-session".to_string(),
+            project_path: PathBuf::from("/tmp/test"),
+            cwd: PathBuf::from("/tmp/test"),
+            user_id: None,
+            model_id: "claude-sonnet-4-5".to_string(),
+            messages: (0..3).map(|i| {
+                Message::user("test-session".to_string(), vec![
+                    Part::Text { content: format!("Message {}", i) }
+                ])
+            }).collect(),
+        };
+        
+        // Provider returns simple text response
+        provider.set_stream_events(vec![
+            StreamingEvent::Text { delta: "Hello".to_string() },
+            StreamingEvent::Finish { 
+                stop_reason: CoreStopReason::EndTurn, 
+                usage: TokenUsage { 
+                    input_tokens: 10, 
+                    output_tokens: 5, 
+                    total_tokens: Some(15) 
+                },
+            },
+        ]);
+        
+        let result = executor.run(&mut ctx).await;
+        assert!(result.is_ok());
+        
+        // Messages should NOT be compacted since under threshold
+        // 3 original + 1 assistant response = 4 messages
+        assert_eq!(ctx.messages.len(), 4, "Should not compact when under threshold");
     }
 }

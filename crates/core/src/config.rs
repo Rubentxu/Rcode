@@ -65,6 +65,11 @@ pub struct RcodeConfig {
     #[serde(default)]
     pub autoupdate: Option<AutoupdateConfig>,
 
+    /// Enable automatic message compaction when session exceeds threshold
+    /// Defaults to false for backwards compatibility
+    #[serde(rename = "auto_compact", default)]
+    pub auto_compact: bool,
+
     #[serde(rename = "disabled_providers", default)]
     pub disabled_providers: Option<Vec<String>>,
 
@@ -469,5 +474,31 @@ mod tests {
         assert_eq!(agent_config.model, Some("openai/gpt-4o".to_string()));
         assert_eq!(agent_config.max_tokens, None);
         assert_eq!(agent_config.reasoning_effort, None);
+    }
+
+    #[test]
+    fn test_rcode_config_auto_compact_defaults_to_false() {
+        let config = RcodeConfig::default();
+        assert!(!config.auto_compact);
+    }
+
+    #[test]
+    fn test_rcode_config_auto_compact_deserialization() {
+        let json = r#"{
+            "auto_compact": true
+        }"#;
+
+        let config: RcodeConfig = serde_json::from_str(json).unwrap();
+        assert!(config.auto_compact);
+    }
+
+    #[test]
+    fn test_rcode_config_auto_compact_explicit_false() {
+        let json = r#"{
+            "auto_compact": false
+        }"#;
+
+        let config: RcodeConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.auto_compact);
     }
 }

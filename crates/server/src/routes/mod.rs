@@ -216,6 +216,9 @@ pub async fn submit_prompt(
     let reasoning_effort_override = agent_config.as_ref()
         .and_then(|ac| ac.reasoning_effort.clone());
     
+    // Get auto_compact setting for executor
+    let auto_compact = config.auto_compact;
+    
     // Resolve title model: small_model > model_for_agent("title") > effective_model
     let title_model = config.effective_small_model()
         .or_else(|| config.model_for_agent("title"))
@@ -315,6 +318,11 @@ pub async fn submit_prompt(
     // Apply reasoning_effort override from agent config
     if let Some(reasoning_effort) = reasoning_effort_override {
         executor = executor.with_reasoning_effort(reasoning_effort);
+    }
+    
+    // Apply auto_compact setting if enabled
+    if auto_compact {
+        executor = executor.with_auto_compact(true);
     }
     
     // Create agent context
