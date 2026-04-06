@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use parking_lot::RwLock;
 
-use rcode_core::{Tool, ToolContext, ToolResult, PermissionChecker, PermissionConfig, Permission, AgentRegistry, error::{Result, RCodeError}};
+use rcode_core::{Tool, ToolContext, ToolResult, PermissionChecker, PermissionConfig, Permission, AgentRegistry, SubagentRunner, error::{Result as CoreResult, RCodeError}};
 use rcode_session::SessionService;
 use rcode_event::EventBus;
 use rcode_providers::ProviderRegistry;
@@ -108,6 +108,9 @@ pub struct TaskTool {
     event_bus: Option<Arc<EventBus>>,
     /// Provider registry for model resolution
     provider_registry: Option<Arc<ProviderRegistry>>,
+    /// Subagent runner for actual delegation (server-provided)
+    /// Made public for injection by server composition root
+    pub subagent_runner: Option<Arc<dyn SubagentRunner>>,
 }
 
 impl TaskTool {
@@ -121,6 +124,7 @@ impl TaskTool {
             tool_registry: None,
             event_bus: None,
             provider_registry: None,
+            subagent_runner: None,
         }
     }
     
@@ -134,6 +138,7 @@ impl TaskTool {
             tool_registry: None,
             event_bus: None,
             provider_registry: None,
+            subagent_runner: None,
         }
     }
     
@@ -147,6 +152,7 @@ impl TaskTool {
             tool_registry: None,
             event_bus: None,
             provider_registry: None,
+            subagent_runner: None,
         }
     }
 
@@ -160,6 +166,7 @@ impl TaskTool {
             tool_registry: None,
             event_bus: None,
             provider_registry: None,
+            subagent_runner: None,
         }
     }
 
@@ -177,6 +184,7 @@ impl TaskTool {
             tool_registry: None,
             event_bus: None,
             provider_registry: None,
+            subagent_runner: None,
         }
     }
 
@@ -196,6 +204,7 @@ impl TaskTool {
             tool_registry: Some(tool_registry),
             event_bus: Some(event_bus),
             provider_registry: Some(provider_registry),
+            subagent_runner: None,
         }
     }
 
@@ -209,7 +218,38 @@ impl TaskTool {
             tool_registry: None,
             event_bus: None,
             provider_registry: None,
+            subagent_runner: None,
         }
+    }
+
+    /// Create a TaskTool with a subagent runner for actual delegation
+    pub fn with_subagent_runner(runner: Arc<dyn SubagentRunner>) -> Self {
+        Self {
+            state: Arc::new(TaskToolState::new()),
+            permission_checker: None,
+            agent_registry: None,
+            session_service: None,
+            tool_registry: None,
+            event_bus: None,
+            provider_registry: None,
+            subagent_runner: Some(runner),
+        }
+    }
+
+    /// Set the subagent runner on an existing TaskTool
+    /// 
+    /// This is used by the server composition root to inject the runner
+    /// after the TaskTool has been created by ToolRegistryService.
+    pub fn set_subagent_runner(&mut self, runner: Arc<dyn SubagentRunner>) {
+        self.subagent_runner = Some(runner);
+    }
+
+    /// Create a clone of this TaskTool with a different subagent runner
+    /// 
+    /// This allows replacing the runner while preserving all other fields.
+    pub fn with_runner(mut self, runner: Arc<dyn SubagentRunner>) -> Self {
+        self.subagent_runner = Some(runner);
+        self
     }
 
     /// Check if all delegation services are available
@@ -301,7 +341,7 @@ impl Tool for TaskTool {
         })
     }
     
-    async fn execute(&self, args: serde_json::Value, context: &ToolContext) -> Result<ToolResult> {
+    async fn execute(&self, args: serde_json::Value, context: &ToolContext) -> CoreResult<ToolResult> {
         let description = args["description"].as_str()
             .ok_or_else(|| RCodeError::Validation {
                 field: "description".to_string(),
@@ -356,6 +396,87 @@ impl Tool for TaskTool {
             }
         }
         
+        // If we have a subagent_runner, delegate to it for actual execution
+        if let Some(ref runner) = self.subagent_runner {
+            let session_id = if let Some(existing_task_id) = task_id {
+                // Session continuation: check if session exists
+                if let Some(sid) = self.state.get_session(existing_task_id) {
+                    sid
+                } else {
+                    return Err(RCodeError::Session(format!(
+                        "Task session '{}' not found or expired", existing_task_id
+                    )));
+                }
+            } else {
+                // Create new subagent session
+                let new_task_id = format!("task_{}_{}", 
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos(),
+                    agent_type
+                );
+                
+                // Use real SessionService if available to create a proper child session
+                let sid = if let Some(ref session_service) = self.session_service {
+                    match session_service.create_child(&context.session_id, agent_type.to_string(), "claude-sonnet-4-5".to_string()) {
+                        Ok(child_session) => {
+                            let real_session_id = child_session.id.0.clone();
+                            self.state.register_session(&new_task_id, &real_session_id);
+                            real_session_id
+                        }
+                        Err(e) => {
+                            let synthetic_id = format!("session_{}_{}_{}", 
+                                context.session_id,
+                                new_task_id,
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_nanos()
+                            );
+                            tracing::warn!("Failed to create child session: {}. Using synthetic ID: {}", e, synthetic_id);
+                            self.state.register_session(&new_task_id, &synthetic_id);
+                            synthetic_id
+                        }
+                    }
+                } else {
+                    let synthetic_id = format!("session_{}_{}_{}", 
+                        context.session_id,
+                        new_task_id,
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_nanos()
+                    );
+                    self.state.register_session(&new_task_id, &synthetic_id);
+                    synthetic_id
+                };
+                sid
+            };
+
+            // Delegate to the subagent runner
+            match runner.run_subagent(&session_id, prompt, READONLY_TOOLS).await {
+                Ok(response) => {
+                    return Ok(ToolResult {
+                        title: format!("Task: {}", description),
+                        content: response,
+                        metadata: Some(serde_json::json!({
+                            "agent_type": agent_type,
+                            "task_id": task_id,
+                            "delegated": true,
+                        })),
+                        attachments: vec![],
+                    });
+                }
+                Err(e) => {
+                    return Err(RCodeError::Tool(format!(
+                        "Subagent execution failed: {}", e
+                    )));
+                }
+            }
+        }
+
+        // Fallback: no subagent_runner, use current placeholder behavior
         let result_content = if let Some(existing_task_id) = task_id {
             // Session continuation: check if session exists
             if let Some(session_id) = self.state.get_session(existing_task_id) {
@@ -782,5 +903,192 @@ mod tests {
         // The session_id should be a real one created by session_service
         // Not a synthetic one like "session_s1_task_xxx_xxx"
         assert!(!result.content.contains("session_s1_task_"));
+    }
+
+    // ========== SubagentRunner Tests ==========
+
+    /// Mock SubagentRunner for testing
+    struct MockSubagentRunner {
+        response_text: String,
+        should_error: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl SubagentRunner for MockSubagentRunner {
+        async fn run_subagent(
+            &self,
+            _parent_session_id: &str,
+            _prompt: &str,
+            _allowed_tools: &[&str],
+        ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+            if self.should_error {
+                Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "mock error")) as Box<dyn std::error::Error + Send + Sync>)
+            } else {
+                Ok(self.response_text.clone())
+            }
+        }
+    }
+
+    #[test]
+    fn test_task_tool_with_subagent_runner() {
+        let runner: Arc<dyn SubagentRunner> = Arc::new(MockSubagentRunner {
+            response_text: "delegated response".to_string(),
+            should_error: false,
+        });
+        let tool = TaskTool::with_subagent_runner(runner);
+        // The runner should be set
+        assert!(tool.subagent_runner.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_task_execute_delegates_when_runner_available() {
+        let runner: Arc<dyn SubagentRunner> = Arc::new(MockSubagentRunner {
+            response_text: "delegated response".to_string(),
+            should_error: false,
+        });
+        
+        let event_bus = Arc::new(rcode_event::EventBus::new(1));
+        let session_service = Arc::new(rcode_session::SessionService::new(event_bus));
+        
+        // Create a parent session first
+        let parent = rcode_core::Session::new(
+            std::path::PathBuf::from("/tmp"),
+            "parent".to_string(),
+            "claude-sonnet-4-5".to_string(),
+        );
+        let parent_id = parent.id.0.clone();
+        session_service.create(parent);
+        
+        let tool = TaskTool::with_session_service(session_service)
+            .with_runner(runner);
+        
+        let mut context = ctx();
+        context.session_id = parent_id;
+        
+        let result = tool.execute(
+            serde_json::json!({"description": "Test", "prompt": "Do something"}),
+            &context
+        ).await.unwrap();
+        
+        // Should return the delegated response
+        assert_eq!(result.content, "delegated response");
+        assert!(result.metadata.as_ref().unwrap()["delegated"].as_bool().unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn test_task_execute_falls_back_when_runner_returns_error() {
+        let runner: Arc<dyn SubagentRunner> = Arc::new(MockSubagentRunner {
+            response_text: String::new(),
+            should_error: true,
+        });
+        
+        let event_bus = Arc::new(rcode_event::EventBus::new(1));
+        let session_service = Arc::new(rcode_session::SessionService::new(event_bus));
+        
+        // Create a parent session first
+        let parent = rcode_core::Session::new(
+            std::path::PathBuf::from("/tmp"),
+            "parent".to_string(),
+            "claude-sonnet-4-5".to_string(),
+        );
+        let parent_id = parent.id.0.clone();
+        session_service.create(parent);
+        
+        let tool = TaskTool::with_session_service(session_service)
+            .with_runner(runner);
+        
+        let mut context = ctx();
+        context.session_id = parent_id;
+        
+        let result = tool.execute(
+            serde_json::json!({"description": "Test", "prompt": "Do something"}),
+            &context
+        ).await;
+        
+        // Should fail with runner error
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Subagent execution failed"));
+    }
+
+    #[tokio::test]
+    async fn test_task_execute_continues_existing_session_with_runner() {
+        let runner: Arc<dyn SubagentRunner> = Arc::new(MockSubagentRunner {
+            response_text: "continuation response".to_string(),
+            should_error: false,
+        });
+        
+        let event_bus = Arc::new(rcode_event::EventBus::new(1));
+        let session_service = Arc::new(rcode_session::SessionService::new(event_bus));
+        
+        // Create a parent session first
+        let parent = rcode_core::Session::new(
+            std::path::PathBuf::from("/tmp"),
+            "parent".to_string(),
+            "claude-sonnet-4-5".to_string(),
+        );
+        let parent_id = parent.id.0.clone();
+        session_service.create(parent);
+        
+        let tool = TaskTool::with_session_service(session_service)
+            .with_runner(runner);
+        
+        let mut context = ctx();
+        context.session_id = parent_id.clone();
+        
+        // First execute to create a session
+        tool.execute(
+            serde_json::json!({"description": "Initial", "prompt": "First"}),
+            &context
+        ).await.unwrap();
+        
+        // Get the task_id from the state
+        let state = &tool.state;
+        let task_ids: Vec<_> = state.task_sessions.read().keys().cloned().collect();
+        assert!(!task_ids.is_empty());
+        let task_id = task_ids.first().unwrap();
+        
+        // Second execute with task_id to continue
+        let result = tool.execute(
+            serde_json::json!({"description": "Continue", "prompt": "Continue task", "task_id": task_id}),
+            &context
+        ).await.unwrap();
+        
+        // Should use the delegated runner
+        assert_eq!(result.content, "continuation response");
+    }
+
+    #[tokio::test]
+    async fn test_task_execute_without_runner_falls_back_to_placeholder() {
+        // No runner - should use placeholder behavior
+        let event_bus = Arc::new(rcode_event::EventBus::new(1));
+        let session_service = Arc::new(rcode_session::SessionService::new(event_bus));
+        
+        // Create a parent session first
+        let parent = rcode_core::Session::new(
+            std::path::PathBuf::from("/tmp"),
+            "parent".to_string(),
+            "claude-sonnet-4-5".to_string(),
+        );
+        let parent_id = parent.id.0.clone();
+        session_service.create(parent);
+        
+        // Create tool WITHOUT subagent_runner
+        let tool = TaskTool::with_session_service(session_service);
+        
+        let mut context = ctx();
+        context.session_id = parent_id;
+        
+        let result = tool.execute(
+            serde_json::json!({"description": "Test", "prompt": "Do something"}),
+            &context
+        ).await.unwrap();
+        
+        // Should return placeholder content, not delegated response
+        assert!(result.content.contains("Created new task"));
+        // delegated flag should not be present
+        if let Some(metadata) = &result.metadata {
+            assert!(!metadata.get("delegated").map(|v| v.as_bool().unwrap_or(false)).unwrap_or(false));
+        }
     }
 }

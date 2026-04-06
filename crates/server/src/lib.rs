@@ -4,6 +4,7 @@ pub mod routes;
 pub mod state;
 pub mod error;
 pub mod cancellation;
+pub mod subagent_runner_impl;
 
 pub use state::AppState;
 pub use error::ServerError;

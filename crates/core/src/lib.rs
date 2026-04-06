@@ -22,6 +22,7 @@ pub mod agent_definition;
 pub mod agent_loader;
 pub mod dynamic_agent;
 pub mod agent_registry;
+pub mod subagent_runner;
 
 pub use agent::*;
 pub use agent_definition::*;
@@ -38,3 +39,4 @@ pub use command::*;
 pub use agent_loader::AgentLoader;
 pub use dynamic_agent::DynamicAgent;
 pub use agent_registry::AgentRegistry;
+pub use subagent_runner::SubagentRunner;

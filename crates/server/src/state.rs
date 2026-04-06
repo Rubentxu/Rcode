@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use rcode_agent::permissions::InteractivePermissionService;
-use rcode_core::RcodeConfig;
+use rcode_core::{RcodeConfig, SubagentRunner};
 use rcode_event::EventBus;
 use rcode_providers::catalog::ModelCatalogService;
 use rcode_providers::ProviderRegistry;
@@ -15,6 +15,7 @@ use rusqlite::Connection;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::cancellation::CancellationRegistry;
+use crate::subagent_runner_impl::ServerSubagentRunner;
 
 pub struct AppState {
     pub session_service: Arc<SessionService>,
@@ -33,6 +34,31 @@ fn create_storage_path() -> std::path::PathBuf {
     let data_dir = std::path::PathBuf::from(home).join(".local/share/rcode");
     std::fs::create_dir_all(&data_dir).ok();
     data_dir.join("rcode.db")
+}
+
+/// Create a ToolRegistryService with SubagentRunner injected
+fn create_tools_with_runner(
+    session_service: Arc<SessionService>,
+    config: &RcodeConfig,
+) -> Arc<ToolRegistryService> {
+    let tools = Arc::new(ToolRegistryService::with_session_service(
+        session_service.clone(),
+    ));
+
+    // Create the subagent runner with the necessary services
+    let runner: Arc<dyn SubagentRunner> = Arc::new(ServerSubagentRunner::with_deps(
+        session_service.clone(),
+        Arc::new(EventBus::new(1024)), // event_bus will be replaced in actual state
+        Arc::new(std::sync::Mutex::new(config.clone())),
+        Arc::clone(&tools),
+    ));
+
+    // Inject the runner into TaskTool
+    let task_tool =
+        rcode_tools::task::TaskTool::with_session_service(session_service).with_runner(runner);
+    tools.set_task_tool(task_tool);
+
+    tools
 }
 
 impl AppState {
@@ -120,13 +146,14 @@ impl AppState {
             message_repo,
         ));
 
+        // Create tools with the runner injected
+        let tools = create_tools_with_runner(session_service.clone(), &config);
+
         Self {
             session_service: session_service.clone(),
             event_bus,
             providers: Arc::new(std::sync::Mutex::new(ProviderRegistry::new())),
-            tools: Arc::new(ToolRegistryService::with_session_service(
-                session_service.clone(),
-            )),
+            tools,
             config: Arc::new(std::sync::Mutex::new(config)),
             catalog: Arc::new(ModelCatalogService::new()),
             cancellation: Arc::new(CancellationRegistry::new()),

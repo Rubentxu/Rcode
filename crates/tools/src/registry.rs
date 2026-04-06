@@ -7,7 +7,7 @@ use parking_lot::RwLock;
 use tokio::sync::RwLock as TokioRwLock;
 use tokio::time::timeout;
 
-use rcode_core::{Tool, ToolInfo, ToolContext, ToolResult, PermissionConfig, error::{Result, RCodeError}};
+use rcode_core::{Tool, ToolInfo, ToolContext, ToolResult, PermissionConfig, SubagentRunner, error::{Result, RCodeError}};
 use rcode_session::SessionService;
 use super::validator::ToolValidator;
 
@@ -185,7 +185,16 @@ impl ToolRegistryService {
     pub fn register_mcp_tool(&self, mcp_registry: Arc<rcode_mcp::McpServerRegistry>) {
         self.register(Arc::new(super::mcp_tool::McpToolAdapter::new(mcp_registry)));
     }
-    
+
+    /// Replace the TaskTool with a custom implementation
+    /// 
+    /// This allows the server composition root to inject a TaskTool
+    /// that has the SubagentRunner configured.
+    pub fn set_task_tool(&self, task_tool: super::task::TaskTool) {
+        let new_tool: Arc<dyn Tool> = Arc::new(task_tool);
+        self.register(new_tool);
+    }
+
     pub async fn execute(
         &self,
         tool_id: &str,
