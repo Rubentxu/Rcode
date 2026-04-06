@@ -5,14 +5,12 @@
 //! - `Session`, `Message`, `Part` types for conversation state
 //! - `Tool` trait for tool implementations
 //! - `LlmProvider` trait for AI provider integrations
-//! - `Event` types for the event bus
 //! - `Skill` types for skill system
 
 pub mod agent;
 pub mod session;
 pub mod message;
 pub mod tool;
-pub mod event;
 pub mod error;
 pub mod provider;
 pub mod config;
@@ -30,7 +28,6 @@ pub use agent_definition::*;
 pub use session::*;
 pub use message::*;
 pub use tool::*;
-pub use event::*;
 pub use error::*;
 pub use provider::*;
 pub use config::*;
