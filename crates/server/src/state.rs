@@ -8,7 +8,7 @@ use rcode_core::{RcodeConfig, SubagentRunner};
 use rcode_event::EventBus;
 use rcode_lsp::LanguageServerRegistry;
 use rcode_providers::catalog::ModelCatalogService;
-use rcode_providers::ProviderRegistry;
+use rcode_providers::{LlmProvider, ProviderRegistry};
 use rcode_session::SessionService;
 use rcode_storage::{schema, MessageRepository, SessionRepository};
 use rcode_tools::ToolRegistryService;
@@ -30,6 +30,8 @@ pub struct AppState {
     pub permission_services: Arc<TokioMutex<HashMap<String, Arc<InteractivePermissionService>>>>,
     /// LSP language server registry for code intelligence
     pub lsp_registry: Arc<LanguageServerRegistry>,
+    /// Optional mock provider for testing (injected via TestApp)
+    pub mock_provider: Arc<std::sync::Mutex<Option<Arc<dyn LlmProvider>>>>,
 }
 
 fn create_storage_path() -> std::path::PathBuf {
@@ -110,6 +112,7 @@ impl AppState {
                     cancellation: Arc::new(CancellationRegistry::new()),
                     permission_services: Arc::new(TokioMutex::new(HashMap::new())),
                     lsp_registry,
+                    mock_provider: Arc::new(std::sync::Mutex::new(None)),
                 };
             }
         };
@@ -133,6 +136,7 @@ impl AppState {
                 cancellation: Arc::new(CancellationRegistry::new()),
                 permission_services: Arc::new(TokioMutex::new(HashMap::new())),
                 lsp_registry,
+                mock_provider: Arc::new(std::sync::Mutex::new(None)),
             };
         }
 
@@ -155,6 +159,7 @@ impl AppState {
                     cancellation: Arc::new(CancellationRegistry::new()),
                     permission_services: Arc::new(TokioMutex::new(HashMap::new())),
                     lsp_registry,
+                    mock_provider: Arc::new(std::sync::Mutex::new(None)),
                 };
             }
         };
@@ -185,6 +190,7 @@ impl AppState {
             cancellation: Arc::new(CancellationRegistry::new()),
             permission_services: Arc::new(TokioMutex::new(HashMap::new())),
             lsp_registry,
+            mock_provider: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }

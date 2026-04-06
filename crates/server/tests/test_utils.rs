@@ -6,6 +6,7 @@ use tokio::sync::oneshot;
 
 use rcode_server::{create_app, AppState};
 use rcode_core::{Session, SessionId, RcodeConfig, Part, Message};
+use rcode_providers::LlmProvider;
 
 pub struct TestApp {
     pub state: Arc<AppState>,
@@ -17,6 +18,42 @@ impl TestApp {
     pub async fn new() -> Self {
         let config = RcodeConfig::default();
         let state = Arc::new(AppState::with_config(config));
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        // Bind to a random available port
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        // Spawn the server
+        let app = create_app(state.clone()).await;
+        let server = axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                shutdown_rx.await.ok();
+            });
+
+        // Spawn server in background
+        tokio::spawn(async move {
+            server.await.ok();
+        });
+
+        Self {
+            state,
+            port,
+            shutdown_tx: Some(shutdown_tx),
+        }
+    }
+
+    /// Create a TestApp with a mock provider injected
+    pub async fn with_mock_provider(provider: Arc<dyn LlmProvider>) -> Self {
+        let config = RcodeConfig::default();
+        let state = Arc::new(AppState::with_config(config));
+        
+        // Inject the mock provider
+        {
+            let mut mock_guard = state.mock_provider.lock().unwrap();
+            *mock_guard = Some(provider);
+        }
+        
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         // Bind to a random available port

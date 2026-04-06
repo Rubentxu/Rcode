@@ -227,10 +227,25 @@ pub async fn submit_prompt(
         .or_else(|| config.effective_model())
         .map(|s| s.to_string());
 
-    let (provider, effective_model) = match ProviderFactory::build(&model_id, Some(&*config)) {
-        Ok((p, m)) => (p, m),
-        Err(e) => {
-            return Err(ServerError::internal(e.to_string()));
+    // Check for mock provider first (used by integration tests)
+    let (provider, effective_model) = if let Ok(mock_guard) = state.mock_provider.lock() {
+        if let Some(ref mock) = *mock_guard {
+            (Arc::clone(mock) as Arc<dyn rcode_providers::LlmProvider>, model_id.clone())
+        } else {
+            drop(mock_guard);
+            match ProviderFactory::build(&model_id, Some(&*config)) {
+                Ok((p, m)) => (p, m),
+                Err(e) => {
+                    return Err(ServerError::internal(e.to_string()));
+                }
+            }
+        }
+    } else {
+        match ProviderFactory::build(&model_id, Some(&*config)) {
+            Ok((p, m)) => (p, m),
+            Err(e) => {
+                return Err(ServerError::internal(e.to_string()));
+            }
         }
     };
     drop(config); // Release lock before spawning
