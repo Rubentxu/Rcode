@@ -62,8 +62,10 @@ impl SessionStatus {
                     SessionStatus::Idle | SessionStatus::Completed | SessionStatus::Aborted
                 )
             }
-            // Terminal states - no transitions allowed
-            SessionStatus::Completed | SessionStatus::Aborted => false,
+            // Allow reset from terminal states back to Idle for reuse after error/completion
+            SessionStatus::Completed | SessionStatus::Aborted => {
+                matches!(new_status, SessionStatus::Idle)
+            }
         }
     }
 }

@@ -228,24 +228,24 @@ pub async fn submit_prompt(
         .map(|s| s.to_string());
 
     // Check for mock provider first (used by integration tests)
-    let (provider, effective_model) = if let Ok(mock_guard) = state.mock_provider.lock() {
+    let provider_build_result = if let Ok(mock_guard) = state.mock_provider.lock() {
         if let Some(ref mock) = *mock_guard {
-            (Arc::clone(mock) as Arc<dyn rcode_providers::LlmProvider>, model_id.clone())
+            Ok((Arc::clone(mock) as Arc<dyn rcode_providers::LlmProvider>, model_id.clone()))
         } else {
             drop(mock_guard);
-            match ProviderFactory::build(&model_id, Some(&*config)) {
-                Ok((p, m)) => (p, m),
-                Err(e) => {
-                    return Err(ServerError::internal(e.to_string()));
-                }
-            }
+            ProviderFactory::build(&model_id, Some(&*config))
         }
     } else {
-        match ProviderFactory::build(&model_id, Some(&*config)) {
-            Ok((p, m)) => (p, m),
-            Err(e) => {
-                return Err(ServerError::internal(e.to_string()));
-            }
+        ProviderFactory::build(&model_id, Some(&*config))
+    };
+
+    // If provider build fails, try to reset session to Idle so user can retry
+    let (provider, effective_model) = match provider_build_result {
+        Ok((p, m)) => (p, m),
+        Err(e) => {
+            // Reset session to Idle on error so user can try again
+            let _ = state.session_service.update_status(&id, SessionStatus::Idle);
+            return Err(ServerError::internal(e.to_string()));
         }
     };
     drop(config); // Release lock before spawning
