@@ -13,21 +13,16 @@ OpenCode was rewritten from TypeScript to Go with a clean, pragmatic architectur
 
 | Capability | OpenCode (Go) | RCode (Rust) | Status |
 |---|---|---|---|
-| Provider trait | 3 methods: `SendMessages`, `StreamResponse`, `Model` | `complete()` + `stream()` + `model_info()` + `abort()` | ✅ Parity (RCode has more) |
-| Provider factory | `NewProvider(name, opts...)` with switch | `ProviderFactory::build()` with match | ✅ Parity |
-| Provider count | 6 (Anthropic, OpenAI, Gemini, Bedrock, Azure, Copilot) | 7 (Anthropic, OpenAI, Google, OpenRouter, MiniMax, ZAI, Mock) | ✅ Parity |
-| Config cascade | JSON/JSONC, global → project → env | JSON/JSONC, managed → global → project → env | ✅ Parity |
-| Credential storage | `APIKey` in config per provider | `api_key` in config + `*_API_KEY`/`*_AUTH_TOKEN` env | ✅ Parity |
-| **Agent loop** | `processGeneration()`: stream → tool calls → loop | `Executor::run()` exists but **not wired to server** | 🔴 Gap #1 |
-| **Subagent delegation** | `agentTool` creates child session, runs agent, returns | `TaskTool` is a **placeholder** | 🔴 Gap #2 |
-| **Session parent/child** | `CreateTaskSession`, `CreateTitleSession` with `ParentSessionID` | No parent-child in schema | 🔴 Gap #3 |
-| **Title generation** | Async background, separate session, `SendMessages` | `TitleGenerator` exists but **not wired** | 🔴 Gap #4 |
-| **Compaction** | Truncates at `SummaryMessageID`, `Summarize()` method | `Summarizer` trait + `CompactionService` exist but **not wired** | 🔴 Gap #5 |
-| **Permission system** | Blocking `Request()` → `Grant()`/`Deny()` via pubsub | Permission rules exist, only enforced in TaskTool | 🟡 Gap #6 |
-| **Event bus** | pubsub per entity (Session, AgentEvent, PermissionRequest) | `EventBus` in core + separate `event` crate | 🟡 Gap #7 |
-| **MCP tools** | Dynamic MCP tool loading with session context | `McpTool` exists but session context not wired | 🟡 Gap #8 |
-| **Model configuration per agent** | `Agents map[AgentName]Agent{Model, MaxTokens, ReasoningEffort}` | `AgentDefinition` has `model` field, **ignored by executor** | 🔴 Gap #9 |
-| **Auto-compact** | `AutoCompact` config flag | Not implemented | 🟡 Gap #10 |
+| **Agent loop** | `processGeneration()`: stream → tool calls → loop | `Executor::run()` wired to server via `submit_prompt()` | ✅ Closed (`wire-agent-loop`) |
+| **Subagent delegation** | `agentTool` creates child session, runs agent, returns | `TaskTool` creates real child sessions via `SessionService::create_child()` | ✅ Closed (`subagent-delegation`) |
+| **Session parent/child** | `CreateTaskSession`, `CreateTitleSession` with `ParentSessionID` | `parent_id` in schema + `create_child()` + `GET /session/:id/children` | ✅ Closed (`wire-agent-loop`) |
+| **Title generation** | Async background, separate session, `SendMessages` | `TitleGenerator` with LLM + async spawn + `update_title()` | ✅ Closed (`wire-title-generation`) |
+| **Compaction** | Truncates at `SummaryMessageID`, `Summarize()` method | `auto_compact` flag + configurable thresholds + message truncation | ✅ Closed (`wire-compaction` + `auto-compact`) |
+| **Permission system** | Blocking `Request()` → `Grant()`/`Deny()` via pubsub | `InteractivePermissionService` with SSE events + REST grant/deny | ✅ Closed (`permission-system`) |
+| **Event bus** | pubsub per entity (Session, AgentEvent, PermissionRequest) | Unified: `rcode_event` crate is canonical, `rcode_core::event` removed as dead code | ✅ Closed (`event-bus-unification`) |
+| **MCP tools** | Dynamic MCP tool loading with session context | `session_id` passed via `ToolContext` to MCP `call_tool()` | ✅ Closed (`mcp-session-context`) |
+| **Model configuration per agent** | `Agents map[AgentName]Agent{Model, MaxTokens, ReasoningEffort}` | `AgentConfig` + `AgentDefinition` with `max_tokens`, `reasoning_effort` + server resolution | ✅ Closed (`agent-model-overrides`) |
+| **Auto-compact** | `AutoCompact` config flag | `auto_compact: bool` + configurable thresholds | ✅ Closed (`auto-compact`) |
 | **LSP integration** | Config-driven per-language LSP clients | `lsp` crate exists, not wired to agent tools | 🟡 Gap #11 |
 
 ---
@@ -473,11 +468,11 @@ type Config struct {
 
 ## Implementation Order (Recommended)
 
-### Wave 1 — Foundation (must be done first)
-| Order | SDD Change | Gap | Rationale |
+### Wave 1 — Foundation ✅ DONE first, 🔴→ removed
+ merged)
 |-------|-----------|-----|-----------|
 | 1 | `event-bus-unification` | #7 | Foundational — SSE depends on clean events |
-| 2 | `session-parent-child` | #3 | Schema change needed before subagents |
+| 2 | `session-parent-child` | #3 | Schema + methods | ✅ Already complete |
 | 3 | `wire-agent-loop` | #1 | **Critical path** — everything depends on this |
 
 ### Wave 2 — Core Features
