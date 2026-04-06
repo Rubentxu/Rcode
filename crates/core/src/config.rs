@@ -96,6 +96,22 @@ pub struct RcodeConfig {
 
     #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
+
+    #[serde(default)]
+    pub lsp: Option<HashMap<String, LspServerConfig>>,
+}
+
+/// LSP server configuration for a specific language
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+pub struct LspServerConfig {
+    #[serde(default)]
+    pub command: String,
+
+    #[serde(default)]
+    pub args: Vec<String>,
+
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -558,5 +574,83 @@ mod tests {
         assert!(!config.auto_compact);
         assert_eq!(config.compact_threshold_messages, None);
         assert_eq!(config.compact_keep_messages, Some(25));
+    }
+
+    #[test]
+    fn test_lsp_server_config_deserialization() {
+        let json = r#"{
+            "command": "rust-analyzer",
+            "args": ["--verbose"],
+            "cwd": "/project"
+        }"#;
+
+        let config: LspServerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.command, "rust-analyzer");
+        assert_eq!(config.args, vec!["--verbose"]);
+        assert_eq!(config.cwd, Some("/project".to_string()));
+    }
+
+    #[test]
+    fn test_lsp_server_config_default() {
+        let config = LspServerConfig::default();
+        assert!(config.command.is_empty());
+        assert!(config.args.is_empty());
+        assert!(config.cwd.is_none());
+    }
+
+    #[test]
+    fn test_rcode_config_with_lsp_servers() {
+        let json = r#"{
+            "model": "anthropic/claude-3-5-sonnet",
+            "lsp": {
+                "rust": {
+                    "command": "rust-analyzer",
+                    "args": [],
+                    "cwd": "/workspace"
+                },
+                "typescript": {
+                    "command": "typescript-language-server",
+                    "args": ["--stdio"],
+                    "cwd": null
+                }
+            }
+        }"#;
+
+        let config: RcodeConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.model,
+            Some("anthropic/claude-3-5-sonnet".to_string())
+        );
+
+        let lsp_config = config.lsp.as_ref().unwrap();
+        assert_eq!(lsp_config.len(), 2);
+
+        let rust_config = lsp_config.get("rust").unwrap();
+        assert_eq!(rust_config.command, "rust-analyzer");
+        assert!(rust_config.args.is_empty());
+        assert_eq!(rust_config.cwd, Some("/workspace".to_string()));
+
+        let ts_config = lsp_config.get("typescript").unwrap();
+        assert_eq!(ts_config.command, "typescript-language-server");
+        assert_eq!(ts_config.args, vec!["--stdio"]);
+        assert_eq!(ts_config.cwd, None);
+    }
+
+    #[test]
+    fn test_rcode_config_lsp_field_defaults_to_none() {
+        let config = RcodeConfig::default();
+        assert!(config.lsp.is_none());
+    }
+
+    #[test]
+    fn test_lsp_server_config_missing_optional_fields() {
+        let json = r#"{
+            "command": "rust-analyzer"
+        }"#;
+
+        let config: LspServerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.command, "rust-analyzer");
+        assert!(config.args.is_empty());
+        assert!(config.cwd.is_none());
     }
 }

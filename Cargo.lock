@@ -1867,6 +1867,7 @@ dependencies = [
  "rcode-agent",
  "rcode-core",
  "rcode-event",
+ "rcode-lsp",
  "rcode-providers",
  "rcode-session",
  "rcode-storage",

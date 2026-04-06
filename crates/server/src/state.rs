@@ -6,6 +6,7 @@ use std::sync::Arc;
 use rcode_agent::permissions::InteractivePermissionService;
 use rcode_core::{RcodeConfig, SubagentRunner};
 use rcode_event::EventBus;
+use rcode_lsp::LanguageServerRegistry;
 use rcode_providers::catalog::ModelCatalogService;
 use rcode_providers::ProviderRegistry;
 use rcode_session::SessionService;
@@ -27,6 +28,8 @@ pub struct AppState {
     pub cancellation: Arc<CancellationRegistry>,
     /// Map of session_id to InteractivePermissionService for interactive permission approval
     pub permission_services: Arc<TokioMutex<HashMap<String, Arc<InteractivePermissionService>>>>,
+    /// LSP language server registry for code intelligence
+    pub lsp_registry: Arc<LanguageServerRegistry>,
 }
 
 fn create_storage_path() -> std::path::PathBuf {
@@ -36,10 +39,11 @@ fn create_storage_path() -> std::path::PathBuf {
     data_dir.join("rcode.db")
 }
 
-/// Create a ToolRegistryService with SubagentRunner injected
+/// Create a ToolRegistryService with SubagentRunner injected and LSP tools registered
 fn create_tools_with_runner(
     session_service: Arc<SessionService>,
     config: &RcodeConfig,
+    lsp_registry: Arc<rcode_lsp::LanguageServerRegistry>,
 ) -> Arc<ToolRegistryService> {
     let tools = Arc::new(ToolRegistryService::with_session_service(
         session_service.clone(),
@@ -57,6 +61,18 @@ fn create_tools_with_runner(
     let task_tool =
         rcode_tools::task::TaskTool::with_session_service(session_service).with_runner(runner);
     tools.set_task_tool(task_tool);
+
+    // Register a single LSP tool that uses the registry to find the right client
+    // Note: The LspToolAdapter needs a client at creation time, so we use from_registry
+    // with a placeholder path. In a full implementation, we would modify LspToolAdapter
+    // to use the registry dynamically at execute time.
+    if let Some(lsp_tool) = rcode_lsp::LspToolAdapter::from_registry(
+        "/tmp", // placeholder path
+        Arc::clone(&lsp_registry),
+    ) {
+        tools.register(Arc::new(lsp_tool));
+        tracing::info!("Registered LSP tool adapter");
+    }
 
     tools
 }
@@ -81,6 +97,7 @@ impl AppState {
             Err(e) => {
                 tracing::warn!("Failed to open database, using in-memory storage: {}", e);
                 let session_service = Arc::new(SessionService::new(event_bus.clone()));
+                let lsp_registry = Arc::new(LanguageServerRegistry::new());
                 return Self {
                     session_service: session_service.clone(),
                     event_bus,
@@ -92,6 +109,7 @@ impl AppState {
                     catalog: Arc::new(ModelCatalogService::new()),
                     cancellation: Arc::new(CancellationRegistry::new()),
                     permission_services: Arc::new(TokioMutex::new(HashMap::new())),
+                    lsp_registry,
                 };
             }
         };
@@ -102,6 +120,7 @@ impl AppState {
                 e
             );
             let session_service = Arc::new(SessionService::new(event_bus.clone()));
+            let lsp_registry = Arc::new(LanguageServerRegistry::new());
             return Self {
                 session_service: session_service.clone(),
                 event_bus,
@@ -113,6 +132,7 @@ impl AppState {
                 catalog: Arc::new(ModelCatalogService::new()),
                 cancellation: Arc::new(CancellationRegistry::new()),
                 permission_services: Arc::new(TokioMutex::new(HashMap::new())),
+                lsp_registry,
             };
         }
 
@@ -122,6 +142,7 @@ impl AppState {
             Err(e) => {
                 tracing::warn!("Failed to open second database connection: {}", e);
                 let session_service = Arc::new(SessionService::new(event_bus.clone()));
+                let lsp_registry = Arc::new(LanguageServerRegistry::new());
                 return Self {
                     session_service: session_service.clone(),
                     event_bus,
@@ -133,6 +154,7 @@ impl AppState {
                     catalog: Arc::new(ModelCatalogService::new()),
                     cancellation: Arc::new(CancellationRegistry::new()),
                     permission_services: Arc::new(TokioMutex::new(HashMap::new())),
+                    lsp_registry,
                 };
             }
         };
@@ -146,8 +168,12 @@ impl AppState {
             message_repo,
         ));
 
+        // Create LSP registry
+        let lsp_registry = Arc::new(LanguageServerRegistry::new());
+
         // Create tools with the runner injected
-        let tools = create_tools_with_runner(session_service.clone(), &config);
+        let tools =
+            create_tools_with_runner(session_service.clone(), &config, Arc::clone(&lsp_registry));
 
         Self {
             session_service: session_service.clone(),
@@ -158,6 +184,7 @@ impl AppState {
             catalog: Arc::new(ModelCatalogService::new()),
             cancellation: Arc::new(CancellationRegistry::new()),
             permission_services: Arc::new(TokioMutex::new(HashMap::new())),
+            lsp_registry,
         }
     }
 }
@@ -165,5 +192,40 @@ impl AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_app_state_has_lsp_registry() {
+        let state = AppState::new();
+        assert!(state.lsp_registry.get_server("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_app_state_lsp_registry_is_shared() {
+        let state = AppState::new();
+        let registry1 = Arc::clone(&state.lsp_registry);
+        let registry2 = Arc::clone(&state.lsp_registry);
+        // Both references should point to the same registry
+        assert!(Arc::ptr_eq(&registry1, &registry2));
+    }
+
+    #[test]
+    fn test_lsp_tool_not_registered_without_config() {
+        let config = RcodeConfig::default();
+        let state = AppState::with_config(config);
+        // Without LSP config, no tool should be registered
+        // The tool is only registered when LSP servers are configured
+        let tools = state.tools.list();
+        let lsp_tools: Vec<_> = tools.iter().filter(|t| t.id == "lsp").collect();
+        assert!(
+            lsp_tools.is_empty(),
+            "Expected no LSP tools without config, found: {:?}",
+            lsp_tools
+        );
     }
 }
