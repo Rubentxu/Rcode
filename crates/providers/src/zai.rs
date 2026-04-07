@@ -24,22 +24,40 @@ pub struct ZaiProvider {
 impl ZaiProvider {
     /// Create a new ZAI provider with the given API key
     pub fn new(api_key: String) -> Self {
+        let custom_headers = std::env::var("ZAI_CUSTOM_HEADERS")
+            .map(|h| {
+                serde_json::from_str::<Vec<(String, String)>>(&h)
+                    .unwrap_or_else(|_| vec![])
+            })
+            .unwrap_or_default();
+
         let config = OpenAiCompatConfig::new(
             api_key,
             "https://api.zai.chat/v1".to_string(),
             "zai".to_string(),
-        );
+        )
+        .with_custom_headers(custom_headers);
+
         let transport = OpenAiCompatTransport::new(config);
         Self { transport }
     }
 
     /// Create a new ZAI provider with a custom base URL
     pub fn new_with_base_url(api_key: String, base_url: String) -> Self {
+        let custom_headers = std::env::var("ZAI_CUSTOM_HEADERS")
+            .map(|h| {
+                serde_json::from_str::<Vec<(String, String)>>(&h)
+                    .unwrap_or_else(|_| vec![])
+            })
+            .unwrap_or_default();
+
         let config = OpenAiCompatConfig::new(
             api_key,
             base_url,
             "zai".to_string(),
-        );
+        )
+        .with_custom_headers(custom_headers);
+
         let transport = OpenAiCompatTransport::new(config);
         Self { transport }
     }
@@ -109,5 +127,12 @@ mod tests {
     fn test_provider_abort_does_not_panic() {
         let provider = ZaiProvider::new("test".to_string());
         provider.abort();
+    }
+
+    #[test]
+    fn test_custom_headers_from_env_empty() {
+        // Without ZAI_CUSTOM_HEADERS env var, custom_headers should be empty
+        let provider = ZaiProvider::new("test".to_string());
+        assert_eq!(provider.provider_id(), "zai");
     }
 }

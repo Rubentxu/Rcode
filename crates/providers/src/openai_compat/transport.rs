@@ -62,7 +62,7 @@ impl OpenAiCompatTransport {
 
     /// Send a non-streaming completion request
     pub async fn post(&self, req: CompletionRequest) -> Result<CompletionResponse> {
-        let body = request::build_openai_request(req.clone(), req.system_prompt.clone());
+        let body = request::build_openai_request(req.clone(), req.system_prompt.clone(), false);
         
         let url = self.chat_completions_url();
         let mut request_builder = self.http_client
@@ -115,7 +115,7 @@ impl OpenAiCompatTransport {
             }
         }
 
-        let body = request::build_openai_request(req.clone(), req.system_prompt.clone());
+        let body = request::build_openai_request(req.clone(), req.system_prompt.clone(), true);
         
         let url = self.chat_completions_url();
         let mut request_builder = self.http_client

@@ -173,9 +173,14 @@ pub fn into_openai_message(msg: Message) -> OpenAIMessage {
 }
 
 /// Build an OpenAI request from a CompletionRequest
+///
+/// The `stream` parameter controls whether this is a streaming request.
+/// - Pass `false` for regular non-streaming completions (`post()`)
+/// - Pass `true` for streaming completions (`post_streaming()`)
 pub fn build_openai_request(
     req: CompletionRequest,
     system_prompt: Option<String>,
+    stream: bool,
 ) -> OpenAIRequest {
     let mut messages: Vec<OpenAIMessage> = Vec::new();
 
@@ -204,7 +209,7 @@ pub fn build_openai_request(
         messages,
         max_tokens: req.max_tokens,
         temperature: req.temperature,
-        stream: false,
+        stream,
         tools,
     }
 }
@@ -410,7 +415,7 @@ mod tests {
             reasoning_effort: None,
         };
 
-        let openai_req = build_openai_request(req, Some("You are helpful".to_string()));
+        let openai_req = build_openai_request(req, Some("You are helpful".to_string()), false);
 
         assert_eq!(openai_req.model, "gpt-4o");
         assert_eq!(openai_req.messages.len(), 2); // system + user
@@ -447,7 +452,7 @@ mod tests {
             reasoning_effort: None,
         };
 
-        let openai_req = build_openai_request(req, None);
+        let openai_req = build_openai_request(req, None, false);
 
         assert!(openai_req.tools.is_some());
         let tools = openai_req.tools.unwrap();
@@ -470,8 +475,108 @@ mod tests {
             reasoning_effort: None,
         };
 
-        let openai_req = build_openai_request(req, None);
+        let openai_req = build_openai_request(req, None, false);
 
         assert!(openai_req.tools.is_none());
+    }
+
+    #[test]
+    fn test_build_openai_request_non_streaming() {
+        let req = CompletionRequest {
+            model: "gpt-4o".to_string(),
+            messages: vec![create_test_message(
+                Role::User,
+                vec![create_text_part("Hello")],
+            )],
+            system_prompt: None,
+            tools: vec![],
+            temperature: None,
+            max_tokens: Some(1024),
+            reasoning_effort: None,
+        };
+
+        let openai_req = build_openai_request(req, None, false);
+
+        assert!(
+            !openai_req.stream,
+            "Non-streaming request must have stream: false"
+        );
+    }
+
+    #[test]
+    fn test_build_openai_request_streaming() {
+        let req = CompletionRequest {
+            model: "gpt-4o".to_string(),
+            messages: vec![create_test_message(
+                Role::User,
+                vec![create_text_part("Hello")],
+            )],
+            system_prompt: None,
+            tools: vec![],
+            temperature: None,
+            max_tokens: Some(1024),
+            reasoning_effort: None,
+        };
+
+        let openai_req = build_openai_request(req, None, true);
+
+        assert!(
+            openai_req.stream,
+            "Streaming request must have stream: true"
+        );
+    }
+
+    #[test]
+    fn test_build_openai_request_stream_false_explicit() {
+        // Verify that stream: false is explicitly set (not just default)
+        let req = CompletionRequest {
+            model: "gpt-4o".to_string(),
+            messages: vec![create_test_message(
+                Role::User,
+                vec![create_text_part("Hello")],
+            )],
+            system_prompt: None,
+            tools: vec![],
+            temperature: None,
+            max_tokens: Some(1024),
+            reasoning_effort: None,
+        };
+
+        let openai_req = build_openai_request(req, None, false);
+
+        // Serialize and check JSON output contains "stream":false
+        let json = serde_json::to_string(&openai_req).unwrap();
+        assert!(
+            json.contains(r#""stream":false"#),
+            "JSON must contain \"stream\":false, got: {}",
+            json
+        );
+    }
+
+    #[test]
+    fn test_build_openai_request_stream_true_explicit() {
+        // Verify that stream: true is explicitly set
+        let req = CompletionRequest {
+            model: "gpt-4o".to_string(),
+            messages: vec![create_test_message(
+                Role::User,
+                vec![create_text_part("Hello")],
+            )],
+            system_prompt: None,
+            tools: vec![],
+            temperature: None,
+            max_tokens: Some(1024),
+            reasoning_effort: None,
+        };
+
+        let openai_req = build_openai_request(req, None, true);
+
+        // Serialize and check JSON output contains "stream":true
+        let json = serde_json::to_string(&openai_req).unwrap();
+        assert!(
+            json.contains(r#""stream":true"#),
+            "JSON must contain \"stream\":true, got: {}",
+            json
+        );
     }
 }
