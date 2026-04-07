@@ -504,13 +504,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_catalog_service_list_models_returns_fallback() {
+        // SAFETY: Clear ANTHROPIC_MODEL to ensure test runs with clean environment
+        // (it may be set in the developer's shell, but the test expects fallback-only models)
+        unsafe {
+            std::env::remove_var("ANTHROPIC_MODEL");
+        }
+
         let service = ModelCatalogService::new();
         let config = rcode_core::RcodeConfig::default();
         let models = service.list_models(&config).await;
-        
+
         // Should have fallback models for all enabled providers
         assert!(!models.is_empty(), "Should return fallback models");
-        
+
         // All models should be from fallback source
         for model in &models {
             assert_eq!(model.source, ModelSource::Fallback, "All should be fallback source");
@@ -522,6 +528,8 @@ mod tests {
         // SAFETY: Test-only environment variable manipulation
         unsafe {
             std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+            std::env::remove_var("OPENAI_API_KEY");
+            std::env::remove_var("OPENAI_AUTH_TOKEN");
         }
         
         let config = rcode_core::RcodeConfig::default();
@@ -545,6 +553,8 @@ mod tests {
         
         unsafe {
             std::env::remove_var("ANTHROPIC_API_KEY");
+            std::env::remove_var("OPENAI_API_KEY");
+            std::env::remove_var("OPENAI_AUTH_TOKEN");
         }
     }
 }
