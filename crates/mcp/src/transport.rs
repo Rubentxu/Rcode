@@ -154,6 +154,13 @@ pub struct InMemoryTransport {
 }
 
 #[cfg(test)]
+impl Default for InMemoryTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
 impl InMemoryTransport {
     pub fn new() -> Self {
         Self {

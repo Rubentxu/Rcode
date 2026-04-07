@@ -17,9 +17,10 @@ pub struct Serve {
 }
 
 impl Serve {
+    #[allow(clippy::await_holding_lock)]
     pub async fn execute(&self, config_path: Option<&PathBuf>, no_config: bool) -> Result<()> {
         let work_dir = std::env::current_dir().unwrap_or_default();
-        let config = rcode_core::load_config(config_path.map(|p| p.clone()), no_config, Some(work_dir)).await?;
+        let config = rcode_core::load_config(config_path.cloned(), no_config, Some(work_dir)).await?;
         let state = Arc::new(AppState::with_config(config));
 
         let config_ref = state.config.lock().unwrap();

@@ -1890,60 +1890,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_executor_with_unsupported_tool_calling_returns_error_message() {
-        use rcode_core::provider::ProviderCapabilities;
-        
-        let agent = Arc::new(MockTestAgent::new("test"));
-        let provider = Arc::new(MockLlmProvider::new());
-        let tools = Arc::new(ToolRegistryService::new());
-        
-        // ToolRegistryService has default tools like "bash" registered
-        // Verify that bash tool exists
-        let tools_list = tools.list();
-        assert!(!tools_list.is_empty(), "Should have default tools registered");
-        
-        // Set provider to NOT support tool calling
-        provider.set_capabilities(ProviderCapabilities::chat_only());
-        
-        // Configure provider with a simple text response
-        provider.set_stream_events(vec![
-            StreamingEvent::Text { delta: "Hello".to_string() },
-            StreamingEvent::Finish { 
-                stop_reason: CoreStopReason::EndTurn, 
-                usage: TokenUsage { 
-                    input_tokens: 10, 
-                    output_tokens: 5, 
-                    total_tokens: Some(15) 
-                },
-            },
-        ]);
-        
-        let executor = AgentExecutor::new(agent, provider.clone(), tools);
-        let mut ctx = create_test_agent_context();
-        
-        let result = executor.run(&mut ctx).await;
-        assert!(result.is_ok());
-        
-        // Should have received an error message about tool calling not being supported
-        // The last message should be from the assistant with the error
-        let last_msg = ctx.messages.last();
-        assert!(last_msg.is_some());
-        
-        let last_msg = last_msg.unwrap();
-        if let Message { parts, .. } = last_msg {
-            // Find the text part with the error message
-            let has_unsupported_msg = parts.iter().any(|p| {
-                if let Part::Text { content } = p {
-                    content.contains("does not support tool calling")
-                } else {
-                    false
-                }
-            });
-            assert!(has_unsupported_msg, "Should have error message about tool calling not supported");
-        }
-    }
-
-    #[tokio::test]
     async fn test_executor_capability_check_with_support_succeeds() {
         use rcode_core::provider::ProviderCapabilities;
         

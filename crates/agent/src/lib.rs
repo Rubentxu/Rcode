@@ -1,4 +1,11 @@
 //! Agent implementation
+#![allow(
+    clippy::collapsible_if,
+    clippy::redundant_closure,
+    unused_imports,
+    unused_variables,
+    unused_assignments
+)]
 
 pub mod executor;
 pub mod delegation;

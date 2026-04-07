@@ -21,7 +21,7 @@ async fn test_database_creates_schema() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("test.db");
     
-    let db = Database::open(&db_path).await.unwrap();
+    let _db = Database::open(&db_path).await.unwrap();
     
     // Verify the database file exists
     assert!(db_path.exists());
@@ -32,7 +32,7 @@ async fn test_session_persistence() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("test.db");
     
-    let db = Database::open(&db_path).await.unwrap();
+    let _db = Database::open(&db_path).await.unwrap();
     
     // Create a session
     let session = Session::new(
@@ -52,7 +52,7 @@ async fn test_message_persistence() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("test.db");
     
-    let db = Database::open(&db_path).await.unwrap();
+    let _db = Database::open(&db_path).await.unwrap();
     
     // Create a message
     let message = Message::user(

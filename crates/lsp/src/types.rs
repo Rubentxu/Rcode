@@ -42,9 +42,10 @@ pub struct Location {
 }
 
 /// Completion item kind
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CompletionItemKind {
+    #[default]
     Text,
     Method,
     Function,
@@ -70,12 +71,6 @@ pub enum CompletionItemKind {
     Event,
     Operator,
     TypeParameter,
-}
-
-impl Default for CompletionItemKind {
-    fn default() -> Self {
-        Self::Text
-    }
 }
 
 /// A completion item
@@ -154,19 +149,14 @@ pub struct Hover {
 }
 
 /// Diagnostic severity
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticSeverity {
+    #[default]
     Error = 1,
     Warning = 2,
     Information = 3,
     Hint = 4,
-}
-
-impl Default for DiagnosticSeverity {
-    fn default() -> Self {
-        Self::Error
-    }
 }
 
 /// Represents a diagnostic, such as a compiler error or warning

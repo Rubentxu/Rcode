@@ -1,4 +1,11 @@
 //! AI Provider abstractions and implementations
+#![allow(
+    clippy::collapsible_if,
+    clippy::enum_variant_names,
+    clippy::type_complexity,
+    clippy::if_same_then_else,
+    dead_code
+)]
 
 pub mod provider_trait;
 pub mod anthropic;

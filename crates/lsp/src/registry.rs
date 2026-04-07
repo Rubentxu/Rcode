@@ -116,7 +116,7 @@ impl LanguageServerRegistry {
             "kt" | "kts" => Some("kotlin".to_string()),
             "scala" => Some("scala".to_string()),
             "lua" => Some("lua".to_string()),
-            "R" => Some("r".to_string()),
+            "r" => Some("r".to_string()),
             "sh" | "bash" | "zsh" => Some("shellscript".to_string()),
             "ps1" | "psm1" => Some("powershell".to_string()),
             "ex" | "exs" => Some("elixir".to_string()),

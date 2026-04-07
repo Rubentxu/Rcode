@@ -157,35 +157,35 @@ pub async fn load_config(
         }
     }
 
-    if let Some(path) = config_path {
-        if path.exists() {
-            tracing::debug!("Loading config from CLI path {:?}", path);
-            match load_config_file(&path) {
-                Ok(cfg) => result = merge_configs(&result, &cfg),
-                Err(e) => tracing::warn!("Failed to load config from {:?}: {}", path, e),
-            }
+    if let Some(path) = config_path
+        && path.exists()
+    {
+        tracing::debug!("Loading config from CLI path {:?}", path);
+        match load_config_file(&path) {
+            Ok(cfg) => result = merge_configs(&result, &cfg),
+            Err(e) => tracing::warn!("Failed to load config from {:?}: {}", path, e),
         }
     }
 
-    if let Ok(content) = std::env::var("OPENCODE_CONFIG_CONTENT") {
-        if !content.is_empty() {
-            tracing::debug!("Loading config from OPENCODE_CONFIG_CONTENT env var");
-            match parse_config_file(&content) {
-                Ok(cfg) => result = merge_configs(&result, &cfg),
-                Err(e) => tracing::warn!("Failed to parse OPENCODE_CONFIG_CONTENT: {}", e),
-            }
+    if let Ok(content) = std::env::var("OPENCODE_CONFIG_CONTENT")
+        && !content.is_empty()
+    {
+        tracing::debug!("Loading config from OPENCODE_CONFIG_CONTENT env var");
+        match parse_config_file(&content) {
+            Ok(cfg) => result = merge_configs(&result, &cfg),
+            Err(e) => tracing::warn!("Failed to parse OPENCODE_CONFIG_CONTENT: {}", e),
         }
     }
 
-    if let Some(managed_dir) = get_managed_config_dir() {
-        if managed_dir.exists() {
-            for file in &[managed_dir.join("opencode.jsonc"), managed_dir.join("opencode.json")] {
-                if config_file_exists(file) {
-                    tracing::debug!("Loading managed config from {:?}", file);
-                    match load_config_file(file) {
-                        Ok(cfg) => result = merge_configs(&result, &cfg),
-                        Err(e) => tracing::warn!("Failed to load config from {:?}: {}", file, e),
-                    }
+    if let Some(managed_dir) = get_managed_config_dir()
+        && managed_dir.exists()
+    {
+        for file in &[managed_dir.join("opencode.jsonc"), managed_dir.join("opencode.json")] {
+            if config_file_exists(file) {
+                tracing::debug!("Loading managed config from {:?}", file);
+                match load_config_file(file) {
+                    Ok(cfg) => result = merge_configs(&result, &cfg),
+                    Err(e) => tracing::warn!("Failed to load config from {:?}: {}", file, e),
                 }
             }
         }
@@ -213,10 +213,10 @@ pub fn resolve_model_from_config(config: &RcodeConfig, cli_model: Option<&str>, 
         return Some(model.to_string());
     }
 
-    if let Some(agent) = agent_name {
-        if let Some(agent_model) = config.model_for_agent(agent) {
-            return Some(agent_model.to_string());
-        }
+    if let Some(agent) = agent_name
+        && let Some(agent_model) = config.model_for_agent(agent)
+    {
+        return Some(agent_model.to_string());
     }
 
     config.effective_model().map(|s| s.to_string())
@@ -392,13 +392,12 @@ pub fn save_config(config: &RcodeConfig) -> Result<(), String> {
     }
 
     // Preserve extra top-level config data for settings extensions such as model overrides.
-    if !config_without_secrets.extra.is_null() && config_without_secrets.extra != serde_json::json!({}) {
-        if let Some(obj) = existing.as_object_mut() {
-            if let Some(extra_obj) = config_without_secrets.extra.as_object() {
-                for (key, value) in extra_obj {
-                    obj.insert(key.clone(), value.clone());
-                }
-            }
+    if !config_without_secrets.extra.is_null() && config_without_secrets.extra != serde_json::json!({})
+        && let Some(obj) = existing.as_object_mut()
+        && let Some(extra_obj) = config_without_secrets.extra.as_object()
+    {
+        for (key, value) in extra_obj {
+            obj.insert(key.clone(), value.clone());
         }
     }
 
@@ -498,8 +497,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_model_prefers_cli() {
-        let mut config = RcodeConfig::default();
-        config.model = Some("anthropic/claude-3-5-sonnet".to_string());
+        let config = RcodeConfig { model: Some("anthropic/claude-3-5-sonnet".to_string()), ..Default::default() };
         
         let resolved = resolve_model_from_config(&config, Some("openai/gpt-4o"), None);
         assert_eq!(resolved, Some("openai/gpt-4o".to_string()));
@@ -507,11 +505,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_model_prefers_agent_specific() {
-        let mut config = RcodeConfig::default();
-        config.model = Some("anthropic/claude-3-5-sonnet".to_string());
+        let mut config = RcodeConfig { model: Some("anthropic/claude-3-5-sonnet".to_string()), ..Default::default() };
         
-        let mut agent_config = AgentConfig::default();
-        agent_config.model = Some("openai/gpt-4o".to_string());
+        let agent_config = AgentConfig { model: Some("openai/gpt-4o".to_string()), ..Default::default() };
         
         let mut agents = HashMap::new();
         agents.insert("custom".to_string(), agent_config);
@@ -538,8 +534,7 @@ mod tests {
     #[tokio::test]
     async fn test_save_config_includes_lsp() {
         // Create a config with LSP servers
-        let mut config = RcodeConfig::default();
-        config.model = Some("anthropic/claude-3-5-sonnet".to_string());
+        let mut config = RcodeConfig { model: Some("anthropic/claude-3-5-sonnet".to_string()), ..Default::default() };
         
         let mut lsp_config = std::collections::HashMap::new();
         lsp_config.insert("rust".to_string(), crate::config::LspServerConfig {

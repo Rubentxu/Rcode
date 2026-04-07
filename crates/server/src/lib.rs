@@ -1,4 +1,17 @@
 //! HTTP Server using Axum
+#![allow(
+    clippy::collapsible_if,
+    clippy::redundant_closure,
+    clippy::manual_contains,
+    clippy::needless_borrows_for_generic_args,
+    clippy::unnecessary_lazy_evaluations,
+    clippy::map_identity,
+    clippy::needless_borrow,
+    clippy::while_let_loop,
+    clippy::collapsible_str_replace,
+    clippy::nonminimal_bool,
+    clippy::bool_comparison
+)]
 
 pub mod routes;
 pub mod state;

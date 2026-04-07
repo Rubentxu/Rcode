@@ -20,13 +20,13 @@ async fn test_run_command_struct_creation() {
         json: false,
         silent: false,
         save_session: None,
-        model: "claude-sonnet-4-5".to_string(),
+        model: Some("claude-sonnet-4-5".to_string()),
         agent: None,
     };
     
     assert!(run.message.is_some());
     assert_eq!(run.message.unwrap(), "Hello, world!");
-    assert_eq!(run.model, "claude-sonnet-4-5");
+    assert_eq!(run.model, Some("claude-sonnet-4-5".to_string()));
 }
 
 #[tokio::test]
@@ -42,7 +42,7 @@ async fn test_run_command_with_file() {
         json: false,
         silent: false,
         save_session: None,
-        model: "claude-sonnet-4-5".to_string(),
+        model: Some("claude-sonnet-4-5".to_string()),
         agent: None,
     };
     
@@ -58,7 +58,7 @@ async fn test_run_command_with_json_flag() {
         json: true,
         silent: false,
         save_session: None,
-        model: "claude-sonnet-4-5".to_string(),
+        model: Some("claude-sonnet-4-5".to_string()),
         agent: None,
     };
     
@@ -74,7 +74,7 @@ async fn test_run_command_with_silent_flag() {
         json: false,
         silent: true,
         save_session: None,
-        model: "claude-sonnet-4-5".to_string(),
+        model: Some("claude-sonnet-4-5".to_string()),
         agent: None,
     };
     
@@ -90,7 +90,7 @@ async fn test_run_command_save_session_defaults() {
         json: false,
         silent: false,
         save_session: None,
-        model: "claude-sonnet-4-5".to_string(),
+        model: Some("claude-sonnet-4-5".to_string()),
         agent: None,
     };
     
@@ -107,7 +107,7 @@ async fn test_run_command_save_session_explicit() {
         json: false,
         silent: false,
         save_session: Some(false),
-        model: "claude-sonnet-4-5".to_string(),
+        model: Some("claude-sonnet-4-5".to_string()),
         agent: None,
     };
     

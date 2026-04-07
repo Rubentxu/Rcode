@@ -198,7 +198,7 @@ impl LlmProvider for MockLlmProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         // Use override if set, otherwise default to all capabilities
         self.capabilities_override.lock().unwrap()
-            .unwrap_or_else(|| ProviderCapabilities::all())
+            .unwrap_or_else(ProviderCapabilities::all)
     }
 }
 

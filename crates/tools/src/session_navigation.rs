@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use rcode_core::{Tool, ToolContext, ToolResult, SessionId, error::Result};
+use rcode_core::{Tool, ToolContext, ToolResult, SessionId, Session, error::Result};
 use rcode_session::SessionService;
 
 pub struct SessionNavigationTool {

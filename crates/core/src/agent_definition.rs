@@ -26,7 +26,7 @@ pub struct AgentPermissionConfig {
 }
 
 /// Agent mode determining how the agent can be used
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentMode {
     /// Primary agent mode - can spawn subagents
@@ -34,13 +34,8 @@ pub enum AgentMode {
     /// Subagent mode - can only be spawned by other agents
     Subagent,
     /// All modes - can be used as primary or subagent
+    #[default]
     All,
-}
-
-impl Default for AgentMode {
-    fn default() -> Self {
-        AgentMode::All
-    }
 }
 
 /// Agent definition loaded from JSON configuration

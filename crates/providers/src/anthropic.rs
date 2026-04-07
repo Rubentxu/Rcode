@@ -1,4 +1,5 @@
 //! Anthropic provider implementation
+#![allow(clippy::collapsible_if, clippy::enum_variant_names, dead_code)]
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -64,11 +65,11 @@ impl AnthropicProvider {
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse> {
-        if let Some(limiter) = &self.rate_limiter {
-            if let Err(wait_time) = limiter.try_acquire(1) {
-                tokio::time::sleep(wait_time).await;
-                let _ = limiter.try_acquire(1);
-            }
+        if let Some(limiter) = &self.rate_limiter
+            && let Err(wait_time) = limiter.try_acquire(1)
+        {
+            tokio::time::sleep(wait_time).await;
+            let _ = limiter.try_acquire(1);
         }
 
         let body = AnthropicRequest {
@@ -1215,7 +1216,7 @@ mod tests {
         let block: ContentBlockStart = serde_json::from_str(json).unwrap();
         assert_eq!(block.index, 0);
         match block.content {
-            ContentBlockStartContent::Text { .. } => {},
+            ContentBlockStartContent::Text => {},
             _ => panic!("Expected Text variant"),
         }
     }
@@ -1682,14 +1683,11 @@ mod tests {
             AnthropicMessageContent::Blocks(blocks) => {
                 // If blocks format, reasoning definitely not included (it's skipped in the loop)
                 for block in blocks {
-                    match block {
-                        AnthropicInputContentBlock::Text { text } => {
-                            assert!(
-                                !text.contains("Let me think step by step"),
-                                "reasoning must NOT be in text block"
-                            );
-                        }
-                        _ => {}
+                    if let AnthropicInputContentBlock::Text { text } = block {
+                        assert!(
+                            !text.contains("Let me think step by step"),
+                            "reasoning must NOT be in text block"
+                        );
                     }
                 }
             }

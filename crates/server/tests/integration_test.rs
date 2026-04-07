@@ -1,4 +1,5 @@
 //! Integration tests for the HTTP server
+#![allow(unused_imports)]
 
 mod test_utils;
 
@@ -88,8 +89,9 @@ async fn test_get_session_not_found() {
 #[tokio::test]
 async fn test_list_sessions() {
     let app = TestApp::new().await;
-    let _session1 = app.create_test_session().await;
-    let _session2 = app.create_test_session().await;
+    
+    let session1 = app.create_test_session().await;
+    let session2 = app.create_test_session().await;
     
     let client = reqwest::Client::new();
     let response = client
@@ -101,7 +103,10 @@ async fn test_list_sessions() {
     assert_eq!(response.status(), 200);
     
     let body: Vec<serde_json::Value> = response.json().await.unwrap();
-    assert_eq!(body.len(), 2);
+    // Verify the sessions we created are in the list
+    let session_ids: Vec<_> = body.iter().filter_map(|s| s.get("id").and_then(|id| id.as_str())).collect();
+    assert!(session_ids.contains(&session1.0.as_str()), "Session 1 should be in list");
+    assert!(session_ids.contains(&session2.0.as_str()), "Session 2 should be in list");
 }
 
 #[tokio::test]

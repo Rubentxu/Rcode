@@ -94,26 +94,24 @@ impl ProviderFactory {
         let mut models = Vec::new();
 
         // Check if enabled_providers is set
-        let enabled_providers: Option<&[String]> =
-            config.enabled_providers.as_ref().map(|v| v.as_slice());
+        let enabled_providers: Option<&[String]> = config.enabled_providers.as_deref();
 
         // Check disabled providers
-        let disabled_providers: Option<&[String]> =
-            config.disabled_providers.as_ref().map(|v| v.as_slice());
+        let disabled_providers: Option<&[String]> = config.disabled_providers.as_deref();
 
         for (provider, model_list) in KNOWN_PROVIDERS {
             // Skip if provider is disabled
-            if let Some(disabled) = disabled_providers {
-                if disabled.contains(&provider.to_string()) {
-                    continue;
-                }
+            if let Some(disabled) = disabled_providers
+                && disabled.contains(&provider.to_string())
+            {
+                continue;
             }
 
-            // Check if enabled_providers is set and this provider is not in it
-            if let Some(enabled) = enabled_providers {
-                if !enabled.is_empty() && !enabled.contains(&provider.to_string()) {
-                    continue;
-                }
+            // Skip if enabled_providers is set and this provider is not in it
+            if let Some(enabled) = enabled_providers
+                && !enabled.is_empty() && !enabled.contains(&provider.to_string())
+            {
+                continue;
             }
 
             for model in *model_list {
@@ -147,24 +145,24 @@ impl ProviderFactory {
         let (provider_id, model_name) = parse_model_id(model);
 
         // Check if provider is disabled
-        if let Some(ref cfg) = config {
-            if let Some(ref disabled) = cfg.disabled_providers {
-                if disabled.contains(&provider_id) {
-                    return Err(RCodeError::Config(format!(
-                        "Provider '{}' is disabled",
-                        provider_id
-                    )));
-                }
+        if let Some(cfg) = config {
+            if let Some(disabled) = cfg.disabled_providers.as_ref()
+                && disabled.contains(&provider_id)
+            {
+                return Err(RCodeError::Config(format!(
+                    "Provider '{}' is disabled",
+                    provider_id
+                )));
             }
 
             // Check if enabled_providers is set and this provider is not in it
-            if let Some(ref enabled) = cfg.enabled_providers {
-                if !enabled.is_empty() && !enabled.contains(&provider_id) {
-                    return Err(RCodeError::Config(format!(
-                        "Provider '{}' is not enabled",
-                        provider_id
-                    )));
-                }
+            if let Some(enabled) = cfg.enabled_providers.as_ref()
+                && !enabled.is_empty() && !enabled.contains(&provider_id)
+            {
+                return Err(RCodeError::Config(format!(
+                    "Provider '{}' is not enabled",
+                    provider_id
+                )));
             }
         }
 
@@ -360,13 +358,12 @@ mod tests {
         disabled: Option<Vec<&str>>,
         enabled: Option<Vec<&str>>,
     ) -> RcodeConfig {
-        let mut config = RcodeConfig::default();
-        config.extra = json!({
-            "providers": api_keys
-        });
-        config.disabled_providers = disabled.map(|v| v.into_iter().map(String::from).collect());
-        config.enabled_providers = enabled.map(|v| v.into_iter().map(String::from).collect());
-        config
+        RcodeConfig {
+            extra: json!({ "providers": api_keys }),
+            disabled_providers: disabled.map(|v| v.into_iter().map(String::from).collect()),
+            enabled_providers: enabled.map(|v| v.into_iter().map(String::from).collect()),
+            ..Default::default()
+        }
     }
 
     #[test]

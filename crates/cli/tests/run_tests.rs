@@ -12,7 +12,7 @@ fn test_run_command_default_values() {
         json: false,
         silent: false,
         save_session: None,
-        model: "claude-sonnet-4-5".to_string(),
+        model: Some("claude-sonnet-4-5".to_string()),
         agent: None,
     };
     
@@ -22,7 +22,7 @@ fn test_run_command_default_values() {
     assert!(!run.json);
     assert!(!run.silent);
     assert!(run.save_session.is_none());
-    assert_eq!(run.model, "claude-sonnet-4-5");
+    assert_eq!(run.model, Some("claude-sonnet-4-5".to_string()));
 }
 
 #[test]
@@ -34,7 +34,7 @@ fn test_run_command_with_message() {
         json: false,
         silent: false,
         save_session: None,
-        model: "claude-sonnet-4-5".to_string(),
+        model: Some("claude-sonnet-4-5".to_string()),
         agent: None,
     };
     
@@ -50,7 +50,7 @@ fn test_run_command_json_output_flag() {
         json: true,
         silent: false,
         save_session: None,
-        model: "claude-sonnet-4-5".to_string(),
+        model: Some("claude-sonnet-4-5".to_string()),
         agent: None,
     };
     
@@ -66,7 +66,7 @@ fn test_run_command_silent_flag() {
         json: false,
         silent: true,
         save_session: None,
-        model: "claude-sonnet-4-5".to_string(),
+        model: Some("claude-sonnet-4-5".to_string()),
         agent: None,
     };
     
@@ -82,7 +82,7 @@ async fn test_run_get_prompt_from_message() {
         json: false,
         silent: false,
         save_session: None,
-        model: "claude-sonnet-4-5".to_string(),
+        model: Some("claude-sonnet-4-5".to_string()),
         agent: None,
     };
     
@@ -104,7 +104,7 @@ async fn test_run_get_prompt_from_file() {
         json: false,
         silent: false,
         save_session: None,
-        model: "claude-sonnet-4-5".to_string(),
+        model: Some("claude-sonnet-4-5".to_string()),
         agent: None,
     };
     
@@ -120,7 +120,7 @@ async fn test_run_no_input_error() {
         json: false,
         silent: false,
         save_session: None,
-        model: "claude-sonnet-4-5".to_string(),
+        model: Some("claude-sonnet-4-5".to_string()),
         agent: None,
     };
     

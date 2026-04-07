@@ -9,7 +9,7 @@ use rcode_tui::run;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[derive(Args)]
+#[derive(Args, Default)]
 pub struct Tui {
     #[arg(short, long)]
     project: Option<String>,
@@ -18,19 +18,10 @@ pub struct Tui {
     session: Option<String>,
 }
 
-impl Default for Tui {
-    fn default() -> Self {
-        Self {
-            project: None,
-            session: None,
-        }
-    }
-}
-
 impl Tui {
     pub async fn execute(&self, config_path: Option<&PathBuf>, no_config: bool) -> Result<()> {
         let work_dir = std::env::current_dir().unwrap_or_default();
-        let config = rcode_core::load_config(config_path.map(|p| p.clone()), no_config, Some(work_dir)).await?;
+        let config = rcode_core::load_config(config_path.cloned(), no_config, Some(work_dir)).await?;
         
         tracing::info!("TUI mode starting...");
         tracing::info!("Project: {:?}", self.project);

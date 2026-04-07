@@ -1,4 +1,5 @@
 //! Test utilities for integration testing
+#![allow(unused_imports, dead_code)]
 
 use std::sync::Arc;
 use tokio::net::TcpListener;

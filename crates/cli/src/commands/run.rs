@@ -48,7 +48,7 @@ pub struct Run {
 impl Run {
     pub async fn execute(&self, config_path: Option<&PathBuf>, no_config: bool) -> Result<()> {
         let work_dir = std::env::current_dir().unwrap_or_default();
-        let config = rcode_core::load_config(config_path.map(|p| p.clone()), no_config, Some(work_dir.clone())).await?;
+        let config = rcode_core::load_config(config_path.cloned(), no_config, Some(work_dir.clone())).await?;
         
         let prompt = self.get_prompt_content()?;
         
@@ -117,18 +117,16 @@ impl Run {
                     "status": if result.is_ok() { "completed" } else { "error" }
                 });
                 println!("{}", serde_json::to_string_pretty(&output)?);
-            } else {
-                if let Some(msg) = ctx.messages.last() {
-                    for part in &msg.parts {
-                        match part {
-                            Part::Text { content } => print!("{}", content),
-                            Part::ToolCall { name, .. } => print!("[Calling tool: {}]", name),
-                            Part::ToolResult { content, .. } => print!("{}", content),
-                            _ => {}
-                        }
+            } else if let Some(msg) = ctx.messages.last() {
+                for part in &msg.parts {
+                    match part {
+                        Part::Text { content } => print!("{}", content),
+                        Part::ToolCall { name, .. } => print!("[Calling tool: {}]", name),
+                        Part::ToolResult { content, .. } => print!("{}", content),
+                        _ => {}
                     }
-                    println!();
                 }
+                println!();
             }
         }
         

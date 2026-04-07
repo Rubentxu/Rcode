@@ -1,4 +1,20 @@
 //! Built-in tools for RCode
+#![allow(
+    clippy::collapsible_if,
+    clippy::redundant_closure,
+    clippy::manual_flatten,
+    clippy::let_and_return,
+    clippy::bind_instead_of_map,
+    clippy::new_without_default,
+    clippy::needless_range_loop,
+    clippy::io_other_error,
+    clippy::bool_comparison,
+    clippy::unnecessary_unwrap,
+    clippy::useless_format,
+    clippy::default_constructed_unit_structs,
+    unused_imports,
+    unused_variables
+)]
 
 pub mod bash;
 pub mod batch;

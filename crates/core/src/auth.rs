@@ -218,13 +218,13 @@ pub fn strip_secrets_from_config(
     }
 
     // Also check the extra field for any api_key entries in nested providers
-    if let Some(extra) = config_json.get_mut("extra").and_then(|e| e.as_object_mut()) {
-        if let Some(providers) = extra.get_mut("providers").and_then(|p| p.as_object_mut()) {
-            for (_provider_id, provider_config) in providers.iter_mut() {
-                if let Some(obj) = provider_config.as_object_mut() {
-                    obj.remove("api_key");
-                    obj.remove("key");
-                }
+    if let Some(extra) = config_json.get_mut("extra").and_then(|e| e.as_object_mut())
+        && let Some(providers) = extra.get_mut("providers").and_then(|p| p.as_object_mut())
+    {
+        for (_provider_id, provider_config) in providers.iter_mut() {
+            if let Some(obj) = provider_config.as_object_mut() {
+                obj.remove("api_key");
+                obj.remove("key");
             }
         }
     }
@@ -235,9 +235,9 @@ pub fn strip_secrets_from_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use tempfile::TempDir;
 
+    #[allow(dead_code)]
     fn with_temp_auth_file<F>(f: F)
     where
         F: Fn(PathBuf),

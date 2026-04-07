@@ -120,6 +120,7 @@ impl SessionRepository {
             .context("Failed to prepare statement")?;
 
         // First collect raw session strings from DB
+        #[allow(clippy::type_complexity)]
         let mut raw_rows: Vec<(
             String,
             String,

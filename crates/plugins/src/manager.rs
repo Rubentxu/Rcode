@@ -171,10 +171,10 @@ impl PluginManager {
                 *active = original_state;
 
                 // Set plugin to error state
-                if let Some(mut plugins) = self.plugins.try_write() {
-                    if let Some(entry) = plugins.get_mut(id) {
-                        entry.set_error(e.to_string());
-                    }
+                if let Some(mut plugins) = self.plugins.try_write()
+                    && let Some(entry) = plugins.get_mut(id)
+                {
+                    entry.set_error(e.to_string());
                 }
 
                 Err(PluginError::RollbackFailed(format!(

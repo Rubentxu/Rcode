@@ -110,8 +110,8 @@ impl LlmProvider for GoogleProvider {
             .unwrap_or_default();
 
         let usage = gemini_resp.usage_metadata.map(|u| TokenUsage {
-            input_tokens: u.prompt_token_count.unwrap_or(0) as u32,
-            output_tokens: u.candidates_token_count.unwrap_or(0) as u32,
+            input_tokens: u.prompt_token_count.unwrap_or(0),
+            output_tokens: u.candidates_token_count.unwrap_or(0),
             total_tokens: None,
         }).unwrap_or(TokenUsage {
             input_tokens: 0,

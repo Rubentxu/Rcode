@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Permission levels for agent/tool access
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Permission {
     /// Allow the action without prompting
@@ -12,6 +12,7 @@ pub enum Permission {
     /// Deny the action unconditionally
     Deny,
     /// Prompt the user for confirmation before proceeding
+    #[default]
     Ask,
 }
 
@@ -52,12 +53,6 @@ pub enum PermissionResponse {
     Deny,
     /// Deny the tool and add it to the always-deny list
     DenyAlways,
-}
-
-impl Default for Permission {
-    fn default() -> Self {
-        Permission::Ask
-    }
 }
 
 /// Configuration for a specific agent type's permissions

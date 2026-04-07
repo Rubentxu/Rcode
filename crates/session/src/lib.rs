@@ -1,4 +1,19 @@
 //! Session management
+#![allow(
+    clippy::collapsible_if,
+    clippy::redundant_closure,
+    clippy::option_map_unit_fn,
+    clippy::unwrap_or_default,
+    clippy::unnecessary_filter_map,
+    clippy::needless_borrow,
+    clippy::field_reassign_with_default,
+    clippy::items_after_test_module,
+    clippy::absurd_extreme_comparisons,
+    unused_comparisons,
+    clippy::clone_on_copy,
+    unused_variables,
+    unused_imports
+)]
 
 pub mod compaction;
 pub mod compaction_service;

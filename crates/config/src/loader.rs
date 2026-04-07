@@ -218,7 +218,7 @@ mod tests {
         std::fs::write(&temp_path, valid_config).unwrap();
         assert!(temp_path.exists(), "Temp file should exist");
 
-        let config = load_config(Some(temp_path.clone()), false);
+        let _config = load_config(Some(temp_path.clone()), false);
         // Config load may fail due to other reasons but file operations should work
         // Just verify file was created and can be read back
         let content = std::fs::read_to_string(&temp_path).unwrap();

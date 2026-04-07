@@ -185,10 +185,10 @@ impl EventSubscriber {
         loop {
             let event = self.receiver.recv().await?;
             
-            if let Some(ref filter) = self.session_filter {
-                if event.session_id() != Some(filter.as_str()) {
-                    continue;
-                }
+            if let Some(ref filter) = self.session_filter
+                && event.session_id() != Some(filter.as_str())
+            {
+                continue;
             }
             
             return Ok(event);
@@ -199,10 +199,10 @@ impl EventSubscriber {
         loop {
             let event = self.receiver.try_recv()?;
             
-            if let Some(ref filter) = self.session_filter {
-                if event.session_id() != Some(filter.as_str()) {
-                    continue;
-                }
+            if let Some(ref filter) = self.session_filter
+                && event.session_id() != Some(filter.as_str())
+            {
+                continue;
             }
             
             return Ok(event);

@@ -221,14 +221,14 @@ impl Default for AppState {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_app_state_has_lsp_registry() {
+    #[tokio::test]
+    async fn test_app_state_has_lsp_registry() {
         let state = AppState::new();
         assert!(state.lsp_registry.get_server("nonexistent").is_none());
     }
 
-    #[test]
-    fn test_app_state_lsp_registry_is_shared() {
+    #[tokio::test]
+    async fn test_app_state_lsp_registry_is_shared() {
         let state = AppState::new();
         let registry1 = Arc::clone(&state.lsp_registry);
         let registry2 = Arc::clone(&state.lsp_registry);
@@ -236,8 +236,8 @@ mod tests {
         assert!(Arc::ptr_eq(&registry1, &registry2));
     }
 
-    #[test]
-    fn test_lsp_tool_not_registered_without_config() {
+    #[tokio::test]
+    async fn test_lsp_tool_not_registered_without_config() {
         let config = RcodeConfig::default();
         let state = AppState::with_config(config);
         // Without LSP config, no tool should be registered

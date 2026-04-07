@@ -114,7 +114,7 @@ pub struct LspServerConfig {
     pub cwd: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct ProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
@@ -122,16 +122,6 @@ pub struct ProviderConfig {
     pub base_url: Option<String>,
     #[serde(default)]
     pub disabled: bool,
-}
-
-impl Default for ProviderConfig {
-    fn default() -> Self {
-        Self {
-            api_key: None,
-            base_url: None,
-            disabled: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
@@ -445,11 +435,15 @@ mod tests {
 
     #[test]
     fn test_model_for_agent_prefers_agent_specific() {
-        let mut config = RcodeConfig::default();
-        config.model = Some("anthropic/claude-3-5-sonnet".to_string());
+        let mut config = RcodeConfig {
+            model: Some("anthropic/claude-3-5-sonnet".to_string()),
+            ..Default::default()
+        };
 
-        let mut agent_config = AgentConfig::default();
-        agent_config.model = Some("openai/gpt-4o".to_string());
+        let agent_config = AgentConfig {
+            model: Some("openai/gpt-4o".to_string()),
+            ..Default::default()
+        };
 
         let mut agents = AgentConfigMap::new();
         agents.insert("custom".to_string(), agent_config);
@@ -472,8 +466,10 @@ mod tests {
     fn test_max_tokens_for_agent() {
         let mut config = RcodeConfig::default();
 
-        let mut agent_config = AgentConfig::default();
-        agent_config.max_tokens = Some(8192);
+        let agent_config = AgentConfig {
+            max_tokens: Some(8192),
+            ..Default::default()
+        };
 
         let mut agents = AgentConfigMap::new();
         agents.insert("coder".to_string(), agent_config);
@@ -487,8 +483,10 @@ mod tests {
     fn test_reasoning_effort_for_agent() {
         let mut config = RcodeConfig::default();
 
-        let mut agent_config = AgentConfig::default();
-        agent_config.reasoning_effort = Some("high".to_string());
+        let agent_config = AgentConfig {
+            reasoning_effort: Some("high".to_string()),
+            ..Default::default()
+        };
 
         let mut agents = AgentConfigMap::new();
         agents.insert("coder".to_string(), agent_config);

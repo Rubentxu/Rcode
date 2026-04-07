@@ -13,6 +13,7 @@
 //! - [`Observation`] - The main data structure for memory entries
 //!
 //! ## Usage
+#![allow(clippy::collapsible_if, unused_mut)]
 //!
 //! ```rust,ignore
 //! use rcode_engram::{EngramClient, EngramTool};
