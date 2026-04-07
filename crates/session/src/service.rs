@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use rcode_core::{
-    Message, PaginatedMessages, PaginationParams, Part, Role, Session, SessionId, SessionStatus,
+    Message, PaginatedMessages, PaginationParams, Role, Session, SessionId, SessionStatus,
     error::Result as CoreResult,
 };
 use rcode_event::EventBus;
@@ -16,6 +16,7 @@ use crate::compaction::{CompactionConfig, CompactionResult, CompactionStrategy};
 use crate::summarizer::Summarizer;
 
 /// Generate a title from the first text part content
+#[allow(dead_code)]
 fn generate_title(text: &str) -> String {
     let trimmed = text.trim();
     let max_len = 50;
@@ -1944,6 +1945,7 @@ mod tests {
 }
 
 /// Minimal test provider for compaction tests
+#[allow(dead_code)]
 struct TestProvider;
 #[async_trait::async_trait]
 impl rcode_core::LlmProvider for TestProvider {

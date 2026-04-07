@@ -409,6 +409,26 @@ impl RcodeConfig {
     pub fn effective_default_agent(&self) -> Option<&str> {
         self.default_agent.as_deref().or(Some("build"))
     }
+
+    pub fn tools_for_agent(&self, agent_name: &str) -> Option<Vec<String>> {
+        self.agent
+            .as_ref()
+            .and_then(|agents| agents.get(agent_name))
+            .and_then(|agent| agent.extra.get("tools"))
+            .and_then(|tools| tools.as_object())
+            .map(|tools| {
+                tools
+                    .iter()
+                    .filter_map(|(tool_name, enabled)| {
+                        enabled
+                            .as_bool()
+                            .filter(|value| *value)
+                            .map(|_| tool_name.clone())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|tools| !tools.is_empty())
+    }
 }
 
 #[cfg(test)]

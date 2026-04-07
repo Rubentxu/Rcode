@@ -8,6 +8,7 @@ use rcode_core::{
     CompletionRequest, CompletionResponse, ModelInfo,
     StreamingResponse, error::Result,
 };
+use rcode_core::provider::ProviderCapabilities;
 
 use super::openai::OpenAIProvider;
 use super::LlmProvider;
@@ -57,6 +58,10 @@ impl LlmProvider for MiniMaxProvider {
 
     fn abort(&self) {
         self.inner.abort()
+    }
+    
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::all()
     }
 }
 

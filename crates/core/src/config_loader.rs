@@ -12,9 +12,8 @@
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use std::collections::HashMap;
 
-use super::{RcodeConfig, AgentConfig};
+use super::RcodeConfig;
 
 fn strip_json_comments(input: &str) -> String {
     use std::io::Read;
@@ -331,6 +330,10 @@ mod config_path_tests {
 ///
 /// Only writes the `providers` and `lsp` sections on top of the
 /// existing file so we don't overwrite unrelated settings (agents, models…).
+///
+/// IMPORTANT: API keys are NEVER written to the config file.
+/// They live in ~/.local/share/opencode/auth.json instead.
+/// This function strips api_key fields from providers before saving.
 pub fn save_config(config: &RcodeConfig) -> Result<(), String> {
     let config_path = resolve_config_path()
         .unwrap_or_else(|| {
@@ -358,17 +361,49 @@ pub fn save_config(config: &RcodeConfig) -> Result<(), String> {
         serde_json::Value::Object(Default::default())
     };
 
-    // Merge only the providers section from the in-memory config
-    if !config.providers.is_empty() {
-        let providers_json = serde_json::to_value(&config.providers)
+    // Strip secrets from config before serializing providers
+    // API keys should NEVER be written to the config file
+    let config_without_secrets = super::auth::strip_secrets_from_config(config);
+
+    // Merge only the providers section from the in-memory config (secrets stripped)
+    if !config_without_secrets.providers.is_empty() {
+        let providers_json = serde_json::to_value(&config_without_secrets.providers)
             .map_err(|e| format!("Failed to serialize providers: {}", e))?;
         if let Some(obj) = existing.as_object_mut() {
             obj.insert("providers".to_string(), providers_json);
         }
     }
 
+    // Merge provider enable/disable lists if present.
+    if let Some(ref enabled) = config_without_secrets.enabled_providers {
+        let enabled_json = serde_json::to_value(enabled)
+            .map_err(|e| format!("Failed to serialize enabled_providers: {}", e))?;
+        if let Some(obj) = existing.as_object_mut() {
+            obj.insert("enabled_providers".to_string(), enabled_json);
+        }
+    }
+
+    if let Some(ref disabled) = config_without_secrets.disabled_providers {
+        let disabled_json = serde_json::to_value(disabled)
+            .map_err(|e| format!("Failed to serialize disabled_providers: {}", e))?;
+        if let Some(obj) = existing.as_object_mut() {
+            obj.insert("disabled_providers".to_string(), disabled_json);
+        }
+    }
+
+    // Preserve extra top-level config data for settings extensions such as model overrides.
+    if !config_without_secrets.extra.is_null() && config_without_secrets.extra != serde_json::json!({}) {
+        if let Some(obj) = existing.as_object_mut() {
+            if let Some(extra_obj) = config_without_secrets.extra.as_object() {
+                for (key, value) in extra_obj {
+                    obj.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    }
+
     // Merge only the lsp section from the in-memory config
-    if let Some(ref lsp_config) = config.lsp {
+    if let Some(ref lsp_config) = config_without_secrets.lsp {
         let lsp_json = serde_json::to_value(lsp_config)
             .map_err(|e| format!("Failed to serialize lsp: {}", e))?;
         if let Some(obj) = existing.as_object_mut() {
@@ -389,6 +424,8 @@ pub fn save_config(config: &RcodeConfig) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use super::super::AgentConfig;
     use std::fs;
     use tempfile::TempDir;
 

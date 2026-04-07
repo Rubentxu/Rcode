@@ -1,4 +1,9 @@
 //! Credentials handling for AI providers
+//!
+//! Credential resolution order (OpenCode-compatible):
+//! 1. auth.json (rcode_core::auth::get_api_key) - PRIMARY
+//! 2. Environment variables ({PROVIDER}_API_KEY, {PROVIDER}_AUTH_TOKEN)
+//! 3. Config value (optional fallback)
 
 use std::env;
 
@@ -25,9 +30,29 @@ pub fn load_api_key(provider: &str) -> Result<String> {
     )))
 }
 
+/// Check if a provider has credentials in auth.json
+pub fn has_auth_json_credential(provider: &str) -> bool {
+    rcode_core::auth::has_credential(provider)
+}
+
+/// Get API key from auth.json (primary credential store)
+pub fn get_auth_json_api_key(provider: &str) -> Option<String> {
+    rcode_core::auth::get_api_key(provider)
+}
+
 /// Load API key with fallback to config value
+///
+/// Resolution order (OpenCode-compatible):
+/// 1. auth.json (via rcode_core::auth::get_api_key)
+/// 2. Environment variables ({PROVIDER}_API_KEY, {PROVIDER}_AUTH_TOKEN)
+/// 3. Config value (optional fallback)
 pub fn resolve_api_key(provider: &str, config_key: Option<&str>) -> Result<String> {
-    // First try environment variable
+    // First check auth.json (OpenCode's primary credential store)
+    if let Some(key) = rcode_core::auth::get_api_key(provider) {
+        return Ok(key);
+    }
+
+    // Then try environment variable
     if let Ok(key) = load_api_key(provider) {
         return Ok(key);
     }
@@ -42,7 +67,7 @@ pub fn resolve_api_key(provider: &str, config_key: Option<&str>) -> Result<Strin
     // Return error with helpful message
     let provider_upper = provider.to_uppercase();
     Err(RCodeError::Config(format!(
-        "No API key found for {}. Set the {}_API_KEY or {}_AUTH_TOKEN environment variable, or provide api_key in config.",
+        "No API key found for {}. Set the {}_API_KEY or {}_AUTH_TOKEN environment variable, or configure via 'rcode connect'.",
         provider, provider_upper, provider_upper
     )))
 }

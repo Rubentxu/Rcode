@@ -358,13 +358,48 @@ impl ModelCatalogService {
         config: &rcode_core::RcodeConfig,
     ) -> Vec<CatalogModel> {
         let mut all = Vec::new();
+        let disabled_models = config
+            .extra
+            .get("disabled_models")
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items.iter()
+                    .filter_map(|item| item.as_str().map(str::to_string))
+                    .collect::<std::collections::HashSet<_>>()
+            })
+            .unwrap_or_default();
 
-        // 1. Check if provider has credentials (env var or config)
-        let has_creds = |provider_id: &str| -> bool {
+        if let Ok(model_id) = std::env::var("ANTHROPIC_MODEL") {
+            let configured_id = format!("anthropic/{model_id}");
+            all.push(CatalogModel {
+                id: configured_id.clone(),
+                provider: "anthropic".to_string(),
+                display_name: model_id,
+                has_credentials: std::env::var("ANTHROPIC_API_KEY").is_ok() || std::env::var("ANTHROPIC_AUTH_TOKEN").is_ok(),
+                source: ModelSource::Configured,
+                enabled: (std::env::var("ANTHROPIC_API_KEY").is_ok() || std::env::var("ANTHROPIC_AUTH_TOKEN").is_ok())
+                    && !disabled_models.contains(&configured_id),
+            });
+        }
+
+        // 1. Check if provider has credentials (auth.json → env var → config)
+        // Mirrors OpenCode's credential resolution order.
+        // Note: in OpenCode, the user picks a provider ID via /connect which may
+        // differ from the canonical provider name (e.g. "zai-coding-plan" vs "zai").
+        // We check the provider_id first, then each model_id as a fallback.
+        let has_creds = |provider_id: &str, model_ids: &[&str]| -> bool {
+            // Primary: auth.json (OpenCode's canonical credential store)
+            if rcode_core::auth::has_credential(provider_id) { return true; }
+            // Also try each model name as a credential key (e.g. "zai-coding-plan")
+            for model_id in model_ids {
+                if rcode_core::auth::has_credential(model_id) { return true; }
+            }
+            // Fallback 1: environment variables
             let env_key = format!("{}_API_KEY", provider_id.to_uppercase().replace('-', "_"));
             if std::env::var(&env_key).is_ok() { return true; }
             let auth_key = format!("{}_AUTH_TOKEN", provider_id.to_uppercase().replace('-', "_"));
             if std::env::var(&auth_key).is_ok() { return true; }
+            // Fallback 2: config file (deprecated for secrets, but still supported)
             config.providers.get(provider_id)
                 .and_then(|p| p.api_key.as_deref())
                 .map(|k| !k.is_empty())
@@ -386,7 +421,7 @@ impl ModelCatalogService {
         let cache = self.cache.lock().await;
         for (provider_id, _provider_name, model_ids) in FALLBACK_MODELS {
             if !is_enabled(provider_id) { continue; }
-            let creds = has_creds(provider_id);
+            let creds = has_creds(provider_id, model_ids);
 
             if let Some((cached_models, ts)) = cache.get(*provider_id) {
                 if ts.elapsed() < self.ttl {
@@ -397,13 +432,17 @@ impl ModelCatalogService {
 
             // Return fallback models immediately
             for model_id in *model_ids {
+                let full_id = format!("{}/{}", provider_id, model_id);
+                if all.iter().any(|existing| existing.id == full_id) {
+                    continue;
+                }
                 all.push(CatalogModel {
-                    id: format!("{}/{}", provider_id, model_id),
+                    id: full_id.clone(),
                     provider: provider_id.to_string(),
                     display_name: model_id.to_string(),
                     has_credentials: creds,
                     source: ModelSource::Fallback,
-                    enabled: creds,
+                    enabled: creds && !disabled_models.contains(&full_id),
                 });
             }
         }
@@ -487,8 +526,14 @@ mod tests {
         
         let config = rcode_core::RcodeConfig::default();
         let has_creds = |provider_id: &str| -> bool {
+            // auth.json first (won't have test creds, so falls through)
+            if rcode_core::auth::has_credential(provider_id) { return true; }
+            // env vars second
             let env_key = format!("{}_API_KEY", provider_id.to_uppercase().replace('-', "_"));
             if std::env::var(&env_key).is_ok() { return true; }
+            let auth_key = format!("{}_AUTH_TOKEN", provider_id.to_uppercase().replace('-', "_"));
+            if std::env::var(&auth_key).is_ok() { return true; }
+            // config fallback
             config.providers.get(provider_id)
                 .and_then(|p| p.api_key.as_deref())
                 .map(|k| !k.is_empty())

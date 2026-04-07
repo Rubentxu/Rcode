@@ -10,7 +10,7 @@ import { getApiBase } from "./api/config";
 
 export interface Session {
   id: string;
-  title: string;
+  title: string | null;
   status: "idle" | "running" | "completed";
   updated_at: string;
   model_id?: string;
@@ -21,6 +21,17 @@ export interface Message {
   role: "user" | "assistant" | "system";
   content: string;
   created_at: string;
+}
+
+interface PromptResponse {
+  message_id: string;
+  request_id: string;
+  status: string;
+}
+
+interface ModelCatalogEntry {
+  id: string;
+  enabled: boolean;
 }
 
 const MOCK_MODE = false; // Set to false when backend is available
@@ -36,6 +47,60 @@ const mockResponses = [
   "Here's a code suggestion:\n```rust\nfn process_data(input: &str) -> Result<String, Error> {\n    // Implementation here\n    Ok(input.to_string())\n}\n```",
   "I've identified the issue. The problem is in the data flow. Let me explain...",
 ];
+
+function flattenMessageParts(parts: any[] | undefined): string {
+  if (!Array.isArray(parts)) {
+    return "";
+  }
+
+  return parts
+    .map((part: any) => {
+      switch (part?.type) {
+        case "text":
+          return part.content || "";
+        case "reasoning":
+          return part.content || "";
+        case "tool_result":
+          return part.content || "";
+        case "tool_call":
+          return part.name ? `[Tool call: ${part.name}]` : "";
+        case "attachment":
+          return part.name ? `[Attachment: ${part.name}]` : "";
+        default:
+          return "";
+      }
+    })
+    .filter((value: string) => value.trim().length > 0)
+    .join("\n\n");
+}
+
+function normalizeMessageId(id: unknown): string {
+  if (typeof id === "string") {
+    return id;
+  }
+
+  if (id && typeof id === "object" && "0" in (id as Record<string, unknown>)) {
+    const tupleValue = (id as Record<string, unknown>)["0"];
+    if (typeof tupleValue === "string") {
+      return tupleValue;
+    }
+  }
+
+  return "";
+}
+
+function pickPreferredModel(models: ModelCatalogEntry[]): string | null {
+  if (models.length === 0) {
+    return null;
+  }
+
+  return (
+    models.find((model) => model.enabled && model.id === "anthropic/MiniMax-M2.7-highspeed")?.id
+    ?? models.find((model) => model.enabled)?.id
+    ?? models[0]?.id
+    ?? null
+  );
+}
 
 export default function App() {
   const [sessions, setSessions] = createSignal<Session[]>(MOCK_MODE ? mockSessions : []);
@@ -63,31 +128,62 @@ export default function App() {
     }
   };
 
+  const loadPreferredModel = async () => {
+    try {
+      const response = await fetch(`${await getApiBase()}/models`);
+      if (!response.ok) {
+        return;
+      }
+
+      const data = await response.json();
+      const preferredModel = pickPreferredModel((data.models || []) as ModelCatalogEntry[]);
+      if (preferredModel) {
+        console.info("Resolved preferred model", { preferredModel });
+        setCurrentModel(preferredModel);
+      }
+    } catch (error) {
+      console.warn("Failed to resolve preferred model", error);
+    }
+  };
+
   const loadMessages = async (sessionId: string) => {
     if (MOCK_MODE) {
       // Messages are managed locally in mock mode
       return;
     }
     try {
-      const response = await fetch(`${await getApiBase()}/session/${sessionId}/messages?offset=0&limit=100`);
+      const url = `${await getApiBase()}/session/${sessionId}/messages?offset=0&limit=100`;
+      console.info("Loading messages", { sessionId, url });
+      const response = await fetch(url);
+      console.info("Load messages response", { sessionId, ok: response.ok, status: response.status });
       if (response.ok) {
         const data = await response.json();
-        // Transform Message objects with parts to flat format
+        console.debug("Load messages payload", {
+          sessionId,
+          total: data.total,
+          count: Array.isArray(data.messages) ? data.messages.length : 0,
+        });
         const flatMessages: Message[] = (data.messages || []).map((m: any) => {
-          // Extract text content from parts
-          const content = m.parts
-            ?.filter((p: any) => p.type === 'text' || p.Text)
-            ?.map((p: any) => p.content || p.Text?.content || '')
-            ?.join('\n') || m.content || '';
+          const content = flattenMessageParts(m.parts) || m.content || "";
+
+          console.debug("Loaded message", {
+            sessionId,
+            messageId: normalizeMessageId(m.id),
+            role: m.role,
+            partTypes: Array.isArray(m.parts) ? m.parts.map((p: any) => p?.type) : [],
+            contentLength: content.length,
+          });
           
           return {
-            id: m.id || '',
+            id: normalizeMessageId(m.id),
             role: typeof m.role === 'string' ? m.role.toLowerCase() : 'user',
             content,
             created_at: m.created_at,
           };
         });
         setMessages(flatMessages);
+      } else {
+        console.error("Failed to load messages", { sessionId, status: response.status, statusText: response.statusText });
       }
     } catch (e) {
       console.error("Failed to load messages:", e);
@@ -177,6 +273,12 @@ export default function App() {
       });
       
       if (response.ok) {
+        const promptResponse = (await response.json()) as PromptResponse;
+        console.info("Prompt accepted", {
+          sessionId: session.id,
+          requestId: promptResponse.request_id,
+          status: promptResponse.status,
+        });
         await loadMessages(session.id);
       } else {
         // Remove the user message we just added since the prompt failed
@@ -234,6 +336,9 @@ export default function App() {
         
         // Also reload messages in case session state changed
         loadMessages(session.id).catch(() => {});
+        
+        // HTTP errors - SSE won't provide completion, so reset loading state
+        setIsLoading(false);
       }
     } catch (e) {
       console.error("Failed to submit prompt:", e);
@@ -244,7 +349,7 @@ export default function App() {
         message: `Network error: Could not connect to server. Make sure the backend is running.`,
         duration: 6000,
       });
-    } finally {
+      // Network errors - SSE won't provide completion, so reset loading state
       setIsLoading(false);
     }
   };
@@ -297,6 +402,7 @@ export default function App() {
   };
 
   onMount(() => {
+    loadPreferredModel();
     loadSessions();
   });
 
@@ -334,6 +440,21 @@ export default function App() {
               onSSEStatusChange={setSseStatus}
               sessions={sessions()}
               onCommandResult={handleCommandResult}
+              onComplete={() => setIsLoading(false)}
+              onReloadMessages={async () => {
+                const session = currentSession();
+                if (session) {
+                  await loadMessages(session.id);
+                }
+              }}
+              onError={(errorMsg) => {
+                setIsLoading(false);
+                showToast({
+                  type: "error",
+                  message: `Agent error: ${errorMsg}`,
+                  duration: 6000,
+                });
+              }}
             />
           </Show>
         </div>

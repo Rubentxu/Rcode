@@ -9,11 +9,10 @@ use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 use rcode_core::{
-    CompletionRequest, CompletionResponse, StreamingResponse,
-    ContentBlock as CoreContentBlock, ModelInfo, StreamingEvent,
+    CompletionRequest, CompletionResponse, StreamingResponse, ModelInfo, StreamingEvent,
     ToolDefinition, TokenUsage, error::Result,
 };
-use rcode_core::provider::StopReason;
+use rcode_core::provider::{StopReason, ProviderCapabilities};
 
 use super::rate_limit::TokenBucket;
 use super::LlmProvider;
@@ -105,13 +104,27 @@ impl LlmProvider for AnthropicProvider {
         
         let resp: AnthropicResponse = response.json().await
             .map_err(|e| rcode_core::RCodeError::Provider(format!("Parse error: {}", e)))?;
+
+        let mut text_parts = Vec::new();
+        let mut tool_calls = Vec::new();
+        for block in resp.content.iter() {
+            match block {
+                AnthropicContentBlock::Text { text } => text_parts.push(text.clone()),
+                AnthropicContentBlock::ToolUse { id, name, input } => {
+                    tool_calls.push(rcode_core::provider::ToolCall {
+                        id: id.clone(),
+                        name: name.clone(),
+                        arguments: input.clone(),
+                    });
+                }
+                AnthropicContentBlock::Thinking { .. } => {}
+            }
+        }
         
         Ok(CompletionResponse {
-            content: resp.content.first()
-                .and_then(|c| if let AnthropicContentBlock::Text { text } = c { Some(text.clone()) } else { None })
-                .unwrap_or_default(),
+            content: text_parts.join(""),
             reasoning: None,
-            tool_calls: vec![],
+            tool_calls,
             usage: TokenUsage {
                 input_tokens: resp.usage.input_tokens,
                 output_tokens: resp.usage.output_tokens,
@@ -312,6 +325,10 @@ impl LlmProvider for AnthropicProvider {
             token.cancel();
         }
     }
+    
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::all()
+    }
 }
 
 #[derive(Serialize)]
@@ -327,7 +344,25 @@ struct AnthropicRequest {
 #[derive(Serialize)]
 struct AnthropicMessage {
     role: String,
-    content: String,
+    content: AnthropicMessageContent,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum AnthropicMessageContent {
+    Text(String),
+    Blocks(Vec<AnthropicInputContentBlock>),
+}
+
+#[derive(Serialize, Debug)]
+#[serde(tag = "type")]
+enum AnthropicInputContentBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "tool_use")]
+    ToolUse { id: String, name: String, input: serde_json::Value },
+    #[serde(rename = "tool_result")]
+    ToolResult { tool_use_id: String, content: String, is_error: bool },
 }
 
 #[derive(Serialize)]
@@ -349,6 +384,8 @@ struct AnthropicResponse {
 enum AnthropicContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "thinking")]
+    Thinking { thinking: String, #[serde(default)] signature: Option<String> },
     #[serde(rename = "tool_use")]
     #[allow(dead_code)]
     ToolUse { id: String, name: String, input: serde_json::Value },
@@ -361,24 +398,59 @@ struct Usage {
 }
 
 fn into_anthropic_message(msg: rcode_core::Message) -> AnthropicMessage {
-    let content = msg.parts.iter()
-        .map(|p| match p {
-            rcode_core::Part::Text { content } => content.clone(),
-            rcode_core::Part::ToolResult { content, .. } => content.clone(),
-            rcode_core::Part::ToolCall { name, arguments, .. } => 
-                format!("Tool call: {}({})", name, arguments),
-            rcode_core::Part::Reasoning { content } => format!("[Reasoning]: {}", content),
-            rcode_core::Part::Attachment { name, mime_type, .. } => 
-                format!("[Attachment: {} ({})]", name, mime_type),
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let has_tool_results = msg.parts.iter().any(|p| matches!(p, rcode_core::Part::ToolResult { .. }));
+    let has_tool_calls = msg.parts.iter().any(|p| matches!(p, rcode_core::Part::ToolCall { .. }));
+
+    let mut text_parts = Vec::new();
+    let mut blocks = Vec::new();
+
+    for part in msg.parts {
+        match part {
+            rcode_core::Part::Text { content } => {
+                text_parts.push(content.clone());
+                blocks.push(AnthropicInputContentBlock::Text { text: content });
+            }
+            rcode_core::Part::ToolResult { tool_call_id, content, is_error } => {
+                blocks.push(AnthropicInputContentBlock::ToolResult {
+                    tool_use_id: tool_call_id,
+                    content,
+                    is_error,
+                });
+            }
+            rcode_core::Part::ToolCall { id, name, arguments } => {
+                blocks.push(AnthropicInputContentBlock::ToolUse {
+                    id,
+                    name,
+                    input: *arguments,
+                });
+            }
+            // Never feed model-generated reasoning back as literal history text.
+            rcode_core::Part::Reasoning { .. } => {}
+            rcode_core::Part::Attachment { name, mime_type, .. } => {
+                let text = format!("[Attachment: {} ({})]", name, mime_type);
+                text_parts.push(text.clone());
+                blocks.push(AnthropicInputContentBlock::Text { text });
+            }
+        }
+    }
+
+    let content = if has_tool_results || has_tool_calls {
+        AnthropicMessageContent::Blocks(blocks)
+    } else {
+        AnthropicMessageContent::Text(text_parts.join("\n"))
+    };
     
     AnthropicMessage {
-        role: match msg.role {
+        role: if has_tool_results {
+            "user".into()
+        } else if has_tool_calls {
+            "assistant".into()
+        } else {
+            match msg.role {
             rcode_core::Role::User => "user".into(),
             rcode_core::Role::Assistant => "assistant".into(),
             rcode_core::Role::System => "user".into(),
+        }
         },
         content,
     }
@@ -428,6 +500,12 @@ fn parse_anthropic_sse_event(
                 DeltaContent::TextDelta { text } => {
                     Some(StreamingEvent::Text { delta: text })
                 }
+                DeltaContent::ThinkingDelta { thinking } => {
+                    Some(StreamingEvent::Reasoning { delta: thinking })
+                }
+                DeltaContent::SignatureDelta { .. } => {
+                    None
+                }
                 DeltaContent::InputJsonDelta { partial_json } => {
                     if let Some(ref mut buffer) = *tool_call_buffer {
                         // Accumulate the arguments
@@ -448,7 +526,7 @@ fn parse_anthropic_sse_event(
                 }
             }
         }
-        "content_block_end" => {
+        "content_block_end" | "content_block_stop" => {
             if let Some(buffer) = tool_call_buffer.take() {
                 Some(StreamingEvent::ToolCallEnd { id: buffer.id })
             } else {
@@ -491,12 +569,12 @@ fn merge_json_values(target: &mut serde_json::Map<String, serde_json::Value>, so
 #[allow(dead_code)]
 #[derive(Deserialize)]
 struct MessageStart {
-    message: AnthropicMessageContent,
+    message: AnthropicResponseMessage,
 }
 
 #[allow(dead_code)]
 #[derive(Deserialize)]
-struct AnthropicMessageContent {
+struct AnthropicResponseMessage {
     id: String,
     #[serde(rename = "type")]
     msg_type: String,
@@ -512,6 +590,7 @@ struct AnthropicMessageContent {
 #[derive(Deserialize)]
 struct ContentBlockStart {
     index: u32,
+    #[serde(alias = "content_block")]
     content: ContentBlockStartContent,
 }
 
@@ -521,6 +600,8 @@ struct ContentBlockStart {
 enum ContentBlockStartContent {
     #[serde(rename = "tool_use")]
     ToolUse { id: String, name: String },
+    #[serde(rename = "thinking")]
+    Thinking,
     #[serde(rename = "text")]
     Text,
 }
@@ -535,9 +616,9 @@ struct ContentBlockDelta {
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum DeltaContent {
-    #[serde(rename = "text_delta")]
     TextDelta { text: String },
-    #[serde(rename = "input_json_delta")]
+    ThinkingDelta { thinking: String },
+    SignatureDelta { signature: String },
     InputJsonDelta { partial_json: String },
 }
 
@@ -613,7 +694,10 @@ mod tests {
         );
         let anthropic_msg = into_anthropic_message(msg);
         assert_eq!(anthropic_msg.role, "user");
-        assert_eq!(anthropic_msg.content, "Hello world");
+        match anthropic_msg.content {
+            AnthropicMessageContent::Text(content) => assert_eq!(content, "Hello world"),
+            _ => panic!("expected text content"),
+        }
     }
 
     #[test]
@@ -624,7 +708,10 @@ mod tests {
         );
         let anthropic_msg = into_anthropic_message(msg);
         assert_eq!(anthropic_msg.role, "assistant");
-        assert_eq!(anthropic_msg.content, "I am an assistant");
+        match anthropic_msg.content {
+            AnthropicMessageContent::Text(content) => assert_eq!(content, "I am an assistant"),
+            _ => panic!("expected text content"),
+        }
     }
 
     #[test]
@@ -636,7 +723,10 @@ mod tests {
         let anthropic_msg = into_anthropic_message(msg);
         // System role maps to "user" in Anthropic
         assert_eq!(anthropic_msg.role, "user");
-        assert_eq!(anthropic_msg.content, "You are helpful");
+        match anthropic_msg.content {
+            AnthropicMessageContent::Text(content) => assert_eq!(content, "You are helpful"),
+            _ => panic!("expected text content"),
+        }
     }
 
     #[test]
@@ -650,29 +740,58 @@ mod tests {
         );
         let anthropic_msg = into_anthropic_message(msg);
         // Multiple text parts are joined with newlines
-        assert_eq!(anthropic_msg.content, "First part\nSecond part");
+        match anthropic_msg.content {
+            AnthropicMessageContent::Text(content) => assert_eq!(content, "First part\nSecond part"),
+            _ => panic!("expected text content"),
+        }
     }
 
     #[test]
     fn test_into_anthropic_message_tool_call() {
         let msg = create_test_message(
-            Role::User, 
+            Role::Assistant, 
             vec![create_tool_call_part("call_123", "get_weather", "{\"city\":\"NYC\"}")]
         );
         let anthropic_msg = into_anthropic_message(msg);
-        // Note: arguments is a JSON string representation
-        assert!(anthropic_msg.content.contains("Tool call: get_weather("));
-        assert!(anthropic_msg.content.contains("NYC"));
+        assert_eq!(anthropic_msg.role, "assistant");
+        match anthropic_msg.content {
+            AnthropicMessageContent::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 1);
+                match &blocks[0] {
+                    AnthropicInputContentBlock::ToolUse { id, name, input } => {
+                        assert_eq!(id, "call_123");
+                        assert_eq!(name, "get_weather");
+                        assert_eq!(input, &serde_json::json!("{\"city\":\"NYC\"}"));
+                    }
+                    _ => panic!("expected tool_use block"),
+                }
+            }
+            _ => panic!("expected block content"),
+        }
     }
 
     #[test]
     fn test_into_anthropic_message_tool_result() {
         let msg = create_test_message(
-            Role::User, 
+            Role::Assistant, 
             vec![create_tool_result_part("call_123", "Sunny, 72°F")]
         );
         let anthropic_msg = into_anthropic_message(msg);
-        assert_eq!(anthropic_msg.content, "Sunny, 72°F");
+        assert_eq!(anthropic_msg.role, "user");
+        match anthropic_msg.content {
+            AnthropicMessageContent::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 1);
+                match &blocks[0] {
+                    AnthropicInputContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                        assert_eq!(tool_use_id, "call_123");
+                        assert_eq!(content, "Sunny, 72°F");
+                        assert!(!is_error);
+                    }
+                    _ => panic!("expected tool_result block"),
+                }
+            }
+            _ => panic!("expected block content"),
+        }
     }
 
     #[test]
@@ -682,10 +801,10 @@ mod tests {
             vec![create_reasoning_part("Let me think step by step")]
         );
         let anthropic_msg = into_anthropic_message(msg);
-        assert_eq!(
-            anthropic_msg.content, 
-            "[Reasoning]: Let me think step by step"
-        );
+        match anthropic_msg.content {
+            AnthropicMessageContent::Text(content) => assert_eq!(content, ""),
+            _ => panic!("expected text content"),
+        }
     }
 
     #[test]
@@ -695,17 +814,22 @@ mod tests {
             vec![create_attachment_part("document.pdf", "application/pdf")]
         );
         let anthropic_msg = into_anthropic_message(msg);
-        assert_eq!(
-            anthropic_msg.content, 
-            "[Attachment: document.pdf (application/pdf)]"
-        );
+        match anthropic_msg.content {
+            AnthropicMessageContent::Text(content) => {
+                assert_eq!(content, "[Attachment: document.pdf (application/pdf)]")
+            }
+            _ => panic!("expected text content"),
+        }
     }
 
     #[test]
     fn test_into_anthropic_message_empty_parts() {
         let msg = create_test_message(Role::User, vec![]);
         let anthropic_msg = into_anthropic_message(msg);
-        assert_eq!(anthropic_msg.content, "");
+        match anthropic_msg.content {
+            AnthropicMessageContent::Text(content) => assert_eq!(content, ""),
+            _ => panic!("expected text content"),
+        }
     }
 
     #[test]
@@ -988,7 +1112,7 @@ mod tests {
             messages: vec![
                 AnthropicMessage {
                     role: "user".to_string(),
-                    content: "Hello".to_string(),
+                    content: AnthropicMessageContent::Text("Hello".to_string()),
                 }
             ],
             max_tokens: 1024,
@@ -1043,7 +1167,7 @@ mod tests {
     fn test_anthropic_message_serialization() {
         let msg = AnthropicMessage {
             role: "user".to_string(),
-            content: "Test content".to_string(),
+            content: AnthropicMessageContent::Text("Test content".to_string()),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""role":"user""#));
@@ -1147,7 +1271,7 @@ mod tests {
             messages: vec![
                 AnthropicMessage {
                     role: "user".to_string(),
-                    content: "Hi".to_string(),
+                    content: AnthropicMessageContent::Text("Hi".to_string()),
                 }
             ],
             max_tokens: 1024,
@@ -1322,9 +1446,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_abort_cancels_active_stream() {
-        use std::sync::atomic::AtomicUsize;
-        use std::sync::Arc;
-
         // Create a cancellation token
         let token = tokio_util::sync::CancellationToken::new();
         let token_clone = token.clone();
@@ -1451,6 +1572,365 @@ mod tests {
         // Should have completed normally without being cancelled
         assert_eq!(final_count, 5, "Stream should have completed normally");
         assert!(!token.is_cancelled(), "Token should not be cancelled");
+    }
+
+    // =============================================================================
+    // Multi-turn post-tool regression tests
+    // =============================================================================
+
+    /// Regression test: assistant message with Part::ToolCall must serialize as
+    /// role="assistant" with a tool_use block (NOT flattened to text).
+    ///
+    /// Bug: Previously tool_use was flattened to text, causing second turn to fail.
+    #[test]
+    fn test_into_anthropic_message_tool_call_is_not_flattened() {
+        let msg = create_test_message(
+            Role::Assistant,
+            vec![create_tool_call_part("call_001", "get_weather", r#"{"city":"NYC"}"#)],
+        );
+        let anthropic_msg = into_anthropic_message(msg);
+
+        // Role must be "assistant" for tool calls
+        assert_eq!(anthropic_msg.role, "assistant");
+
+        // Content must be Blocks format, not Text
+        let blocks = match &anthropic_msg.content {
+            AnthropicMessageContent::Blocks(b) => b,
+            AnthropicMessageContent::Text(_) => {
+                panic!("tool_call must NOT be flattened to text content")
+            }
+        };
+
+        // Must have exactly one block of type ToolUse
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            AnthropicInputContentBlock::ToolUse { id, name, input } => {
+                assert_eq!(id, "call_001");
+                assert_eq!(name, "get_weather");
+                // input is the JSON arguments as a Value (stored as string in helper)
+                // The helper wraps arguments as a json string, so input is a string value
+                assert_eq!(input, &serde_json::json!("{\"city\":\"NYC\"}"));
+            }
+            other => panic!("expected ToolUse block, got {:?}", other),
+        }
+    }
+
+    /// Regression test: message with Part::ToolResult must serialize as
+    /// role="user" with a tool_result block (NOT flattened to text).
+    ///
+    /// Bug: Previously tool_result was flattened to text, causing second turn to fail.
+    #[test]
+    fn test_into_anthropic_message_tool_result_is_not_flattened() {
+        let msg = create_test_message(
+            Role::Assistant,
+            vec![create_tool_result_part("call_001", "Sunny, 72°F")],
+        );
+        let anthropic_msg = into_anthropic_message(msg);
+
+        // Role must be "user" when message contains tool results
+        assert_eq!(anthropic_msg.role, "user");
+
+        // Content must be Blocks format, not Text
+        let blocks = match &anthropic_msg.content {
+            AnthropicMessageContent::Blocks(b) => b,
+            AnthropicMessageContent::Text(t) => {
+                panic!("tool_result must NOT be flattened to text content: {:?}", t)
+            }
+        };
+
+        // Must have exactly one block of type ToolResult
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            AnthropicInputContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                assert_eq!(tool_use_id, "call_001");
+                assert_eq!(content, "Sunny, 72°F");
+                assert!(!is_error);
+            }
+            other => panic!("expected ToolResult block, got {:?}", other),
+        }
+    }
+
+    /// Regression test: Part::Reasoning must NOT be re-injected as history text.
+    ///
+    /// Bug: Previously reasoning content was added to text_parts and joined as history,
+    /// causing reasoning to appear as literal user/assistant text in subsequent turns.
+    #[test]
+    fn test_into_anthropic_message_reasoning_not_injected_as_text() {
+        let msg = create_test_message(
+            Role::Assistant,
+            vec![
+                create_reasoning_part("Let me think step by step"),
+                create_text_part("Final answer"),
+            ],
+        );
+        let anthropic_msg = into_anthropic_message(msg);
+
+        // The message should have assistant role
+        assert_eq!(anthropic_msg.role, "assistant");
+
+        // Content should be Blocks since there's text + reasoning (no tool calls/results)
+        // But reasoning should NOT appear anywhere in the content
+        match &anthropic_msg.content {
+            AnthropicMessageContent::Text(text) => {
+                // Reasoning should NOT be in the text
+                assert!(
+                    !text.contains("Let me think step by step"),
+                    "reasoning must NOT be injected as history text"
+                );
+                assert_eq!(text, "Final answer");
+            }
+            AnthropicMessageContent::Blocks(blocks) => {
+                // If blocks format, reasoning definitely not included (it's skipped in the loop)
+                for block in blocks {
+                    match block {
+                        AnthropicInputContentBlock::Text { text } => {
+                            assert!(
+                                !text.contains("Let me think step by step"),
+                                "reasoning must NOT be in text block"
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    /// Regression test: assistant message with ONLY Part::Reasoning must produce
+    /// empty content (reasoning is skipped entirely).
+    #[test]
+    fn test_into_anthropic_message_only_reasoning_produces_empty() {
+        let msg = create_test_message(
+            Role::Assistant,
+            vec![create_reasoning_part("thinking...")],
+        );
+        let anthropic_msg = into_anthropic_message(msg);
+
+        // Reasoning-only message should still be "assistant" role
+        assert_eq!(anthropic_msg.role, "assistant");
+
+        // Content should be empty text (reasoning skipped, no text_parts)
+        match &anthropic_msg.content {
+            AnthropicMessageContent::Text(text) => {
+                assert!(text.is_empty(), "reasoning-only should produce empty text");
+            }
+            AnthropicMessageContent::Blocks(blocks) => {
+                assert!(blocks.is_empty(), "reasoning-only should produce no blocks");
+            }
+        }
+    }
+
+    /// Regression test: multi-turn conversation flow with tool call and tool result.
+    ///
+    /// This validates the complete conversation history that would be sent to Anthropic:
+    /// 1. User text
+    /// 2. Assistant text + tool_call (role=assistant, content=tool_use block)
+    /// 3. User tool_result (role=user, content=tool_result block)
+    /// 4. Assistant final text
+    ///
+    /// Bug: Without proper handling, messages after tool_result would be misformatted.
+    #[test]
+    fn test_into_anthropic_message_multi_turn_tool_conversation() {
+        // Turn 1: User asks question
+        let user_msg = create_test_message(
+            Role::User,
+            vec![create_text_part("What's the weather in NYC?")],
+        );
+        let anthropic_user = into_anthropic_message(user_msg);
+        assert_eq!(anthropic_user.role, "user");
+        match &anthropic_user.content {
+            AnthropicMessageContent::Text(t) => {
+                assert!(t.contains("weather"));
+            }
+            _ => panic!("expected text content"),
+        }
+
+        // Turn 2: Assistant makes tool call
+        let assistant_tool_msg = create_test_message(
+            Role::Assistant,
+            vec![
+                create_text_part("I'll check that for you."),
+                create_tool_call_part("call_001", "get_weather", r#"{"city":"NYC"}"#),
+            ],
+        );
+        let anthropic_asst_tool = into_anthropic_message(assistant_tool_msg);
+        assert_eq!(anthropic_asst_tool.role, "assistant");
+        match &anthropic_asst_tool.content {
+            AnthropicMessageContent::Blocks(blocks) => {
+                // Should have text + tool_use block
+                assert_eq!(blocks.len(), 2);
+                match &blocks[0] {
+                    AnthropicInputContentBlock::Text { text } => {
+                        assert!(text.contains("check"));
+                    }
+                    _ => panic!("first block should be text"),
+                }
+                match &blocks[1] {
+                    AnthropicInputContentBlock::ToolUse { id, name, .. } => {
+                        assert_eq!(id, "call_001");
+                        assert_eq!(name, "get_weather");
+                    }
+                    _ => panic!("second block should be tool_use"),
+                }
+            }
+            _ => panic!("tool_call should use blocks format"),
+        }
+
+        // Turn 3: User provides tool result
+        let user_tool_result_msg = create_test_message(
+            Role::User,
+            vec![create_tool_result_part("call_001", "Sunny, 72°F")],
+        );
+        let anthropic_user_result = into_anthropic_message(user_tool_result_msg);
+        // Tool results force role to "user"
+        assert_eq!(anthropic_user_result.role, "user");
+        match &anthropic_user_result.content {
+            AnthropicMessageContent::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 1);
+                match &blocks[0] {
+                    AnthropicInputContentBlock::ToolResult { tool_use_id, content, .. } => {
+                        assert_eq!(tool_use_id, "call_001");
+                        assert_eq!(content, "Sunny, 72°F");
+                    }
+                    _ => panic!("expected tool_result block"),
+                }
+            }
+            _ => panic!("tool_result should use blocks format"),
+        }
+
+        // Turn 4: Assistant final response
+        let assistant_final_msg = create_test_message(
+            Role::Assistant,
+            vec![create_text_part("The weather in NYC is Sunny, 72°F.")],
+        );
+        let anthropic_final = into_anthropic_message(assistant_final_msg);
+        assert_eq!(anthropic_final.role, "assistant");
+        match &anthropic_final.content {
+            AnthropicMessageContent::Text(t) => {
+                assert!(t.contains("Sunny"));
+            }
+            _ => panic!("final text should be simple text content"),
+        }
+    }
+
+    /// Regression test: verify request serialization with multi-turn tool conversation.
+    ///
+    /// This validates that an AnthropicRequest with multiple messages (including
+    /// tool_use and tool_result blocks) serializes correctly to valid JSON.
+    ///
+    /// Bug: Without proper block handling, serialization would produce malformed requests.
+    #[test]
+    fn test_anthropic_request_multi_turn_serialization() {
+        // Build a multi-turn conversation
+        let messages: Vec<AnthropicMessage> = vec![
+            // Turn 1: User
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicMessageContent::Text("What's the weather?".to_string()),
+            },
+            // Turn 2: Assistant with tool call
+            AnthropicMessage {
+                role: "assistant".to_string(),
+                content: AnthropicMessageContent::Blocks(vec![
+                    AnthropicInputContentBlock::ToolUse {
+                        id: "call_001".to_string(),
+                        name: "get_weather".to_string(),
+                        input: serde_json::json!({"city": "NYC"}),
+                    },
+                ]),
+            },
+            // Turn 3: User with tool result
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicMessageContent::Blocks(vec![
+                    AnthropicInputContentBlock::ToolResult {
+                        tool_use_id: "call_001".to_string(),
+                        content: "Sunny, 72°F".to_string(),
+                        is_error: false,
+                    },
+                ]),
+            },
+            // Turn 4: Assistant final
+            AnthropicMessage {
+                role: "assistant".to_string(),
+                content: AnthropicMessageContent::Text("The weather is sunny!".to_string()),
+            },
+        ];
+
+        let request = AnthropicRequest {
+            model: "claude-sonnet-4-5".to_string(),
+            messages,
+            max_tokens: 1024,
+            system: Some("You are a helpful assistant.".to_string()),
+            tools: Some(vec![
+                AnthropicTool {
+                    name: "get_weather".to_string(),
+                    description: "Get weather for a city".to_string(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "city": {"type": "string"}
+                        }
+                    }),
+                },
+            ]),
+            stream: false,
+        };
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&request).expect("should serialize");
+
+        // Verify key elements in JSON
+        assert!(json.contains(r#""model":"claude-sonnet-4-5""#));
+        assert!(json.contains(r#""role":"user""#));
+        assert!(json.contains(r#""role":"assistant""#));
+        assert!(json.contains(r#""type":"tool_use""#));
+        assert!(json.contains(r#""type":"tool_result""#));
+        assert!(json.contains(r#""id":"call_001""#));
+        assert!(json.contains(r#""name":"get_weather""#));
+
+        // Verify tool_use block is NOT flattened to plain text
+        assert!(json.contains(r#""input":{"city":"NYC"}"#),
+            "tool_use input should be structured JSON, not text");
+
+        // Verify tool_result content is preserved
+        assert!(json.contains(r#""content":"Sunny, 72°F""#),
+            "tool_result content should be preserved");
+    }
+
+    /// Regression test: assistant message with tool_call and reasoning together.
+    ///
+    /// Ensures that when both reasoning and tool_call are present, reasoning
+    /// is still NOT injected as history text.
+    #[test]
+    fn test_into_anthropic_message_tool_call_with_reasoning() {
+        let msg = create_test_message(
+            Role::Assistant,
+            vec![
+                create_reasoning_part("I need to call the weather tool"),
+                create_tool_call_part("call_001", "get_weather", r#"{"city":"NYC"}"#),
+            ],
+        );
+        let anthropic_msg = into_anthropic_message(msg);
+
+        assert_eq!(anthropic_msg.role, "assistant");
+
+        // Must be blocks format (has tool_call)
+        match &anthropic_msg.content {
+            AnthropicMessageContent::Blocks(blocks) => {
+                // Should only have the tool_use block, no reasoning text
+                assert_eq!(blocks.len(), 1);
+                match &blocks[0] {
+                    AnthropicInputContentBlock::ToolUse { id, .. } => {
+                        assert_eq!(id, "call_001");
+                    }
+                    other => panic!("expected ToolUse block, got {:?}", other),
+                }
+            }
+            AnthropicMessageContent::Text(t) => {
+                panic!("tool_call + reasoning should NOT produce text: {:?}", t);
+            }
+        }
     }
 
     #[test]

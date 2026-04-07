@@ -72,6 +72,7 @@ where
     ))
 }
 
+#[allow(dead_code)]
 fn expand_env_var(value: &str) -> String {
     if let Some(var_name) = value.strip_prefix("${").and_then(|v| v.strip_suffix('}')) {
         std::env::var(var_name).unwrap_or_default()
@@ -112,7 +113,7 @@ pub fn is_openai_model(model: &str) -> bool {
 /// Build a provider from a model string (deprecated, use ProviderFactory::build instead)
 #[deprecated(note = "Use ProviderFactory::build instead")]
 pub fn build_provider_from_model(model: &str, config: Option<&RcodeConfig>) -> Result<(Arc<dyn LlmProvider>, String)> {
-    factory::build_provider_from_model(model, config)
+    ProviderFactory::build(model, config)
 }
 
 #[cfg(test)]

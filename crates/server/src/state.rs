@@ -173,12 +173,28 @@ impl AppState {
             message_repo,
         ));
 
+        // Spawn async task to load sessions from storage (hydrates sessions from previous runs)
+        let session_service_clone = session_service.clone();
+        tokio::spawn(async move {
+            let loaded = session_service_clone.load_all_from_storage();
+            tracing::info!("Loaded {} sessions from storage", loaded.len());
+        });
+
         // Create LSP registry
         let lsp_registry = Arc::new(LanguageServerRegistry::new());
 
         // Create tools with the runner injected
         let tools =
             create_tools_with_runner(session_service.clone(), &config, Arc::clone(&lsp_registry));
+
+        let tools_for_commands = Arc::clone(&tools);
+        tokio::spawn(async move {
+            if let Err(error) = tools_for_commands.register_slash_commands().await {
+                tracing::warn!(%error, "Failed to register slash commands");
+            } else {
+                tracing::info!("Registered slash commands");
+            }
+        });
 
         Self {
             session_service: session_service.clone(),

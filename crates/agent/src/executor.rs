@@ -14,7 +14,7 @@ use rcode_core::provider::StreamingEvent;
 use rcode_providers::LlmProvider;
 use rcode_tools::ToolRegistryService;
 use rcode_event::EventBus;
-use tracing::{info, warn, error};
+use tracing::{debug, error, info, warn};
 
 use super::permissions::{PermissionService, AutoPermissionService};
 
@@ -289,6 +289,7 @@ impl AgentExecutor {
         ctx: &mut AgentContext,
         cancellation_token: CancellationToken,
     ) -> Result<AgentResult> {
+        info!(session_id = %ctx.session_id, model_id = %ctx.model_id, message_count = ctx.messages.len(), "agent execution starting");
         let mut step_count = 0;
         let max_steps = 100;
 
@@ -320,12 +321,13 @@ impl AgentExecutor {
                 });
             }
 
-            info!("Starting step {} of agent execution", step_count);
+            info!(session_id = %ctx.session_id, step = step_count, "starting agent step");
 
             // Process a single streaming turn
             match self.process_streaming_turn(ctx, &cancellation_token).await {
                 Ok(ShouldContinue(should_continue, stop_reason, usage)) => {
                     if !should_continue {
+                        info!(session_id = %ctx.session_id, stop_reason = ?stop_reason, has_usage = usage.is_some(), "agent execution completed");
                         return Ok(AgentResult {
                             message: Message::assistant(ctx.session_id.clone(), vec![]),
                             should_continue: false,
@@ -356,6 +358,7 @@ impl AgentExecutor {
         cancellation_token: &CancellationToken,
     ) -> Result<ShouldContinue> {
         let model = self.model_override.as_deref().unwrap_or(&ctx.model_id).to_string();
+        debug!(session_id = %ctx.session_id, model = %model, input_messages = ctx.messages.len(), "processing streaming turn");
         
         // Get tools list, applying filter if allowed_tools is set
         let tools_list = self.tools.list();
@@ -395,26 +398,90 @@ impl AgentExecutor {
             }
         }
         
+        // Check if provider supports tool calling
+        let caps = self.provider.capabilities();
+        let provider_supports_tools = caps.supports_tool_calling && !filtered_tools.is_empty();
+        let latest_user_text = ctx.messages.iter().rev().find_map(|m| {
+            if m.role == rcode_core::Role::User {
+                Some(
+                    m.parts
+                        .iter()
+                        .filter_map(|p| match p {
+                            Part::Text { content } => Some(content.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                        .to_lowercase(),
+                )
+            } else {
+                None
+            }
+        }).unwrap_or_default();
+        let prompt_explicitly_requests_tools = [
+            "use a tool",
+            "use the tool",
+            "bash tool",
+            "read tool",
+            "grep tool",
+            "glob tool",
+            "run `pwd`",
+            "run pwd",
+            "current working directory",
+            "do not answer from memory",
+        ].iter().any(|needle| latest_user_text.contains(needle));
+        
+        // If the user explicitly asked for tool use but the provider doesn't support it,
+        // return a visible explanation instead of silently failing.
+        // Otherwise, omit tools and allow normal chat-only prompts to continue.
+        if !filtered_tools.is_empty() && !caps.supports_tool_calling && prompt_explicitly_requests_tools {
+            warn!(session_id = %ctx.session_id, provider = %self.provider.provider_id(), 
+                  "Provider does not support tool calling, returning informative error");
+            
+            let unsupported_msg = Message::assistant(ctx.session_id.clone(), vec![Part::Text {
+                content: format!(
+                    "The current model/provider ({}) does not support tool calling in this configuration. \
+                    This commonly happens with proxy or OpenAI/Anthropic-compatible backends that only support chat completions. \
+                    Please switch to a provider/model with native tool calling support (for example Claude, GPT-4, or compatible OpenRouter models), \
+                    or use a chat-only prompt.",
+                    self.provider.provider_id()
+                ),
+            }]);
+            ctx.messages.push(unsupported_msg.clone());
+            if let Some(event_bus) = &self.event_bus {
+                event_bus.publish(rcode_event::Event::MessageAdded {
+                    session_id: ctx.session_id.clone(),
+                    message_id: unsupported_msg.id.0.clone(),
+                });
+            }
+            return Ok(ShouldContinue(false, StopReason::EndOfTurn, None));
+        }
+        
         let request = rcode_core::CompletionRequest {
             model,
             messages: ctx.messages.clone(), // TODO: CompletionRequest owns messages, cannot take slice without significant refactoring
             system_prompt: Some(self.agent.system_prompt()),
-            tools: filtered_tools.into_iter().map(|t| {
-                let params = self.tools.get(&t.id)
-                    .map(|tool| tool.parameters())
-                    .unwrap_or_else(|| serde_json::json!({}));
-                rcode_core::ToolDefinition {
-                    name: t.id,
-                    description: t.description,
-                    parameters: params,
-                }
-            }).collect(),
+            tools: if provider_supports_tools {
+                filtered_tools.into_iter().map(|t| {
+                    let params = self.tools.get(&t.id)
+                        .map(|tool| tool.parameters())
+                        .unwrap_or_else(|| serde_json::json!({}));
+                    rcode_core::ToolDefinition {
+                        name: t.id,
+                        description: t.description,
+                        parameters: params,
+                    }
+                }).collect()
+            } else {
+                vec![]
+            },
             temperature: None,
             max_tokens: self.max_tokens_override.or(Some(4096)),
             reasoning_effort: self.reasoning_effort.clone(),
         };
 
         let response = self.provider.stream(request).await?;
+        debug!(session_id = %ctx.session_id, "provider stream opened");
 
         let mut accumulated_text = Arc::new(String::new());
         let mut accumulated_reasoning = Arc::new(String::new());
@@ -447,6 +514,7 @@ impl AgentExecutor {
                         Some(event) => {
                             match event {
                                 StreamingEvent::Text { delta } => {
+                                    debug!(session_id = %ctx.session_id, delta_len = delta.len(), "received text delta");
                                     let new_text = Arc::clone(&accumulated_text);
                                     let mut text = (*new_text).clone();
                                     text.push_str(&delta);
@@ -463,6 +531,7 @@ impl AgentExecutor {
                                     }
                                 }
                                 StreamingEvent::Reasoning { delta } => {
+                                    debug!(session_id = %ctx.session_id, delta_len = delta.len(), "received reasoning delta");
                                     let new_reasoning = Arc::clone(&accumulated_reasoning);
                                     let mut reasoning = (*new_reasoning).clone();
                                     reasoning.push_str(&delta);
@@ -478,6 +547,7 @@ impl AgentExecutor {
                                     }
                                 }
                                 StreamingEvent::ToolCallStart { id, name } => {
+                                    info!(session_id = %ctx.session_id, tool_call_id = %id, tool_name = %name, "tool call started");
                                     active_tool_call = Some((id, name, String::new()));
                                 }
                                 StreamingEvent::ToolCallArg { id, name: _, value } => {
@@ -488,6 +558,7 @@ impl AgentExecutor {
                                     }
                                 }
                                 StreamingEvent::ToolCallEnd { id } => {
+                                    info!(session_id = %ctx.session_id, tool_call_id = %id, "tool call completed in stream");
                                     if let Some(ref active) = active_tool_call {
                                         if active.0 == id {
                                             let args: serde_json::Value = serde_json::from_str(&active.2).unwrap_or_else(|e| {
@@ -501,6 +572,7 @@ impl AgentExecutor {
                                 }
                                 StreamingEvent::ContentBlock { content: _ } => {}
                                 StreamingEvent::Finish { stop_reason, usage } => {
+                                    info!(session_id = %ctx.session_id, provider_stop_reason = ?stop_reason, output_tokens = usage.output_tokens, "provider stream finished");
                                     final_stop_reason = match stop_reason {
                                         rcode_core::provider::StopReason::EndTurn => StopReason::EndOfTurn,
                                         rcode_core::provider::StopReason::MaxTokens => StopReason::MaxSteps,
@@ -559,9 +631,22 @@ impl AgentExecutor {
             });
         }
 
-        // If no content and no tool calls, return early
+        // If no content and no tool calls, the model returned an empty response.
+        // This can happen when the provider doesn't support tool calling.
+        // Return a synthetic assistant message so the user gets feedback.
         if assistant_parts.is_empty() {
-            return Ok(ShouldContinue(false, final_stop_reason, final_usage.clone()));
+            warn!(session_id = %ctx.session_id, "stream finished without assistant content or tool calls — model may not support tool calling");
+            let fallback_msg = Message::assistant(ctx.session_id.clone(), vec![Part::Text {
+                content: "The model returned an empty response. This may happen if the provider does not support tool calling. Try a simpler prompt or switch to a different model.".to_string(),
+            }]);
+            ctx.messages.push(fallback_msg.clone());
+            if let Some(event_bus) = &self.event_bus {
+                event_bus.publish(rcode_event::Event::MessageAdded {
+                    session_id: ctx.session_id.clone(),
+                    message_id: fallback_msg.id.0.clone(),
+                });
+            }
+            return Ok(ShouldContinue(false, StopReason::EndOfTurn, final_usage.clone()));
         }
 
         // Add assistant message to context
@@ -570,6 +655,7 @@ impl AgentExecutor {
 
         // Publish MessageAdded event
         if let Some(event_bus) = &self.event_bus {
+            debug!(session_id = %ctx.session_id, message_id = %assistant_msg.id.0, part_count = assistant_msg.parts.len(), "publishing assistant message added event");
             event_bus.publish(rcode_event::Event::MessageAdded {
                 session_id: ctx.session_id.clone(),
                 message_id: assistant_msg.id.0.clone(),
@@ -1801,5 +1887,94 @@ mod tests {
         // Messages should NOT be compacted since under threshold
         // 3 original + 1 assistant response = 4 messages
         assert_eq!(ctx.messages.len(), 4, "Should not compact when under threshold");
+    }
+
+    #[tokio::test]
+    async fn test_executor_with_unsupported_tool_calling_returns_error_message() {
+        use rcode_core::provider::ProviderCapabilities;
+        
+        let agent = Arc::new(MockTestAgent::new("test"));
+        let provider = Arc::new(MockLlmProvider::new());
+        let tools = Arc::new(ToolRegistryService::new());
+        
+        // ToolRegistryService has default tools like "bash" registered
+        // Verify that bash tool exists
+        let tools_list = tools.list();
+        assert!(!tools_list.is_empty(), "Should have default tools registered");
+        
+        // Set provider to NOT support tool calling
+        provider.set_capabilities(ProviderCapabilities::chat_only());
+        
+        // Configure provider with a simple text response
+        provider.set_stream_events(vec![
+            StreamingEvent::Text { delta: "Hello".to_string() },
+            StreamingEvent::Finish { 
+                stop_reason: CoreStopReason::EndTurn, 
+                usage: TokenUsage { 
+                    input_tokens: 10, 
+                    output_tokens: 5, 
+                    total_tokens: Some(15) 
+                },
+            },
+        ]);
+        
+        let executor = AgentExecutor::new(agent, provider.clone(), tools);
+        let mut ctx = create_test_agent_context();
+        
+        let result = executor.run(&mut ctx).await;
+        assert!(result.is_ok());
+        
+        // Should have received an error message about tool calling not being supported
+        // The last message should be from the assistant with the error
+        let last_msg = ctx.messages.last();
+        assert!(last_msg.is_some());
+        
+        let last_msg = last_msg.unwrap();
+        if let Message { parts, .. } = last_msg {
+            // Find the text part with the error message
+            let has_unsupported_msg = parts.iter().any(|p| {
+                if let Part::Text { content } = p {
+                    content.contains("does not support tool calling")
+                } else {
+                    false
+                }
+            });
+            assert!(has_unsupported_msg, "Should have error message about tool calling not supported");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_executor_capability_check_with_support_succeeds() {
+        use rcode_core::provider::ProviderCapabilities;
+        
+        let agent = Arc::new(MockTestAgent::new("test"));
+        let provider = Arc::new(MockLlmProvider::new());
+        let tools = Arc::new(ToolRegistryService::new());
+        
+        // Set provider to support tool calling (default, but explicit for clarity)
+        provider.set_capabilities(ProviderCapabilities::all());
+        
+        // Configure provider to return a tool call for bash (which is registered)
+        provider.set_stream_events(vec![
+            StreamingEvent::ToolCallStart { id: "call_123".to_string(), name: "bash".to_string() },
+            StreamingEvent::ToolCallArg { id: "call_123".to_string(), name: "command".to_string(), value: "\"echo hello\"".to_string() },
+            StreamingEvent::ToolCallEnd { id: "call_123".to_string() },
+            StreamingEvent::Finish { 
+                stop_reason: CoreStopReason::EndTurn, 
+                usage: TokenUsage { 
+                    input_tokens: 10, 
+                    output_tokens: 5, 
+                    total_tokens: Some(15) 
+                },
+            },
+        ]);
+        
+        let executor = AgentExecutor::new(agent, provider.clone(), tools);
+        let mut ctx = create_test_agent_context();
+        
+        let result = executor.run(&mut ctx).await;
+        assert!(result.is_ok());
+        // The test passes if the executor handles the tool call without error
+        // (it will try to continue since there's a tool call, but max_steps may be hit)
     }
 }

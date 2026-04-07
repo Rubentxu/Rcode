@@ -9,7 +9,7 @@ use rcode_core::{
     StreamingResponse, ModelInfo, StreamingEvent, TokenUsage,
     error::{Result, RCodeError},
 };
-use rcode_core::provider::StopReason;
+use rcode_core::provider::{StopReason, ProviderCapabilities};
 use crate::LlmProvider;
 
 /// Invocation record for tracking calls
@@ -27,6 +27,8 @@ pub struct MockLlmProvider {
     pub stream_events: std::sync::Mutex<Vec<StreamingEvent>>,
     pub invocation_history: std::sync::Mutex<Vec<Invocation>>,
     pub should_stream: std::sync::Mutex<bool>,
+    /// Override for capabilities - None means use default (all capabilities)
+    pub capabilities_override: std::sync::Mutex<Option<ProviderCapabilities>>,
 }
 
 impl MockLlmProvider {
@@ -38,6 +40,7 @@ impl MockLlmProvider {
             stream_events: std::sync::Mutex::new(Vec::new()),
             invocation_history: std::sync::Mutex::new(Vec::new()),
             should_stream: std::sync::Mutex::new(false),
+            capabilities_override: std::sync::Mutex::new(None),
         }
     }
 
@@ -75,6 +78,12 @@ impl MockLlmProvider {
         self.stream_events.lock().unwrap().clear();
         self.invocation_history.lock().unwrap().clear();
         *self.should_stream.lock().unwrap() = false;
+        *self.capabilities_override.lock().unwrap() = None;
+    }
+    
+    /// Set a capabilities override for testing
+    pub fn set_capabilities(&self, caps: ProviderCapabilities) {
+        *self.capabilities_override.lock().unwrap() = Some(caps);
     }
 }
 
@@ -185,6 +194,12 @@ impl LlmProvider for MockLlmProvider {
     fn abort(&self) {
         // No-op for mock - streaming doesn't actually start
     }
+    
+    fn capabilities(&self) -> ProviderCapabilities {
+        // Use override if set, otherwise default to all capabilities
+        self.capabilities_override.lock().unwrap()
+            .unwrap_or_else(|| ProviderCapabilities::all())
+    }
 }
 
 #[cfg(test)]
@@ -207,6 +222,7 @@ mod tests {
             tools: vec![],
             temperature: None,
             max_tokens: Some(100),
+            reasoning_effort: None,
         }
     }
 
@@ -264,7 +280,7 @@ mod tests {
         ];
         provider.set_stream_events(events);
         
-        let result = provider.stream(create_test_request()).await.unwrap();
+        let _result = provider.stream(create_test_request()).await.unwrap();
         // Just verify it doesn't panic - we can't easily count events in broadcast stream
         assert_eq!(provider.invocation_count(), 1);
     }

@@ -11,22 +11,72 @@ pub use error::ServerError;
 
 use axum::{
     Router,
+    http::HeaderValue,
     routing::{get, post, delete, put},
 };
 use std::sync::Arc;
 use tokio::signal;
 use tower_http::cors::{CorsLayer, Any};
+use tower_http::trace::TraceLayer;
 
 /// Build a CORS layer from server configuration
-pub fn build_cors_layer() -> CorsLayer {
-    CorsLayer::new()
-        .allow_origin(Any)
+pub fn build_cors_layer(cors_origins: Option<Vec<String>>) -> CorsLayer {
+    let layer = CorsLayer::new()
         .allow_methods(Any)
-        .allow_headers(Any)
+        .allow_headers(Any);
+    
+    match cors_origins {
+        Some(origins) if !origins.is_empty() => {
+            // Use the configured origins
+            let allowed: Vec<HeaderValue> = origins
+                .iter()
+                .filter_map(|origin| {
+                    origin.parse::<HeaderValue>().ok()
+                })
+                .collect();
+            
+            if allowed.is_empty() {
+                // Fallback to dev defaults if no valid origins could be parsed
+                layer.allow_origin(default_dev_origins())
+            } else {
+                layer.allow_origin(allowed)
+            }
+        }
+        _ => {
+            // Default: allow common development origins
+            // Covers: Tauri webview (tauri.localhost), Vite dev (localhost:1420),
+            // direct browser (localhost:4098), and localhost variants
+            layer.allow_origin(default_dev_origins())
+        }
+    }
+}
+
+/// Default development CORS origins for Tauri + Vite + direct browser access
+fn default_dev_origins() -> Vec<HeaderValue> {
+    vec![
+        HeaderValue::from_static("http://localhost"),
+        HeaderValue::from_static("http://localhost:1420"),
+        HeaderValue::from_static("http://localhost:4096"),
+        HeaderValue::from_static("http://localhost:4098"),
+        HeaderValue::from_static("http://127.0.0.1"),
+        HeaderValue::from_static("http://127.0.0.1:1420"),
+        HeaderValue::from_static("http://127.0.0.1:4098"),
+        HeaderValue::from_static("tauri://localhost"),
+        HeaderValue::from_static("tauri://127.0.0.1"),
+        HeaderValue::from_static("https://tauri.localhost"),
+        HeaderValue::from_static("http://tauri.localhost"),
+        HeaderValue::from_static("http://localhost:5173"), // Vite default
+    ]
 }
 
 pub async fn create_app(state: Arc<AppState>) -> Router {
-    let cors = build_cors_layer();
+    // Extract CORS origins from config
+    let cors_origins = state.config.lock()
+        .ok()
+        .and_then(|config| config.server.clone())
+        .and_then(|server| server.cors);
+    
+    let cors = build_cors_layer(cors_origins);
     
     Router::new()
         .route("/health", get(routes::health))
@@ -46,12 +96,33 @@ pub async fn create_app(state: Arc<AppState>) -> Router {
         .route("/config", put(routes::update_config))
         .route("/config/providers", get(routes::get_providers))
         .route("/config/providers/:id", put(routes::update_provider))
+        .route("/config/providers/:id/state", put(routes::update_provider_state))
+        .route("/config/models/:id/state", put(routes::update_model_state))
         .route("/terminal/exec", post(routes::terminal::exec_terminal_command))
         .route("/session/:id/diffs", get(routes::diff::list_diffs))
         .route("/session/:id/diff/:file", get(routes::diff::get_diff))
         .route("/permission/:request_id/grant", post(routes::permission_grant))
         .route("/permission/:request_id/deny", post(routes::permission_deny))
         .with_state(state)
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &axum::http::Request<_>| {
+                    tracing::info_span!(
+                        "http_request",
+                        method = %request.method(),
+                        uri = %request.uri(),
+                    )
+                })
+                .on_response(|response: &axum::http::Response<_>, latency: std::time::Duration, _span: &tracing::Span| {
+                    tracing::info!(status = %response.status(), latency_ms = latency.as_millis(), "request completed");
+                })
+                .on_failure(|error: tower_http::classify::ServerErrorsFailureClass, latency: std::time::Duration, _span: &tracing::Span| {
+                    tracing::error!(%error, latency_ms = latency.as_millis(), "request failed");
+                })
+                .on_request(|request: &axum::http::Request<_>, _span: &tracing::Span| {
+                    tracing::debug!(method = %request.method(), uri = %request.uri(), "request started");
+                }),
+        )
         .layer(cors)
 }
 
@@ -130,4 +201,21 @@ pub async fn start_server_on_listener(
 
     tracing::info!("Shutdown complete");
     Ok(addr)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_dev_origins;
+
+    #[test]
+    fn cors_defaults_include_tauri_origins() {
+        let origins = default_dev_origins();
+        let as_strings: Vec<&str> = origins
+            .iter()
+            .map(|value| value.to_str().expect("default origin should be valid ASCII"))
+            .collect();
+
+        assert!(as_strings.contains(&"tauri://localhost"));
+        assert!(as_strings.contains(&"tauri://127.0.0.1"));
+    }
 }

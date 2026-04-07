@@ -36,23 +36,8 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
-        )
-        .init();
-    
     let cli = Cli::parse();
-    
-    if cli.verbose {
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::from_default_env()
-                    .add_directive(tracing::Level::DEBUG.into()),
-            )
-            .init();
-    }
+    rcode_observability::init("cli", cli.verbose);
     
     match cli.command {
         Some(Commands::Run(run)) => run.execute(cli.config.as_ref(), cli.no_config).await,

@@ -22,6 +22,7 @@ rcode-server = { path = "../server" }
 rcode-agent = { path = "../agent" }
 rcode-tui = { path = "../tui" }
 rcode-acp = { path = "../acp" }
+rcode-observability.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -29,7 +30,6 @@ clap = { version = "4.5", features = ["derive"] }
 thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 tokio-stream = "0.1"
 futures-util = "0.3"
 dirs.workspace = true

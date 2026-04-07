@@ -5,7 +5,49 @@ use futures::Stream;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 
-use crate::{error::Result, message::Message};
+use crate::message::Message;
+use crate::error::Result;
+
+/// Provider capabilities - describes what features a provider/model supports
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderCapabilities {
+    /// Whether the provider supports tool calling (function calling)
+    pub supports_tool_calling: bool,
+    /// Whether the provider supports streaming tool calls (incremental tool call events)
+    pub supports_streaming_tool_calls: bool,
+    /// Whether the provider supports reasoning/thinking (e.g., Claude's extended thinking)
+    pub supports_reasoning: bool,
+    /// Whether the provider supports system prompt
+    pub supports_system_prompt: bool,
+}
+
+impl Default for ProviderCapabilities {
+    fn default() -> Self {
+        Self {
+            supports_tool_calling: false,
+            supports_streaming_tool_calls: false,
+            supports_reasoning: false,
+            supports_system_prompt: true,
+        }
+    }
+}
+
+impl ProviderCapabilities {
+    /// Returns a ProviderCapabilities with all features enabled
+    pub fn all() -> Self {
+        Self {
+            supports_tool_calling: true,
+            supports_streaming_tool_calls: true,
+            supports_reasoning: true,
+            supports_system_prompt: true,
+        }
+    }
+    
+    /// Returns a ProviderCapabilities with only chat (no tool calling)
+    pub fn chat_only() -> Self {
+        Self::default()
+    }
+}
 
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
@@ -85,20 +127,44 @@ pub struct StreamingResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamingEvent {
-    Text { delta: String },
-    Reasoning { delta: String },
-    ToolCallStart { id: String, name: String },
-    ToolCallArg { id: String, name: String, value: String },
-    ToolCallEnd { id: String },
-    ContentBlock { content: Box<ContentBlock> },
-    Finish { stop_reason: StopReason, usage: TokenUsage },
+    Text {
+        delta: String,
+    },
+    Reasoning {
+        delta: String,
+    },
+    ToolCallStart {
+        id: String,
+        name: String,
+    },
+    ToolCallArg {
+        id: String,
+        name: String,
+        value: String,
+    },
+    ToolCallEnd {
+        id: String,
+    },
+    ContentBlock {
+        content: Box<ContentBlock>,
+    },
+    Finish {
+        stop_reason: StopReason,
+        usage: TokenUsage,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
-    Text { text: String },
-    ToolUse { id: String, name: String, input: serde_json::Value },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
 }
 
 #[cfg(test)]
@@ -114,7 +180,7 @@ mod tests {
             "max_tokens": 4096,
             "reasoning_effort": "high"
         }"#;
-        
+
         let req: CompletionRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.model, "claude-sonnet-4-5");
         assert_eq!(req.max_tokens, Some(4096));
@@ -129,7 +195,7 @@ mod tests {
             "tools": [],
             "max_tokens": 4096
         }"#;
-        
+
         let req: CompletionRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.model, "claude-sonnet-4-5");
         assert_eq!(req.max_tokens, Some(4096));
@@ -147,7 +213,7 @@ mod tests {
             max_tokens: Some(4096),
             reasoning_effort: None,
         };
-        
+
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("reasoning_effort"));
     }
@@ -163,7 +229,7 @@ mod tests {
             max_tokens: Some(4096),
             reasoning_effort: Some("high".to_string()),
         };
-        
+
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("reasoning_effort"));
         assert!(json.contains("high"));

@@ -178,7 +178,14 @@ impl ProviderFactory {
             }
             "openai" => {
                 let api_key = resolve_api_key("openai", config_api_key)?;
-                Ok((Arc::new(OpenAIProvider::new(api_key)), model_name))
+                let base_url = get_provider_config_string(config, "openai", "base_url");
+                match base_url {
+                    Some(url) => Ok((
+                        Arc::new(OpenAIProvider::new_with_base_url(api_key, url)),
+                        model_name,
+                    )),
+                    None => Ok((Arc::new(OpenAIProvider::new(api_key)), model_name)),
+                }
             }
             "google" => {
                 let api_key = resolve_api_key("google", config_api_key)?;
@@ -186,7 +193,14 @@ impl ProviderFactory {
             }
             "openrouter" => {
                 let api_key = resolve_api_key("openrouter", config_api_key)?;
-                Ok((Arc::new(OpenRouterProvider::new(api_key)), model_name))
+                let base_url = get_provider_config_string(config, "openrouter", "base_url");
+                match base_url {
+                    Some(url) => Ok((
+                        Arc::new(OpenRouterProvider::new_with_base_url(api_key, url)),
+                        model_name,
+                    )),
+                    None => Ok((Arc::new(OpenRouterProvider::new(api_key)), model_name)),
+                }
             }
             "minimax" => {
                 let api_key = resolve_api_key("minimax", config_api_key)?;
@@ -215,7 +229,9 @@ impl ProviderFactory {
                 // Check if config has providers.<unknown_id>.api_key and providers.<unknown_id>.base_url
                 // Env var names replace hyphens with underscores
                 let env_provider_id = other.to_uppercase().replace('-', "_");
-                let custom_api_key = get_provider_config_string(config, other, "api_key")
+                // First check auth.json (primary credential store)
+                let custom_api_key = rcode_core::auth::get_api_key(other)
+                    .or_else(|| get_provider_config_string(config, other, "api_key"))
                     .or_else(|| std::env::var(format!("{}_API_KEY", env_provider_id)).ok());
                 let custom_base_url = get_provider_config_string(config, other, "base_url")
                     .or_else(|| std::env::var(format!("{}_BASE_URL", env_provider_id)).ok());
@@ -294,9 +310,19 @@ fn get_provider_config_string(
     })
 }
 
-/// Get API key from config, checking typed providers first then legacy extra
+/// Get API key from config, checking auth.json first (OpenCode-compatible)
+///
+/// Resolution order:
+/// 1. auth.json (primary - rcode_core::auth::get_api_key)
+/// 2. Typed providers config
+/// 3. Legacy extra JSON config
 fn get_api_key_from_config(config: Option<&RcodeConfig>, provider_id: &str) -> Option<String> {
-    // Try typed field first
+    // First check auth.json (OpenCode's primary credential store)
+    if let Some(key) = rcode_core::auth::get_api_key(provider_id) {
+        return Some(key);
+    }
+
+    // Then try typed field
     if let Some(provider) = config.and_then(|c| c.providers.get(provider_id)) {
         if provider.api_key.is_some() {
             return provider.api_key.clone();

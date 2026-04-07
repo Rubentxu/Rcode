@@ -5,7 +5,6 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::mpsc;
-use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 use rcode_core::{
@@ -13,7 +12,7 @@ use rcode_core::{
     StreamingEvent, StreamingResponse,
     TokenUsage, error::Result,
 };
-use rcode_core::provider::StopReason;
+use rcode_core::provider::{StopReason, ProviderCapabilities};
 
 use super::rate_limit::TokenBucket;
 use super::LlmProvider;
@@ -311,6 +310,11 @@ impl LlmProvider for GoogleProvider {
             token.cancel();
         }
     }
+    
+    fn capabilities(&self) -> ProviderCapabilities {
+        // Gemini has limited tool calling support - conservative estimate for now
+        ProviderCapabilities::chat_only()
+    }
 }
 
 #[derive(Serialize)]
@@ -362,7 +366,7 @@ struct GeminiUsageMetadata {
     #[serde(rename = "candidatesTokenCount")]
     candidates_token_count: Option<u32>,
     #[serde(rename = "totalTokenCount")]
-    total_token_count: Option<u32>,
+    _total_token_count: Option<u32>,
 }
 
 #[derive(Deserialize)]

@@ -23,10 +23,17 @@ impl DefaultAgent {
     }
     
     fn default_system_prompt() -> String {
-        r#"You are a helpful AI coding assistant. You have access to various tools to help you complete tasks.
-When using tools, make sure to provide clear descriptions of what you're doing.
-If a tool fails, try to understand why and suggest alternatives.
+        r#"You are a helpful AI coding assistant. You have access to tools and you should use them when the user asks for concrete system, shell, filesystem, search, or codebase actions.
+
+When the user asks for something like `pwd`, `ls`, reading files, searching text, or making changes, prefer using the appropriate tool instead of answering from memory.
+If a request is a direct shell-style action, use the bash tool unless a more specific tool is better.
+When using tools, explain briefly what you are doing.
+If a tool fails, surface the failure clearly and try the next sensible approach.
 Always aim to provide the most helpful and accurate response possible."#.to_string()
+    }
+
+    pub fn system_prompt_text() -> String {
+        Self::default_system_prompt()
     }
 }
 

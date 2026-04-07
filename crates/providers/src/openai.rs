@@ -13,7 +13,7 @@ use rcode_core::{
     StreamingEvent, StreamingResponse,
     TokenUsage, error::Result,
 };
-use rcode_core::provider::StopReason;
+use rcode_core::provider::{StopReason, ProviderCapabilities};
 
 use super::rate_limit::TokenBucket;
 use super::LlmProvider;
@@ -76,6 +76,15 @@ impl OpenAIProvider {
             active_token: Arc::new(StdMutex::new(None)),
         }
     }
+
+    fn chat_completions_url(&self) -> String {
+        let trimmed = self.base_url.trim_end_matches('/');
+        if trimmed.ends_with("/v1") {
+            format!("{trimmed}/chat/completions")
+        } else {
+            format!("{trimmed}/v1/chat/completions")
+        }
+    }
 }
 
 #[async_trait]
@@ -102,7 +111,7 @@ impl LlmProvider for OpenAIProvider {
             tools: if req.tools.is_empty() { None } else { Some(req.tools.iter().map(into_openai_tool).collect()) },
         };
         
-        let url = format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'));
+        let url = self.chat_completions_url();
         let mut request_builder = self.http_client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
@@ -212,7 +221,7 @@ impl LlmProvider for OpenAIProvider {
             tools: if req.tools.is_empty() { None } else { Some(req.tools.iter().map(into_openai_tool).collect()) },
         };
 
-        let url = format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'));
+        let url = self.chat_completions_url();
         let mut request_builder = self.http_client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
@@ -228,6 +237,27 @@ impl LlmProvider for OpenAIProvider {
             .await
             .map_err(|e| rcode_core::RCodeError::Provider(format!("Network error: {}", e)))?;
 
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(rcode_core::RCodeError::Provider(
+                format!("OpenAI API error ({}): {}", status, error_text)
+            ));
+        }
+
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        if !content_type.contains("text/event-stream") {
+            let payload = response.text().await
+                .map_err(|e| rcode_core::RCodeError::Provider(format!("Failed to read response body: {}", e)))?;
+            return streaming_response_from_json_payload(&payload);
+        }
+
         let (tx, rx) = mpsc::channel(1);
         let tx_clone = tx;
         let active_token = Arc::clone(&self.active_token);
@@ -238,6 +268,7 @@ impl LlmProvider for OpenAIProvider {
             let mut current_tool_call: Option<OpenAIToolCall> = None;
             let mut last_finish_reason: Option<String> = None;
             let mut stream_error: Option<String> = None;
+            let mut stream_done = false;
             let token_clone = token.clone();
 
             loop {
@@ -265,8 +296,13 @@ impl LlmProvider for OpenAIProvider {
                                     buffer = buffer.split_off(newline_pos + 1);
                                     let line = line_str.trim();
 
-                                    if line.is_empty() || line == "data: [DONE]" {
+                                    if line.is_empty() {
                                         continue;
+                                    }
+
+                                    if line == "data: [DONE]" {
+                                        stream_done = true;
+                                        break;
                                     }
 
                                     if let Some(data) = line.strip_prefix("data: ") {
@@ -282,6 +318,10 @@ impl LlmProvider for OpenAIProvider {
                                             }
                                         }
                                     }
+                                }
+
+                                if stream_done {
+                                    break;
                                 }
                             }
                             Some(Err(e)) => {
@@ -361,6 +401,10 @@ impl LlmProvider for OpenAIProvider {
         if let Some(token) = guard.take() {
             token.cancel();
         }
+    }
+    
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::all()
     }
 }
 
@@ -503,6 +547,49 @@ fn into_openai_message(msg: rcode_core::Message) -> OpenAIMessage {
     }
 }
 
+fn streaming_response_from_json_payload(payload: &str) -> Result<StreamingResponse> {
+    let openai_resp: serde_json::Value = serde_json::from_str(payload)
+        .map_err(|e| rcode_core::RCodeError::Provider(format!("Failed to parse JSON streaming fallback: {}", e)))?;
+
+    let content = openai_resp["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    let reasoning = openai_resp["choices"][0]["message"]["reasoning"]
+        .as_str()
+        .or_else(|| openai_resp["choices"][0]["message"]["reasoning_content"].as_str())
+        .map(str::to_string);
+
+    let stop_reason = match openai_resp["choices"][0]["finish_reason"].as_str() {
+        Some("length") => StopReason::MaxTokens,
+        Some("stop") => StopReason::EndTurn,
+        Some("tool_calls") => StopReason::EndTurn,
+        _ => StopReason::EndTurn,
+    };
+
+    let usage = TokenUsage {
+        input_tokens: openai_resp["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+        output_tokens: openai_resp["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32,
+        total_tokens: openai_resp["usage"]["total_tokens"].as_u64().map(|t| t as u32),
+    };
+
+    let mut events = Vec::new();
+    if !content.is_empty() {
+        events.push(StreamingEvent::Text { delta: content });
+    }
+    if let Some(reasoning) = reasoning {
+        if !reasoning.is_empty() {
+            events.push(StreamingEvent::Reasoning { delta: reasoning });
+        }
+    }
+    events.push(StreamingEvent::Finish { stop_reason, usage });
+
+    Ok(StreamingResponse {
+        events: Box::pin(tokio_stream::iter(events)),
+    })
+}
+
 struct OpenAIToolCall {
     id: String,
     name: String,
@@ -519,9 +606,13 @@ fn parse_openai_sse_event(
         // Check for finish_reason first
         let finish_reason = choice.finish_reason.clone();
 
-        if let Some(content) = choice.delta.content {
+        if let Some(content) = choice.delta.content.as_ref().and_then(extract_content_text) {
             // Text content
             return Some((StreamingEvent::Text { delta: content }, finish_reason));
+        }
+
+        if let Some(reasoning) = choice.delta.reasoning_content {
+            return Some((StreamingEvent::Reasoning { delta: reasoning }, finish_reason));
         }
 
         if let Some(tool_calls) = choice.delta.tool_calls {
@@ -579,9 +670,39 @@ struct OpenAIChoice {
 
 #[derive(Deserialize)]
 struct OpenAIDelta {
-    content: Option<String>,
+    content: Option<serde_json::Value>,
+    reasoning_content: Option<String>,
     #[serde(rename = "tool_calls")]
     tool_calls: Option<Vec<OpenAIToolCallDelta>>,
+}
+
+fn extract_content_text(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(text) => Some(text.clone()),
+        serde_json::Value::Array(parts) => {
+            let text = parts.iter()
+                .filter_map(|part| match part {
+                    serde_json::Value::String(text) => Some(text.clone()),
+                    serde_json::Value::Object(obj) => obj
+                        .get("text")
+                        .and_then(|value| value.as_str().map(str::to_string))
+                        .or_else(|| obj.get("content").and_then(|value| value.as_str().map(str::to_string))),
+                    _ => None,
+                })
+                .collect::<String>();
+
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+        serde_json::Value::Object(obj) => obj
+            .get("text")
+            .and_then(|value| value.as_str().map(str::to_string))
+            .or_else(|| obj.get("content").and_then(|value| value.as_str().map(str::to_string))),
+        _ => None,
+    }
 }
 
 #[derive(Deserialize)]
@@ -600,7 +721,6 @@ struct OpenAIFunctionDelta {
 mod tests {
     use super::*;
     use rcode_core::{Message, Part, message::Role};
-    use rcode_core::ToolDefinition;
 
     fn create_test_message(role: Role, parts: Vec<Part>) -> Message {
         Message {
@@ -788,6 +908,30 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_openai_sse_event_text_delta_from_object_content() {
+        let data = r#"{"id":"chatcmpl-123","choices":[{"index":0,"delta":{"content":{"text":"Hello"}},"finish_reason":null}]}"#;
+        let mut tool_call = None;
+        let event = parse_openai_sse_event(data, &mut tool_call);
+        assert!(event.is_some());
+        match event.unwrap().0 {
+            StreamingEvent::Text { delta } => assert_eq!(delta, "Hello"),
+            _ => panic!("Expected Text event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_openai_sse_event_text_delta_from_array_content() {
+        let data = r#"{"id":"chatcmpl-123","choices":[{"index":0,"delta":{"content":[{"text":"Hel"},{"text":"lo"}]},"finish_reason":null}]}"#;
+        let mut tool_call = None;
+        let event = parse_openai_sse_event(data, &mut tool_call);
+        assert!(event.is_some());
+        match event.unwrap().0 {
+            StreamingEvent::Text { delta } => assert_eq!(delta, "Hello"),
+            _ => panic!("Expected Text event"),
+        }
+    }
+
+    #[test]
     fn test_parse_openai_sse_event_tool_call_start() {
         let data = r#"{"id":"chatcmpl-123","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_abc","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}"#;
         let mut tool_call = None;
@@ -918,7 +1062,7 @@ mod tests {
     fn test_openai_delta_deserialization() {
         let json = r#"{"content":"Hello","tool_calls":[{"id":"call_1","function":{"name":"test","arguments":"{}"}}]}"#;
         let delta: OpenAIDelta = serde_json::from_str(json).unwrap();
-        assert_eq!(delta.content, Some("Hello".to_string()));
+        assert_eq!(delta.content, Some(serde_json::json!("Hello")));
         assert!(delta.tool_calls.is_some());
     }
 

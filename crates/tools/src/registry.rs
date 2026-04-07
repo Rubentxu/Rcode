@@ -7,7 +7,7 @@ use parking_lot::RwLock;
 use tokio::sync::RwLock as TokioRwLock;
 use tokio::time::timeout;
 
-use rcode_core::{Tool, ToolInfo, ToolContext, ToolResult, PermissionConfig, SubagentRunner, error::{Result, RCodeError}};
+use rcode_core::{Tool, ToolInfo, ToolContext, ToolResult, PermissionConfig, error::{Result, RCodeError}};
 use rcode_session::SessionService;
 use super::validator::ToolValidator;
 
@@ -18,6 +18,7 @@ const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 300;
 pub struct ToolRegistryService {
     tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
     default_timeout: Duration,
+    #[allow(dead_code)]
     permission_config: Option<PermissionConfig>,
     command_registry: RwLock<Option<Arc<super::command_registry::CommandRegistry>>>,
 }

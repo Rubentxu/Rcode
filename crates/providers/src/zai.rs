@@ -8,6 +8,7 @@ use rcode_core::{
     CompletionRequest, CompletionResponse, ModelInfo,
     StreamingResponse, error::Result,
 };
+use rcode_core::provider::ProviderCapabilities;
 
 use super::openai::OpenAIProvider;
 use super::LlmProvider;
@@ -57,6 +58,11 @@ impl LlmProvider for ZaiProvider {
 
     fn abort(&self) {
         self.inner.abort()
+    }
+    
+    fn capabilities(&self) -> ProviderCapabilities {
+        // ZAI uses OpenAI-compatible API, supports tool calling
+        ProviderCapabilities::all()
     }
 }
 

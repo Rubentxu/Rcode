@@ -13,7 +13,7 @@ pub struct ACPSessionManager {
     cancellation_tokens: Arc<RwLock<HashMap<String, rcode_agent::CancellationToken>>>,
 }
 
-struct SessionHandle {
+pub(crate) struct SessionHandle {
     _id: String,
 }
 

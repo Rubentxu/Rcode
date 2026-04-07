@@ -6,6 +6,7 @@ use rcode_core::{
     CompletionRequest, CompletionResponse, 
     StreamingResponse, ModelInfo, error::Result,
 };
+use rcode_core::provider::ProviderCapabilities;
 
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
@@ -16,4 +17,7 @@ pub trait LlmProvider: Send + Sync {
     
     /// Abort any in-progress streaming request
     fn abort(&self);
+    
+    /// Returns the capabilities of this provider
+    fn capabilities(&self) -> ProviderCapabilities;
 }

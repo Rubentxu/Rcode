@@ -14,13 +14,7 @@ pub struct Acp {
 #[allow(dead_code)]
 impl Acp {
     pub async fn execute(&self, _config_path: Option<&PathBuf>, _no_config: bool) -> Result<()> {
-        if self.verbose {
-            tracing::subscriber::set_global_default(
-                tracing_subscriber::fmt()
-                    .with_max_level(tracing::Level::DEBUG)
-                    .finish(),
-            )?;
-        }
+        rcode_observability::init("acp", self.verbose);
 
         tracing::info!("Starting ACP server (stdio mode)");
         

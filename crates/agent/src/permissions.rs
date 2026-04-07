@@ -10,6 +10,7 @@ use uuid::Uuid;
 use rcode_core::permission::{Permission, PermissionRequest, PermissionResponse};
 use rcode_event::{Event, EventBus};
 
+#[allow(dead_code)]
 const PERMISSION_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds default
 
 /// Trait for permission checking services
@@ -53,7 +54,7 @@ impl AutoPermissionService {
 
 #[async_trait::async_trait]
 impl PermissionService for AutoPermissionService {
-    async fn check(&self, request: &PermissionRequest) -> Result<bool, String> {
+    async fn check(&self, _request: &PermissionRequest) -> Result<bool, String> {
         match self.mode {
             Permission::Allow => {
                 // Allow mode: always allow

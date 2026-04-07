@@ -3,12 +3,12 @@
 //! OpenRouter uses the OpenAI-compatible API at https://openrouter.ai/api/v1
 
 use async_trait::async_trait;
-use std::sync::Arc;
 
 use rcode_core::{
     CompletionRequest, CompletionResponse, ModelInfo,
     StreamingResponse, error::Result,
 };
+use rcode_core::provider::ProviderCapabilities;
 
 use super::openai::OpenAIProvider;
 use super::LlmProvider;
@@ -58,6 +58,11 @@ impl LlmProvider for OpenRouterProvider {
 
     fn abort(&self) {
         self.inner.abort()
+    }
+    
+    fn capabilities(&self) -> ProviderCapabilities {
+        // OpenRouter uses OpenAI-compatible API, supports tool calling
+        ProviderCapabilities::all()
     }
 }
 

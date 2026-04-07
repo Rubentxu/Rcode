@@ -158,7 +158,16 @@ impl EventBus {
     }
     
     pub fn publish(&self, event: Event) {
-        let _ = self.sender.send(event);
+        let event_type = event.event_type();
+        let session_id = event.session_id().map(str::to_string);
+        match self.sender.send(event) {
+            Ok(receiver_count) => {
+                tracing::debug!(event_type, session_id = ?session_id, receiver_count, "published event to bus");
+            }
+            Err(error) => {
+                tracing::warn!(event_type, session_id = ?session_id, error = %error, "failed to publish event to bus");
+            }
+        }
     }
     
     pub fn send(&self, event: Event) -> Result<(), SendError<Event>> {

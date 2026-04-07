@@ -13,6 +13,7 @@ pub struct ChildResult {
 
 pub struct DelegationManager {
     session_service: Arc<SessionService>,
+    #[allow(dead_code)]
     event_bus: Arc<EventBus>,
 }
 

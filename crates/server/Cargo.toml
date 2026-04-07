@@ -11,6 +11,7 @@ rcode-providers = { path = "../providers" }
 rcode-tools = { path = "../tools" }
 rcode-storage = { path = "../storage" }
 rcode-agent = { path = "../agent" }
+rcode-observability.workspace = true
 rcode-lsp.workspace = true
 tokio.workspace = true
 rusqlite = { version = "0.33", features = ["bundled"] }
@@ -18,7 +19,7 @@ serde.workspace = true
 serde_json.workspace = true
 axum = "0.7"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "fs"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 tokio-stream = "0.1"
 thiserror.workspace = true
 anyhow.workspace = true
