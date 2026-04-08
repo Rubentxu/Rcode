@@ -388,8 +388,20 @@ impl RcodeConfig {
             .and_then(|agent| agent.reasoning_effort.as_deref())
     }
 
-    pub fn effective_model(&self) -> Option<&str> {
-        self.model.as_deref()
+    pub fn effective_model(&self) -> Option<String> {
+        self.model.clone().or_else(|| {
+            // Check environment-based model signals when no explicit config.model is set.
+            // This respects environment-based model configuration for various providers
+            // including MiniMax Anthropic-compatible setups.
+            std::env::var("ANTHROPIC_MODEL")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .or_else(|| {
+                    std::env::var("MINIMAX_MODEL")
+                        .ok()
+                        .filter(|v| !v.is_empty())
+                })
+        })
     }
 
     pub fn effective_small_model(&self) -> Option<&str> {
@@ -669,6 +681,126 @@ mod tests {
         let config: LspServerConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.command, "rust-analyzer");
         assert!(config.args.is_empty());
-        assert!(config.cwd.is_none());
+        assert_eq!(config.cwd, None);
+    }
+
+    #[test]
+    fn test_effective_model_prefers_config_over_env() {
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::set_var("ANTHROPIC_MODEL", "claude-sonnet-test");
+            std::env::set_var("MINIMAX_MODEL", "minimax-test");
+        }
+
+        let config = RcodeConfig {
+            model: Some("anthropic/claude-3-5-sonnet".to_string()),
+            ..Default::default()
+        };
+
+        // Config should take precedence over env vars
+        assert_eq!(
+            config.effective_model(),
+            Some("anthropic/claude-3-5-sonnet".to_string())
+        );
+
+        // SAFETY: Clean up env vars after test
+        unsafe {
+            std::env::remove_var("ANTHROPIC_MODEL");
+            std::env::remove_var("MINIMAX_MODEL");
+        }
+    }
+
+    #[test]
+    fn test_effective_model_falls_back_to_anthropic_model_env() {
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::remove_var("ANTHROPIC_MODEL");
+            std::env::remove_var("MINIMAX_MODEL");
+            std::env::set_var("ANTHROPIC_MODEL", "claude-sonnet-4-5");
+        }
+
+        let config = RcodeConfig::default();
+        assert_eq!(
+            config.effective_model(),
+            Some("claude-sonnet-4-5".to_string())
+        );
+
+        // SAFETY: Clean up env vars after test
+        unsafe {
+            std::env::remove_var("ANTHROPIC_MODEL");
+        }
+    }
+
+    #[test]
+    fn test_effective_model_falls_back_to_minimax_model_env() {
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::remove_var("ANTHROPIC_MODEL");
+            std::env::remove_var("MINIMAX_MODEL");
+            std::env::set_var("MINIMAX_MODEL", "MiniMax-M2.7");
+        }
+
+        let config = RcodeConfig::default();
+        assert_eq!(config.effective_model(), Some("MiniMax-M2.7".to_string()));
+
+        // SAFETY: Clean up env vars after test
+        unsafe {
+            std::env::remove_var("ANTHROPIC_MODEL");
+            std::env::remove_var("MINIMAX_MODEL");
+        }
+    }
+
+    #[test]
+    fn test_effective_model_prefers_anthropic_over_minimax() {
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::remove_var("ANTHROPIC_MODEL");
+            std::env::remove_var("MINIMAX_MODEL");
+            std::env::set_var("ANTHROPIC_MODEL", "claude-haiku-test");
+            std::env::set_var("MINIMAX_MODEL", "MiniMax-M2.7");
+        }
+
+        let config = RcodeConfig::default();
+        // ANTHROPIC_MODEL should take precedence over MINIMAX_MODEL
+        assert_eq!(
+            config.effective_model(),
+            Some("claude-haiku-test".to_string())
+        );
+
+        // SAFETY: Clean up env vars after test
+        unsafe {
+            std::env::remove_var("ANTHROPIC_MODEL");
+            std::env::remove_var("MINIMAX_MODEL");
+        }
+    }
+
+    #[test]
+    fn test_effective_model_returns_none_when_no_config_or_env() {
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::remove_var("ANTHROPIC_MODEL");
+            std::env::remove_var("MINIMAX_MODEL");
+        }
+
+        let config = RcodeConfig::default();
+        assert_eq!(config.effective_model(), None);
+    }
+
+    #[test]
+    fn test_effective_model_ignores_empty_env_var() {
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::set_var("ANTHROPIC_MODEL", "");
+            std::env::remove_var("MINIMAX_MODEL");
+        }
+
+        let config = RcodeConfig::default();
+        // Empty ANTHROPIC_MODEL should be ignored
+        assert_eq!(config.effective_model(), None);
+
+        // SAFETY: Clean up env vars after test
+        unsafe {
+            std::env::remove_var("ANTHROPIC_MODEL");
+        }
     }
 }

@@ -219,7 +219,7 @@ pub fn resolve_model_from_config(config: &RcodeConfig, cli_model: Option<&str>, 
         return Some(agent_model.to_string());
     }
 
-    config.effective_model().map(|s| s.to_string())
+    config.effective_model()
 }
 
 pub fn parse_model_id(model: &str) -> (String, String) {
