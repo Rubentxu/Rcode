@@ -1,4 +1,4 @@
-import { For, Show, Switch, Match, createSignal, onCleanup, createEffect, createMemo } from "solid-js";
+import { For, Show, Switch, Match, createSignal, onCleanup, createEffect, createMemo, onMount } from "solid-js";
 import type { Session } from "../App";
 import type { Message, MessagePart } from "../api/types";
 import { createSSEClient, type SSEClient } from "../api/sse";
@@ -12,6 +12,10 @@ import { ReasoningBlock } from "./parts/ReasoningBlock";
 import { ToolCallCard } from "./parts/ToolCallCard";
 import { ToolResultCard } from "./parts/ToolResultCard";
 import { AttachmentPart } from "./parts/AttachmentPart";
+import { StreamingTextPart } from "./parts/StreamingTextPart";
+import { StreamingToolCallCard } from "./parts/StreamingToolCallCard";
+import { ReasoningStreamPanel } from "./parts/ReasoningStreamPanel";
+import { createDraftStore, type DraftPart } from "../composables/useStreamingDraft";
 
 interface SessionViewProps {
   session: Session;
@@ -31,29 +35,46 @@ interface SessionViewProps {
 export default function SessionView(props: SessionViewProps) {
   let sseClient: SSEClient | null = null;
   let connectedSessionId: string | null = null;
-  const [streamingContent, setStreamingContent] = createSignal<string>("");
+  let scrollContainerRef: HTMLDivElement | undefined;
   
-  // Create a derived message list that includes streaming content
+  // Phase 3: Draft store for streaming parts
+  const { draft, dispatch, clear: clearDraft } = createDraftStore();
+  
+  // Phase 5: Scroll anchoring state
+  const NEAR_BOTTOM_THRESHOLD_PX = 50;
+  let isNearBottom = true;
+  let rafScheduled = false;
+
+  // Create a derived message list that includes persisted messages
   const displayMessages = () => {
-    const msgs = [...props.messages];
-    const lastMsg = msgs[msgs.length - 1];
-    if (props.isLoading && streamingContent()) {
-      if (lastMsg && lastMsg.role === "assistant") {
-        msgs[msgs.length - 1] = {
-          ...lastMsg,
-          content: lastMsg.content + streamingContent(),
-        };
-      } else {
-        msgs.push({
-          id: "streaming-assistant",
-          role: "assistant" as const,
-          content: streamingContent(),
-          created_at: new Date().toISOString(),
-        });
-      }
-    }
-    return msgs;
+    return [...props.messages];
   };
+  
+  // Phase 5: Scroll handler to track user's scroll position
+  const handleScroll = () => {
+    if (!scrollContainerRef) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef;
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+    isNearBottom = distanceFromBottom <= NEAR_BOTTOM_THRESHOLD_PX;
+  };
+  
+  // Phase 5: Scroll to bottom function
+  const scrollToBottom = () => {
+    if (!scrollContainerRef) return;
+    scrollContainerRef.scrollTop = scrollContainerRef.scrollHeight;
+  };
+  
+  // Phase 5: Auto-scroll when near bottom, using RAF to batch updates
+  createEffect(() => {
+    // Trigger on draft changes during loading
+    if (props.isLoading && draft() && isNearBottom && !rafScheduled) {
+      rafScheduled = true;
+      requestAnimationFrame(() => {
+        scrollToBottom();
+        rafScheduled = false;
+      });
+    }
+  });
 
   // Keep the per-session SSE connection open to avoid missing fast responses.
   const connectSSE = async (sessionId: string) => {
@@ -74,22 +95,51 @@ export default function SessionView(props: SessionViewProps) {
       onStatusChange: (status) => {
         props.onSSEStatusChange?.(status);
       },
+      // Legacy: accumulated text from old streaming_progress events
       onDelta: (event) => {
-        // Backend sends the full accumulated text, so replace instead of append.
-        setStreamingContent(event.accumulated_text);
+        // For backward compat, still handle legacy streaming_progress events
+        // accumulated_text is the FULL accumulated text (not a delta),
+        // so we use stream_text_snapshot to REPLACE text content, not append
+        if (event.accumulated_text) {
+          dispatch({ type: "stream_text_snapshot", session_id: sessionId, accumulated_text: event.accumulated_text });
+        }
       },
       onMessage: () => {
         props.onReloadMessages?.();
       },
       onDone: () => {
-        setStreamingContent("");
+        clearDraft();
         props.onReloadMessages?.();
         props.onComplete?.();
       },
       onError: (event) => {
         console.error("SSE error:", event.error);
-        setStreamingContent("");
+        clearDraft();
         props.onError?.(event.error);
+      },
+      // Phase 3: New semantic event callbacks
+      onTextDelta: (event) => {
+        dispatch(event);
+      },
+      onReasoningDelta: (event) => {
+        dispatch(event);
+      },
+      onToolCallStart: (event) => {
+        dispatch(event);
+      },
+      onToolCallArg: (event) => {
+        dispatch(event);
+      },
+      onToolCallEnd: (event) => {
+        dispatch(event);
+      },
+      onToolResult: (event) => {
+        dispatch(event);
+      },
+      onAssistantCommitted: () => {
+        clearDraft();
+        props.onReloadMessages?.();
+        props.onComplete?.();
       },
     });
 
@@ -105,7 +155,7 @@ export default function SessionView(props: SessionViewProps) {
 
   createEffect(() => {
     if (!props.isLoading) {
-      setStreamingContent("");
+      clearDraft();
     }
   });
 
@@ -137,32 +187,56 @@ export default function SessionView(props: SessionViewProps) {
         </h1>
         <ConnectionStatus status={props.sseStatus} />
       </header>
-      
-      <div style="flex: 1; overflow-y: auto; padding: var(--space-4);">
-        <Show when={displayMessages().length === 0} fallback={
-          <For each={displayMessages()}>
-            {(message) => (
-              <div data-component="message" data-role={message.role}>
+       
+      <div 
+        ref={scrollContainerRef}
+        style="flex: 1; overflow-y: auto; padding: var(--space-4);"
+        onScroll={handleScroll}
+      >
+        <Show when={displayMessages().length === 0 && !draft()} fallback={
+          <>
+            <For each={displayMessages()}>
+              {(message) => (
+                <div data-component="message" data-role={message.role}>
+                  <div data-component="message-header">
+                    <span style="font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; color: var(--text-muted);">
+                      {message.role}
+                    </span>
+                    <span style="font-size: var(--text-xs); color: var(--text-muted);">
+                      {new Date(message.created_at).toLocaleTimeString()}
+                    </span>
+                  </div>
+                  <div data-component="message-content">
+                    <MessageContent message={message} />
+                  </div>
+                </div>
+              )}
+            </For>
+            {/* Phase 3: Show draft message during streaming */}
+            <Show when={props.isLoading && draft()}>
+              <div data-component="message" data-role="assistant">
                 <div data-component="message-header">
                   <span style="font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; color: var(--text-muted);">
-                    {message.role}
+                    assistant
                   </span>
                   <span style="font-size: var(--text-xs); color: var(--text-muted);">
-                    {new Date(message.created_at).toLocaleTimeString()}
+                    streaming...
                   </span>
                 </div>
                 <div data-component="message-content">
-                  <MessageContent message={message} />
+                  <DraftMessageContent parts={draft()!.parts} />
                 </div>
               </div>
-            )}
-          </For>
+            </Show>
+          </>
         }>
-          <div data-component="empty-state" style="height: 200px;">
-            <p data-component="empty-state-description">
-              Start a conversation by typing a message below
-            </p>
-          </div>
+          <Show when={displayMessages().length === 0 && !draft()}>
+            <div data-component="empty-state" style="height: 200px;">
+              <p data-component="empty-state-description">
+                Start a conversation by typing a message below
+              </p>
+            </div>
+          </Show>
         </Show>
       </div>
 
@@ -292,6 +366,52 @@ function LegacyContent(props: { content: string }) {
       </div>
     </Show>
   );
+}
+
+// Phase 3: Renders structured draft parts during streaming
+function DraftMessageContent(props: { parts: DraftPart[] }) {
+  return (
+    <div data-component="draft-parts">
+      <For each={props.parts}>
+        {(part) => <DraftPartRenderer part={part} />}
+      </For>
+    </div>
+  );
+}
+
+// Phase 3: Router for draft part types during streaming
+function DraftPartRenderer(props: { part: DraftPart }) {
+  const partType = props.part.type;
+  
+  if (partType === "text") {
+    return <StreamingTextPart content={props.part.content} />;
+  }
+  
+  if (partType === "reasoning") {
+    return <ReasoningStreamPanel content={props.part.content} />;
+  }
+  
+  if (partType === "tool_call") {
+    return (
+      <StreamingToolCallCard 
+        id={props.part.id}
+        name={props.part.name}
+        arguments_delta={props.part.arguments_delta}
+        status={props.part.status}
+      />
+    );
+  }
+  
+  if (partType === "tool_result") {
+    return <ToolResultCard 
+      tool_call_id={props.part.tool_call_id} 
+      content={props.part.content} 
+      is_error={props.part.is_error} 
+    />;
+  }
+  
+  // Unknown part type - silently skip
+  return null;
 }
 
 function ConnectionStatus(props: { status: "connected" | "connecting" | "disconnected" }) {

@@ -60,7 +60,64 @@ export interface SSEErrorEvent {
   error: string;
 }
 
-export type SSEEventData = SSEMessageEvent | SSEDeltaEvent | SSEDoneEvent | SSEErrorEvent;
+// Phase 3: New semantic SSE event types
+export interface SSEStreamTextDelta {
+  type: "stream_text_delta";
+  session_id: string;
+  delta: string;
+}
+
+// Legacy: full accumulated text from streaming_progress events
+// Unlike stream_text_delta (which appends), this REPLACES the text content
+export interface SSEStreamTextSnapshot {
+  type: "stream_text_snapshot";
+  session_id: string;
+  accumulated_text: string;
+}
+
+export interface SSEStreamReasoningDelta {
+  type: "stream_reasoning_delta";
+  session_id: string;
+  delta: string;
+}
+
+export interface SSEStreamToolCallStart {
+  type: "stream_tool_call_start";
+  session_id: string;
+  tool_call_id: string;
+  name: string;
+}
+
+export interface SSEStreamToolCallArg {
+  type: "stream_tool_call_args_delta";
+  session_id: string;
+  tool_call_id: string;
+  value: string;
+}
+
+export interface SSEStreamToolCallEnd {
+  type: "stream_tool_call_end";
+  session_id: string;
+  tool_call_id: string;
+}
+
+export interface SSEStreamToolResult {
+  type: "stream_tool_result";
+  session_id: string;
+  tool_call_id: string;
+  content: string;
+  is_error: boolean;
+}
+
+export interface SSEStreamAssistantCommitted {
+  type: "stream_assistant_committed";
+  session_id: string;
+}
+
+export type SSEEventData = SSEMessageEvent | SSEDeltaEvent | SSEDoneEvent | SSEErrorEvent 
+  | SSEStreamTextDelta | SSEStreamReasoningDelta | SSEStreamToolCallStart 
+  | SSEStreamToolCallArg | SSEStreamToolCallEnd | SSEStreamToolResult 
+  | SSEStreamAssistantCommitted;
 
 // Connection status
 export type SSEStatus = "connected" | "connecting" | "disconnected";
@@ -74,4 +131,12 @@ export interface SSEConfig {
   onDone?: (event: SSEDoneEvent) => void;
   onError?: (event: SSEErrorEvent) => void;
   onStatusChange?: (status: SSEStatus) => void;
+  // Phase 3: New semantic event callbacks
+  onTextDelta?: (event: SSEStreamTextDelta) => void;
+  onReasoningDelta?: (event: SSEStreamReasoningDelta) => void;
+  onToolCallStart?: (event: SSEStreamToolCallStart) => void;
+  onToolCallArg?: (event: SSEStreamToolCallArg) => void;
+  onToolCallEnd?: (event: SSEStreamToolCallEnd) => void;
+  onToolResult?: (event: SSEStreamToolResult) => void;
+  onAssistantCommitted?: (event: SSEStreamAssistantCommitted) => void;
 }

@@ -212,6 +212,13 @@ pub struct AgentExecutor {
 }
 
 impl AgentExecutor {
+    /// Helper to publish an event to the event bus if available
+    fn publish_event(&self, event: rcode_event::Event) {
+        if let Some(ref event_bus) = self.event_bus {
+            event_bus.publish(event);
+        }
+    }
+
     pub fn new(
         agent: Arc<dyn Agent>,
         provider: Arc<dyn LlmProvider>,
@@ -515,6 +522,11 @@ impl AgentExecutor {
                             match event {
                                 StreamingEvent::Text { delta } => {
                                     debug!(session_id = %ctx.session_id, delta_len = delta.len(), "received text delta");
+                                    // Publish immediate text delta event (additive to legacy StreamingProgress)
+                                    self.publish_event(rcode_event::Event::StreamTextDelta {
+                                        session_id: ctx.session_id.clone(),
+                                        delta: delta.clone(),
+                                    });
                                     let new_text = Arc::clone(&accumulated_text);
                                     let mut text = (*new_text).clone();
                                     text.push_str(&delta);
@@ -532,6 +544,11 @@ impl AgentExecutor {
                                 }
                                 StreamingEvent::Reasoning { delta } => {
                                     debug!(session_id = %ctx.session_id, delta_len = delta.len(), "received reasoning delta");
+                                    // Publish immediate reasoning delta event (additive to legacy StreamingProgress)
+                                    self.publish_event(rcode_event::Event::StreamReasoningDelta {
+                                        session_id: ctx.session_id.clone(),
+                                        delta: delta.clone(),
+                                    });
                                     let new_reasoning = Arc::clone(&accumulated_reasoning);
                                     let mut reasoning = (*new_reasoning).clone();
                                     reasoning.push_str(&delta);
@@ -548,11 +565,23 @@ impl AgentExecutor {
                                 }
                                 StreamingEvent::ToolCallStart { id, name } => {
                                     info!(session_id = %ctx.session_id, tool_call_id = %id, tool_name = %name, "tool call started");
+                                    // Publish immediate tool call start event
+                                    self.publish_event(rcode_event::Event::StreamToolCallStart {
+                                        session_id: ctx.session_id.clone(),
+                                        tool_call_id: id.clone(),
+                                        name: name.clone(),
+                                    });
                                     active_tool_call = Some((id, name, String::new()));
                                 }
                                 StreamingEvent::ToolCallArg { id, name: _, value } => {
                                     if let Some(ref mut active) = active_tool_call {
                                         if active.0 == id {
+                                            // Publish immediate tool call arg event
+                                            self.publish_event(rcode_event::Event::StreamToolCallArg {
+                                                session_id: ctx.session_id.clone(),
+                                                tool_call_id: id.clone(),
+                                                value: value.clone(),
+                                            });
                                             active.2.push_str(&value);
                                         }
                                     }
@@ -561,6 +590,11 @@ impl AgentExecutor {
                                     info!(session_id = %ctx.session_id, tool_call_id = %id, "tool call completed in stream");
                                     if let Some(ref active) = active_tool_call {
                                         if active.0 == id {
+                                            // Publish immediate tool call end event
+                                            self.publish_event(rcode_event::Event::StreamToolCallEnd {
+                                                session_id: ctx.session_id.clone(),
+                                                tool_call_id: id.clone(),
+                                            });
                                             let args: serde_json::Value = serde_json::from_str(&active.2).unwrap_or_else(|e| {
                                                 tracing::warn!("Failed to parse tool call arguments: {}", e);
                                                 serde_json::json!({})
@@ -660,6 +694,10 @@ impl AgentExecutor {
                 session_id: ctx.session_id.clone(),
                 message_id: assistant_msg.id.0.clone(),
             });
+            // Publish stream assistant committed event
+            event_bus.publish(rcode_event::Event::StreamAssistantCommitted {
+                session_id: ctx.session_id.clone(),
+            });
         }
 
         // If no tool calls, we're done
@@ -732,6 +770,13 @@ impl AgentExecutor {
                 Ok((id, name, Ok(r))) => {
                     info!("Tool {} executed successfully", name);
                     tool_results.push(Part::ToolResult {
+                        tool_call_id: id.clone(),
+                        content: r.content.clone(),
+                        is_error: false,
+                    });
+                    // Publish stream tool result event
+                    self.publish_event(rcode_event::Event::StreamToolResult {
+                        session_id: ctx.session_id.clone(),
                         tool_call_id: id,
                         content: r.content,
                         is_error: false,
@@ -739,9 +784,17 @@ impl AgentExecutor {
                 }
                 Ok((id, _, Err(e))) => {
                     warn!("Tool {} failed: {}", id, e);
+                    let err_content = format!("Error: {}", e);
                     tool_results.push(Part::ToolResult {
+                        tool_call_id: id.clone(),
+                        content: err_content.clone(),
+                        is_error: true,
+                    });
+                    // Publish stream tool result event for error case
+                    self.publish_event(rcode_event::Event::StreamToolResult {
+                        session_id: ctx.session_id.clone(),
                         tool_call_id: id,
-                        content: format!("Error: {}", e),
+                        content: err_content,
                         is_error: true,
                     });
                 }

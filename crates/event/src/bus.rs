@@ -50,6 +50,14 @@ pub enum Event {
         granted: bool,
         reason: Option<String>,
     },
+    // Phase 3 streaming events - additive alongside legacy StreamingProgress
+    StreamTextDelta { session_id: String, delta: String },
+    StreamReasoningDelta { session_id: String, delta: String },
+    StreamToolCallStart { session_id: String, tool_call_id: String, name: String },
+    StreamToolCallArg { session_id: String, tool_call_id: String, value: String },
+    StreamToolCallEnd { session_id: String, tool_call_id: String },
+    StreamToolResult { session_id: String, tool_call_id: String, content: String, is_error: bool },
+    StreamAssistantCommitted { session_id: String },
 }
 
 impl Event {
@@ -78,6 +86,13 @@ impl Event {
             Event::PluginDeactivated { .. } => "plugin_deactivated",
             Event::PermissionRequested { .. } => "permission_requested",
             Event::PermissionResolved { .. } => "permission_resolved",
+            Event::StreamTextDelta { .. } => "stream_text_delta",
+            Event::StreamReasoningDelta { .. } => "stream_reasoning_delta",
+            Event::StreamToolCallStart { .. } => "stream_tool_call_start",
+            Event::StreamToolCallArg { .. } => "stream_tool_call_args_delta",
+            Event::StreamToolCallEnd { .. } => "stream_tool_call_end",
+            Event::StreamToolResult { .. } => "stream_tool_result",
+            Event::StreamAssistantCommitted { .. } => "stream_assistant_committed",
         }
     }
     
@@ -106,6 +121,13 @@ impl Event {
             Event::PluginDeactivated { .. } => None,
             Event::PermissionRequested { session_id, .. } => Some(session_id),
             Event::PermissionResolved { session_id, .. } => Some(session_id),
+            Event::StreamTextDelta { session_id, .. } => Some(session_id),
+            Event::StreamReasoningDelta { session_id, .. } => Some(session_id),
+            Event::StreamToolCallStart { session_id, .. } => Some(session_id),
+            Event::StreamToolCallArg { session_id, .. } => Some(session_id),
+            Event::StreamToolCallEnd { session_id, .. } => Some(session_id),
+            Event::StreamToolResult { session_id, .. } => Some(session_id),
+            Event::StreamAssistantCommitted { session_id, .. } => Some(session_id),
         }
     }
 }
