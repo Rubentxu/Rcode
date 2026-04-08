@@ -7,6 +7,7 @@ import Terminal from "./components/Terminal";
 import { Settings } from "./components/Settings";
 import { ToastContainer, showToast } from "./components/Toast";
 import { getApiBase } from "./api/config";
+import type { Message, MessagePart } from "./api/types";
 
 export interface Session {
   id: string;
@@ -14,13 +15,6 @@ export interface Session {
   status: "idle" | "running" | "completed";
   updated_at: string;
   model_id?: string;
-}
-
-export interface Message {
-  id: string;
-  role: "user" | "assistant" | "system";
-  content: string;
-  created_at: string;
 }
 
 interface PromptResponse {
@@ -47,32 +41,6 @@ const mockResponses = [
   "Here's a code suggestion:\n```rust\nfn process_data(input: &str) -> Result<String, Error> {\n    // Implementation here\n    Ok(input.to_string())\n}\n```",
   "I've identified the issue. The problem is in the data flow. Let me explain...",
 ];
-
-function flattenMessageParts(parts: any[] | undefined): string {
-  if (!Array.isArray(parts)) {
-    return "";
-  }
-
-  return parts
-    .map((part: any) => {
-      switch (part?.type) {
-        case "text":
-          return part.content || "";
-        case "reasoning":
-          return part.content || "";
-        case "tool_result":
-          return part.content || "";
-        case "tool_call":
-          return part.name ? `[Tool call: ${part.name}]` : "";
-        case "attachment":
-          return part.name ? `[Attachment: ${part.name}]` : "";
-        default:
-          return "";
-      }
-    })
-    .filter((value: string) => value.trim().length > 0)
-    .join("\n\n");
-}
 
 function normalizeMessageId(id: unknown): string {
   if (typeof id === "string") {
@@ -163,25 +131,25 @@ export default function App() {
           total: data.total,
           count: Array.isArray(data.messages) ? data.messages.length : 0,
         });
-        const flatMessages: Message[] = (data.messages || []).map((m: any) => {
-          const content = flattenMessageParts(m.parts) || m.content || "";
-
+        // Preserve structured parts from backend; keep content for backward compat
+        const structuredMessages: Message[] = (data.messages || []).map((m: any) => {
           console.debug("Loaded message", {
             sessionId,
             messageId: normalizeMessageId(m.id),
             role: m.role,
             partTypes: Array.isArray(m.parts) ? m.parts.map((p: any) => p?.type) : [],
-            contentLength: content.length,
+            hasParts: Array.isArray(m.parts) && m.parts.length > 0,
           });
           
           return {
             id: normalizeMessageId(m.id),
             role: typeof m.role === 'string' ? m.role.toLowerCase() : 'user',
-            content,
+            content: m.content || "",
             created_at: m.created_at,
+            parts: m.parts as MessagePart[] | undefined,
           };
         });
-        setMessages(flatMessages);
+        setMessages(structuredMessages);
       } else {
         console.error("Failed to load messages", { sessionId, status: response.status, statusText: response.statusText });
       }
