@@ -28,7 +28,7 @@ pub use mock::MockLlmProvider;
 pub use credentials::{load_api_key, resolve_api_key};
 pub use rate_limit::TokenBucket;
 pub use factory::{ProviderFactory, ModelInfo};
-pub use catalog::{ModelCatalogService, CatalogModel, ListModelsResponse, ModelSource, FALLBACK_MODELS};
+pub use catalog::{ModelCatalogService, CatalogModel, ListModelsResponse, ModelSource, FALLBACK_MODELS, CacheStore, DiscoveryIdentity};
 pub use google::GoogleProvider;
 pub use minimax::MiniMaxProvider;
 pub use openrouter::OpenRouterProvider;

@@ -74,7 +74,7 @@ pub async fn create_session(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<Json<Session>, ServerError> {
-    let model = state.config.lock().unwrap().effective_model().unwrap_or("claude-sonnet-4-5").to_string();
+    let model = state.config.lock().unwrap().effective_model().unwrap_or_else(|| "claude-sonnet-4-5".to_string());
     
     let session = if let Some(ref parent_id) = req.parent_id {
         // T11: Create child session inheriting parent's project_path
@@ -282,10 +282,11 @@ pub async fn submit_prompt(
     let compact_keep_messages = config.compact_keep_messages;
     
     // Resolve title model: small_model > model_for_agent("title") > effective_model
+    // Note: effective_model() returns Option<String>, so we convert others to String for consistency
     let title_model = config.effective_small_model()
-        .or_else(|| config.model_for_agent("title"))
-        .or_else(|| config.effective_model())
-        .map(|s| s.to_string());
+        .map(|s| s.to_string())
+        .or_else(|| config.model_for_agent("title").map(|s| s.to_string()))
+        .or_else(|| config.effective_model());
 
     if let Some(command) = parse_fast_path_shell_command(&req.prompt, allowed_tools.as_deref()) {
         drop(config);
@@ -831,11 +832,8 @@ pub struct CatalogModelDto {
 pub async fn list_models(
     State(state): State<Arc<AppState>>,
 ) -> axum::Json<ListModelsResponse> {
-    use rcode_providers::catalog::ModelCatalogService;
-    
     let config = (*state.config.lock().unwrap()).clone();
-    let catalog = ModelCatalogService::new();
-    let models = catalog.list_models(&config).await;
+    let models = state.catalog.list_models(&config).await;
     
     let dto_models: Vec<CatalogModelDto> = models.into_iter().map(|m| {
         CatalogModelDto {

@@ -57,6 +57,12 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
         CREATE INDEX IF NOT EXISTS idx_message_parts_message ON message_parts(message_id);
         CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
+        
+        CREATE TABLE IF NOT EXISTS model_catalog_cache (
+            provider_id TEXT PRIMARY KEY,
+            models TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         "#,
     )?;
 

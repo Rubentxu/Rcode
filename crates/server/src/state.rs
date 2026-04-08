@@ -8,13 +8,15 @@ use rcode_core::{RcodeConfig, SubagentRunner};
 use rcode_event::EventBus;
 use rcode_lsp::LanguageServerRegistry;
 use rcode_providers::catalog::ModelCatalogService;
+use rcode_providers::CacheStore;
 use rcode_providers::{LlmProvider, ProviderRegistry};
 use rcode_session::SessionService;
-use rcode_storage::{schema, MessageRepository, SessionRepository};
+use rcode_storage::{schema, catalog_cache::CatalogCacheRepository, MessageRepository, SessionRepository};
 use rcode_tools::ToolRegistryService;
 use rusqlite::Connection;
 use tokio::sync::Mutex as TokioMutex;
 
+use crate::cache_store_impl::ServerCacheStore;
 use crate::cancellation::CancellationRegistry;
 use crate::subagent_runner_impl::ServerSubagentRunner;
 
@@ -94,12 +96,15 @@ impl AppState {
         let db_path = create_storage_path();
         tracing::info!("Using database at: {:?}", db_path);
 
+        // ---- Path 1: Database initialization fails ----
         let conn = match Connection::open(&db_path) {
             Ok(conn) => conn,
             Err(e) => {
                 tracing::warn!("Failed to open database, using in-memory storage: {}", e);
                 let session_service = Arc::new(SessionService::new(event_bus.clone()));
                 let lsp_registry = Arc::new(LanguageServerRegistry::new());
+                let catalog = Arc::new(ModelCatalogService::new());
+                catalog.refresh_all_in_background(config.clone());
                 return Self {
                     session_service: session_service.clone(),
                     event_bus,
@@ -108,7 +113,7 @@ impl AppState {
                         session_service.clone(),
                     )),
                     config: Arc::new(std::sync::Mutex::new(config)),
-                    catalog: Arc::new(ModelCatalogService::new()),
+                    catalog,
                     cancellation: Arc::new(CancellationRegistry::new()),
                     permission_services: Arc::new(TokioMutex::new(HashMap::new())),
                     lsp_registry,
@@ -117,6 +122,7 @@ impl AppState {
             }
         };
 
+        // ---- Path 2: Schema initialization fails ----
         if let Err(e) = schema::init_schema(&conn) {
             tracing::warn!(
                 "Failed to initialize schema, using in-memory storage: {}",
@@ -124,6 +130,8 @@ impl AppState {
             );
             let session_service = Arc::new(SessionService::new(event_bus.clone()));
             let lsp_registry = Arc::new(LanguageServerRegistry::new());
+            let catalog = Arc::new(ModelCatalogService::new());
+            catalog.refresh_all_in_background(config.clone());
             return Self {
                 session_service: session_service.clone(),
                 event_bus,
@@ -132,7 +140,7 @@ impl AppState {
                     session_service.clone(),
                 )),
                 config: Arc::new(std::sync::Mutex::new(config)),
-                catalog: Arc::new(ModelCatalogService::new()),
+                catalog,
                 cancellation: Arc::new(CancellationRegistry::new()),
                 permission_services: Arc::new(TokioMutex::new(HashMap::new())),
                 lsp_registry,
@@ -140,13 +148,15 @@ impl AppState {
             };
         }
 
-        // Open a second connection for MessageRepository since Connection doesn't implement Clone
+        // ---- Path 3: Second connection (message repo) fails ----
         let message_conn = match Connection::open(&db_path) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("Failed to open second database connection: {}", e);
                 let session_service = Arc::new(SessionService::new(event_bus.clone()));
                 let lsp_registry = Arc::new(LanguageServerRegistry::new());
+                let catalog = Arc::new(ModelCatalogService::new());
+                catalog.refresh_all_in_background(config.clone());
                 return Self {
                     session_service: session_service.clone(),
                     event_bus,
@@ -155,7 +165,7 @@ impl AppState {
                         session_service.clone(),
                     )),
                     config: Arc::new(std::sync::Mutex::new(config)),
-                    catalog: Arc::new(ModelCatalogService::new()),
+                    catalog,
                     cancellation: Arc::new(CancellationRegistry::new()),
                     permission_services: Arc::new(TokioMutex::new(HashMap::new())),
                     lsp_registry,
@@ -164,8 +174,44 @@ impl AppState {
             }
         };
 
+        // ---- Path 4: Third connection (cache repo) fails ----
+        let cache_conn = match Connection::open(&db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Failed to open third database connection for cache: {}", e);
+                // Continue without cache store
+                let session_repo = SessionRepository::new(conn);
+                let message_repo = MessageRepository::new(message_conn);
+                let session_service = Arc::new(SessionService::with_storage(
+                    event_bus.clone(),
+                    session_repo,
+                    message_repo,
+                ));
+                let lsp_registry = Arc::new(LanguageServerRegistry::new());
+                let catalog = Arc::new(ModelCatalogService::new());
+                catalog.refresh_all_in_background(config.clone());
+                return Self {
+                    session_service: session_service.clone(),
+                    event_bus,
+                    providers: Arc::new(std::sync::Mutex::new(ProviderRegistry::new())),
+                    tools: Arc::new(ToolRegistryService::with_session_service(
+                        session_service.clone(),
+                    )),
+                    config: Arc::new(std::sync::Mutex::new(config)),
+                    catalog,
+                    cancellation: Arc::new(CancellationRegistry::new()),
+                    permission_services: Arc::new(TokioMutex::new(HashMap::new())),
+                    lsp_registry,
+                    mock_provider: Arc::new(std::sync::Mutex::new(None)),
+                };
+            }
+        };
+
+        // ---- Success path: All connections opened ----
         let session_repo = SessionRepository::new(conn);
         let message_repo = MessageRepository::new(message_conn);
+        let cache_repo = CatalogCacheRepository::new(cache_conn);
+        let cache_store = Arc::new(ServerCacheStore::new(cache_repo));
 
         let session_service = Arc::new(SessionService::with_storage(
             event_bus.clone(),
@@ -196,13 +242,18 @@ impl AppState {
             }
         });
 
+        // Create catalog with cache store and trigger background warmup
+        let cache_store_for_catalog: Arc<dyn CacheStore> = cache_store;
+        let catalog = Arc::new(ModelCatalogService::with_cache_store(Some(cache_store_for_catalog)));
+        catalog.refresh_all_in_background(config.clone());
+
         Self {
             session_service: session_service.clone(),
             event_bus,
             providers: Arc::new(std::sync::Mutex::new(ProviderRegistry::new())),
             tools,
             config: Arc::new(std::sync::Mutex::new(config)),
-            catalog: Arc::new(ModelCatalogService::new()),
+            catalog,
             cancellation: Arc::new(CancellationRegistry::new()),
             permission_services: Arc::new(TokioMutex::new(HashMap::new())),
             lsp_registry,
