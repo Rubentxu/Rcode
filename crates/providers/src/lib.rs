@@ -21,6 +21,7 @@ pub mod rate_limit;
 pub mod factory;
 pub mod zai;
 pub mod catalog;
+pub mod resolution;
 
 pub use provider_trait::LlmProvider;
 pub use registry::ProviderRegistry;

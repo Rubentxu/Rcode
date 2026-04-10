@@ -46,7 +46,7 @@ impl Agent for DynamicAgent {
     fn supported_tools(&self) -> Vec<String> {
         self.definition.tools.clone()
     }
-    
+
     fn is_hidden(&self) -> bool {
         self.definition.hidden
     }
@@ -56,9 +56,11 @@ impl Agent for DynamicAgent {
         // The actual execution logic is handled by AgentExecutor
         // This method exists to satisfy the Agent trait
         Ok(AgentResult {
-            message: ctx.messages.last().cloned().unwrap_or_else(|| {
-                crate::Message::assistant(ctx.session_id.clone(), vec![])
-            }),
+            message: ctx
+                .messages
+                .last()
+                .cloned()
+                .unwrap_or_else(|| crate::Message::assistant(ctx.session_id.clone(), vec![])),
             should_continue: false,
             stop_reason: StopReason::EndOfTurn,
             usage: None,

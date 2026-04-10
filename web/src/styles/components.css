@@ -177,8 +177,13 @@
 }
 
 [data-component="message"][data-role="user"] [data-component="message-content"] {
-  background: var(--accent);
-  color: white;
+  background: var(--surface-container);
+  color: var(--on-surface);
+  border: 1px solid rgba(67, 70, 86, 0.1);
+  border-radius: 1.5rem;
+  border-top-right-radius: 0.25rem;
+  padding: 1.25rem;
+  max-width: 42rem;
 }
 
 [data-component="message"][data-role="assistant"] {
@@ -186,7 +191,7 @@
 }
 
 [data-component="message"][data-role="assistant"] [data-component="message-content"] {
-  background: var(--bg-tertiary);
+  background: var(--surface-container);
   color: var(--text-primary);
 }
 
@@ -704,4 +709,535 @@
     opacity: 1;
     transform: translateX(0);
   }
+}
+
+/* ==============================
+   Conversational Turn Layout
+   ============================== */
+
+/* Turn groups — wraps one or more messages from the same role */
+.turn {
+  display: flex;
+  gap: var(--space-3);
+  margin-bottom: var(--turn-spacing);
+  max-width: var(--transcript-max-width);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.turn--user {
+  flex-direction: row-reverse;
+  align-items: flex-start;
+}
+
+.turn--assistant {
+  flex-direction: row;
+  align-items: flex-start;
+}
+
+.turn--system {
+  flex-direction: row;
+  justify-content: center;
+  align-items: center;
+}
+
+/* Avatar slot in a turn */
+.turn-avatar {
+  flex-shrink: 0;
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--avatar-font-size);
+  font-weight: 600;
+  user-select: none;
+}
+
+.turn--user .turn-avatar {
+  background: var(--avatar-user-bg);
+  color: var(--avatar-user-color);
+}
+
+.turn--assistant .turn-avatar {
+  background: var(--avatar-assistant-bg);
+  color: var(--avatar-assistant-color);
+  border: 1px solid rgba(67, 70, 86, 0.2);
+}
+
+.turn--system .turn-avatar {
+  background: var(--avatar-system-bg);
+  color: var(--avatar-system-color);
+  width: 24px;
+  height: 24px;
+  font-size: 10px;
+}
+
+/* Turn content area */
+.turn-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: calc(var(--transcript-max-width) - var(--avatar-size) - var(--space-3));
+}
+
+.turn--user .turn-content {
+  align-items: flex-end;
+}
+
+.turn--assistant .turn-content {
+  align-items: flex-start;
+}
+
+.turn--system .turn-content {
+  align-items: center;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* Individual message inside a turn — uses existing .message data-component */
+.turn .message {
+  margin-bottom: 0;
+  width: 100%;
+}
+
+/* Transcript container — centers messages with reading-width lock */
+[data-component="transcript"] {
+  max-width: var(--transcript-max-width);
+  margin: 0 auto;
+  padding: 0 var(--space-4);
+}
+
+/* ==============================
+   Process Details (Collapsible)
+   ============================== */
+
+/* Wrapper for reasoning / tool activity — de-emphasized by default */
+[data-component="process-details"] {
+  border: 1px solid var(--process-details-border);
+  border-radius: var(--radius-md);
+  background: var(--process-details-bg);
+  overflow: hidden;
+  transition: all var(--transition-fast);
+}
+
+[data-component="process-details-summary"] {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  user-select: none;
+  font-size: var(--text-xs);
+  color: var(--process-details-summary-color);
+  transition: background var(--transition-fast);
+}
+
+[data-component="process-details-summary"]:hover {
+  background: var(--bg-tertiary);
+}
+
+[data-component="process-details-content"] {
+  padding: var(--space-3);
+  border-top: 1px solid var(--process-details-border);
+  background: var(--bg-primary);
+}
+
+/* Expanded state — more prominent (uses native <details open> attribute) */
+[data-component="process-details"][open] {
+  border-color: var(--border-strong);
+}
+
+[data-component="process-details-icon"] {
+  font-size: 10px;
+  width: 12px;
+  text-align: center;
+}
+
+/* Success / error indicators in collapsed summary */
+[data-component="process-details"][data-status="success"] [data-component="process-details-summary"] {
+  color: var(--success);
+}
+
+[data-component="process-details"][data-status="error"] [data-component="process-details-summary"] {
+  color: var(--error);
+}
+
+/* ==============================
+   Streaming Skeleton (Optimistic Shell)
+   SS-1: Skeleton appears immediately on submit before any SSE delta arrives
+   SS-3: Smooth transition from skeleton to streaming content
+   ============================== */
+
+/* Skeleton line - pulsing placeholder for streaming text */
+[data-component="skeleton-line"] {
+  display: inline-block;
+  height: 14px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-tertiary) 25%,
+    var(--bg-elevated) 50%,
+    var(--bg-tertiary) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: var(--radius-sm);
+  color: transparent;
+  user-select: none;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* Skeleton container for draft message content */
+[data-component="skeleton-content"] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+}
+
+/* Abort button inside the assistant shell (SS-2: moved from bottom bar) */
+[data-component="shell-abort"] {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  font-size: var(--text-xs);
+  background: transparent;
+  color: var(--error);
+  border: 1px solid var(--error);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+[data-component="shell-abort"]:hover {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* Assistant shell header with abort control */
+[data-component="shell-header"] {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Draft turn with skeleton state - de-emphasized until first delta */
+.turn--assistant[data-streaming="optimistic"] {
+  opacity: 0.8;
+}
+
+.turn--assistant[data-streaming="optimistic"] .turn-avatar {
+  opacity: 0.6;
+}
+
+/* SS-2: Remove bottom processing bar - abort now lives inside shell */
+/* (The bottom bar markup is removed from SessionView.tsx) */
+
+/* ==============================
+   Quick Actions (Per-Message)
+   MQA-4: Actions hidden until hover/focus
+   ============================== */
+
+/* Quick actions container - hidden by default */
+[data-component="message-actions"] {
+  display: flex;
+  gap: var(--space-1);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+  pointer-events: none;
+}
+
+/* Show on hover/focus within the message row - MQA-4 */
+[data-component="message"]:hover [data-component="message-actions"],
+[data-component="message"]:focus-within [data-component="message-actions"],
+[data-component="message"][data-actions-visible="true"] [data-component="message-actions"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Quick action button styling */
+.quick-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.quick-action-btn:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.quick-action-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.quick-action-btn:active {
+  transform: scale(0.95);
+}
+
+/* Disabled state for copy button after success */
+.quick-action-btn[data-action="copy"][disabled] {
+  color: var(--success);
+  border-color: var(--success);
+}
+
+/* MQA-5: Visual feedback already handled by Toast component */
+/* Copy success feedback shows as Toast notification */
+
+/* Branch icon styling */
+.quick-action-btn[data-action="branch"]:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Disabled state for branch button (not yet implemented) */
+.quick-action-btn[data-action="branch"][disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* Retry icon styling */
+.quick-action-btn[data-action="retry"]:hover {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+/* ==============================
+   Reasoning Stream Panel
+   ============================== */
+
+[data-component="reasoning-stream-panel"] {
+  background: var(--surface-container-low);
+  border-left: 2px solid rgba(78, 222, 163, 0.3);
+  border: 1px solid rgba(67, 70, 86, 0.1);
+  padding: 1rem;
+  border-radius: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+[data-component="reasoning-stream-panel"] .reasoning-icon {
+  font-size: 0.875rem;
+}
+
+[data-component="reasoning-stream-panel"] .reasoning-text {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--on-surface-variant);
+  opacity: 0.8;
+  white-space: pre-wrap;
+}
+
+/* ==============================
+   Streaming Tool Call Card
+   ============================== */
+
+[data-component="streaming-tool-call-card"] {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--surface-container-lowest);
+  border: 1px solid rgba(67, 70, 86, 0.2);
+  padding: 0.5rem 1rem;
+  border-radius: 9999px;
+  width: fit-content;
+  margin-bottom: 0.5rem;
+}
+
+[data-component="streaming-tool-call-card"] .tool-call-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+[data-component="streaming-tool-call-card"] .tool-status-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+[data-component="streaming-tool-call-card"] .status-complete {
+  color: var(--secondary);
+}
+
+[data-component="streaming-tool-call-card"] .status-running {
+  color: var(--tertiary);
+  animation: spin 1s linear infinite;
+}
+
+[data-component="streaming-tool-call-card"] .tool-name {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--primary);
+}
+
+[data-component="streaming-tool-call-card"] .toggle-expand {
+  background: none;
+  border: none;
+  color: var(--outline);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem;
+  margin-left: 0.5rem;
+}
+
+[data-component="streaming-tool-call-card"] .toggle-expand:hover {
+  color: var(--on-surface);
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ==============================
+   Text Part (Markdown Content)
+   ============================== */
+
+[data-part="text"] {
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: var(--on-surface);
+}
+
+[data-part="text"] h1,
+[data-part="text"] h2,
+[data-part="text"] h3,
+[data-part="text"] h4 {
+  font-weight: 600;
+  color: var(--on-surface);
+  margin-top: 1em;
+  margin-bottom: 0.5em;
+}
+
+[data-part="text"] h1 { font-size: 1.5rem; }
+[data-part="text"] h2 { font-size: 1.25rem; }
+[data-part="text"] h3 { font-size: 1.125rem; }
+[data-part="text"] h4 { font-size: 1rem; }
+
+[data-part="text"] p {
+  margin-bottom: 0.75em;
+}
+
+[data-part="text"] ul,
+[data-part="text"] ol {
+  margin-left: 1.5em;
+  margin-bottom: 0.75em;
+}
+
+[data-part="text"] li {
+  margin-bottom: 0.25em;
+}
+
+[data-part="text"] code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: var(--surface-container);
+  padding: 0.125em 0.375em;
+  border-radius: 0.25rem;
+}
+
+[data-part="text"] pre {
+  background: var(--surface-container);
+  padding: 1rem;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+  margin: 0.75em 0;
+}
+
+[data-part="text"] pre code {
+  background: none;
+  padding: 0;
+}
+
+[data-part="text"] table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+}
+
+[data-part="text"] th,
+[data-part="text"] td {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  border-bottom: 1px solid var(--outline-variant);
+}
+
+[data-part="text"] th {
+  font-size: 0.625rem;
+  font-weight: 800;
+  color: var(--outline);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  background: rgba(38, 42, 49, 0.5);
+}
+
+[data-part="text"] tr:hover td {
+  background: rgba(28, 32, 38, 0.5);
+}
+
+/* ==============================
+   Tool Result Card Styling
+   ============================== */
+
+.tool-result-card {
+  border-radius: 0.5rem;
+  overflow: hidden;
+  border: 1px solid var(--outline-variant);
+  background: var(--surface-container-low);
+  margin-bottom: 0.5rem;
+}
+
+.tool-result-card[data-status="success"] {
+  border-color: rgba(78, 222, 163, 0.2);
+}
+
+/* ==============================
+   Streaming Text Part
+   ============================== */
+
+[data-component="streaming-text-part"] .text-part {
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+[data-component="streaming-text-part"] .completed-block {
+  opacity: 1;
+}
+
+[data-component="streaming-text-part"] .active-block {
+  opacity: 0.9;
+}
+
+/* ==============================
+   Draft Message Styling
+   ============================== */
+
+[data-component="draft-parts"] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
 }

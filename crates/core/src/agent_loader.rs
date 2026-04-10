@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::agent_definition::AgentDefinition;
-use crate::error::{Result, RCodeError};
+use crate::error::{RCodeError, Result};
 
 /// Loader for discovering and loading custom agents from filesystem
 pub struct AgentLoader {
@@ -31,7 +31,9 @@ impl AgentLoader {
 
     /// Create an AgentLoader with custom search paths
     pub fn with_paths(paths: Vec<PathBuf>) -> Self {
-        Self { search_paths: paths }
+        Self {
+            search_paths: paths,
+        }
     }
 
     /// Add a search path
@@ -67,7 +69,7 @@ impl AgentLoader {
             .filter_map(|e| e.ok())
         {
             let file_name = entry.file_name();
-            
+
             // Look for agent.json files
             if file_name == "agent.json" {
                 match self.load_from_file(entry.path()).await {
@@ -76,7 +78,11 @@ impl AgentLoader {
                         agents.push(agent);
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to load agent from {}: {}", entry.path().display(), e);
+                        tracing::warn!(
+                            "Failed to load agent from {}: {}",
+                            entry.path().display(),
+                            e
+                        );
                     }
                 }
             }
@@ -87,16 +93,25 @@ impl AgentLoader {
 
     /// Load a single agent from a JSON file
     async fn load_from_file(&self, path: &Path) -> Result<AgentDefinition> {
-        let content = tokio::fs::read_to_string(path)
-            .await
-            .map_err(|e| RCodeError::Config(format!("Failed to read agent file {}: {}", path.display(), e)))?;
-        
-        let definition: AgentDefinition = serde_json::from_str(&content)
-            .map_err(|e| RCodeError::Config(format!("Failed to parse agent JSON {}: {}", path.display(), e)))?;
-        
+        let content = tokio::fs::read_to_string(path).await.map_err(|e| {
+            RCodeError::Config(format!(
+                "Failed to read agent file {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+
+        let definition: AgentDefinition = serde_json::from_str(&content).map_err(|e| {
+            RCodeError::Config(format!(
+                "Failed to parse agent JSON {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+
         // Validate the definition
         self.validate_definition(&definition)?;
-        
+
         Ok(definition)
     }
 
@@ -109,15 +124,17 @@ impl AgentLoader {
         }
 
         if def.name.is_empty() {
-            return Err(RCodeError::Config(
-                format!("Agent '{}' has empty name", def.identifier),
-            ));
+            return Err(RCodeError::Config(format!(
+                "Agent '{}' has empty name",
+                def.identifier
+            )));
         }
 
         if def.system_prompt.is_empty() {
-            return Err(RCodeError::Config(
-                format!("Agent '{}' has empty system_prompt", def.identifier),
-            ));
+            return Err(RCodeError::Config(format!(
+                "Agent '{}' has empty system_prompt",
+                def.identifier
+            )));
         }
 
         Ok(())
@@ -133,8 +150,8 @@ impl Default for AgentLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::path::PathBuf;
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_load_agents_from_directory() {
@@ -196,12 +213,20 @@ mod tests {
 
         let loader = AgentLoader::with_paths(vec![dir_path]);
         let result = loader.load_agents().await;
-        
+
         // The load succeeds (returns Ok) but the agent list is empty because
         // the agent with invalid data was skipped
-        assert!(result.is_ok(), "Expected load to succeed, got: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Expected load to succeed, got: {:?}",
+            result
+        );
         let agents = result.unwrap();
-        assert!(agents.is_empty(), "Expected no agents to be loaded due to validation error, got {} agents", agents.len());
+        assert!(
+            agents.is_empty(),
+            "Expected no agents to be loaded due to validation error, got {} agents",
+            agents.len()
+        );
     }
 
     #[tokio::test]
@@ -224,10 +249,13 @@ mod tests {
 
         let loader = AgentLoader::with_paths(vec![dir_path]);
         let result = loader.load_agents().await;
-        
+
         assert!(result.is_ok());
         let agents = result.unwrap();
-        assert!(agents.is_empty(), "Expected no agents due to empty name validation error");
+        assert!(
+            agents.is_empty(),
+            "Expected no agents due to empty name validation error"
+        );
     }
 
     #[tokio::test]
@@ -250,10 +278,13 @@ mod tests {
 
         let loader = AgentLoader::with_paths(vec![dir_path]);
         let result = loader.load_agents().await;
-        
+
         assert!(result.is_ok());
         let agents = result.unwrap();
-        assert!(agents.is_empty(), "Expected no agents due to empty system_prompt validation error");
+        assert!(
+            agents.is_empty(),
+            "Expected no agents due to empty system_prompt validation error"
+        );
     }
 
     #[tokio::test]
@@ -267,7 +298,7 @@ mod tests {
     async fn test_add_search_path() {
         let mut loader = AgentLoader::new();
         assert_eq!(loader.search_paths.len(), 2); // default paths
-        
+
         loader.add_path(PathBuf::from("/custom/path"));
         assert_eq!(loader.search_paths.len(), 3);
     }
@@ -275,7 +306,9 @@ mod tests {
     #[tokio::test]
     async fn test_load_from_nonexistent_file() {
         let loader = AgentLoader::new();
-        let result = loader.load_from_file(Path::new("/nonexistent/file.json")).await;
+        let result = loader
+            .load_from_file(Path::new("/nonexistent/file.json"))
+            .await;
         assert!(result.is_err());
     }
 }

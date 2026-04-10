@@ -5,8 +5,8 @@ use futures::Stream;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 
-use crate::message::Message;
 use crate::error::Result;
+use crate::message::Message;
 
 /// Provider capabilities - describes what features a provider/model supports
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,7 +42,7 @@ impl ProviderCapabilities {
             supports_system_prompt: true,
         }
     }
-    
+
     /// Returns a ProviderCapabilities with only chat (no tool calling)
     pub fn chat_only() -> Self {
         Self::default()

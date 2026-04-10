@@ -12,12 +12,8 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> serde_json::Value;
-    
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        context: &ToolContext,
-    ) -> Result<ToolResult>;
+
+    async fn execute(&self, args: serde_json::Value, context: &ToolContext) -> Result<ToolResult>;
 }
 
 #[derive(Debug, Clone)]
@@ -65,7 +61,8 @@ impl Part {
         Part::ToolResult {
             tool_call_id,
             content: result.content,
-            is_error: result.metadata
+            is_error: result
+                .metadata
                 .as_ref()
                 .and_then(|m| m.get("is_error"))
                 .and_then(|v| v.as_bool())

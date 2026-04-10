@@ -1,5 +1,197 @@
 //! LSP type definitions
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_symbol_kind_serialization() {
+        // SymbolKind serializes to LSP integer codes
+        assert_eq!(serde_json::to_value(SymbolKind::File).unwrap(), 1);
+        assert_eq!(serde_json::to_value(SymbolKind::Module).unwrap(), 2);
+        assert_eq!(serde_json::to_value(SymbolKind::Namespace).unwrap(), 3);
+        assert_eq!(serde_json::to_value(SymbolKind::Package).unwrap(), 4);
+        assert_eq!(serde_json::to_value(SymbolKind::Class).unwrap(), 5);
+        assert_eq!(serde_json::to_value(SymbolKind::Method).unwrap(), 6);
+        assert_eq!(serde_json::to_value(SymbolKind::Property).unwrap(), 7);
+        assert_eq!(serde_json::to_value(SymbolKind::Field).unwrap(), 8);
+        assert_eq!(serde_json::to_value(SymbolKind::Constructor).unwrap(), 9);
+        assert_eq!(serde_json::to_value(SymbolKind::Enum).unwrap(), 10);
+        assert_eq!(serde_json::to_value(SymbolKind::Interface).unwrap(), 11);
+        assert_eq!(serde_json::to_value(SymbolKind::Function).unwrap(), 12);
+        assert_eq!(serde_json::to_value(SymbolKind::Variable).unwrap(), 13);
+        assert_eq!(serde_json::to_value(SymbolKind::Constant).unwrap(), 14);
+        assert_eq!(serde_json::to_value(SymbolKind::String).unwrap(), 15);
+        assert_eq!(serde_json::to_value(SymbolKind::Number).unwrap(), 16);
+        assert_eq!(serde_json::to_value(SymbolKind::Boolean).unwrap(), 17);
+        assert_eq!(serde_json::to_value(SymbolKind::Array).unwrap(), 18);
+        assert_eq!(serde_json::to_value(SymbolKind::Object).unwrap(), 19);
+        assert_eq!(serde_json::to_value(SymbolKind::Key).unwrap(), 20);
+        assert_eq!(serde_json::to_value(SymbolKind::Null).unwrap(), 21);
+        assert_eq!(serde_json::to_value(SymbolKind::EnumMember).unwrap(), 22);
+        assert_eq!(serde_json::to_value(SymbolKind::Struct).unwrap(), 23);
+        assert_eq!(serde_json::to_value(SymbolKind::Event).unwrap(), 24);
+        assert_eq!(serde_json::to_value(SymbolKind::Operator).unwrap(), 25);
+        assert_eq!(serde_json::to_value(SymbolKind::TypeParameter).unwrap(), 26);
+    }
+
+    #[test]
+    fn test_symbol_kind_deserialization() {
+        // SymbolKind deserializes from LSP integer codes
+        assert_eq!(
+            serde_json::from_value::<SymbolKind>(1u32.into()).unwrap(),
+            SymbolKind::File
+        );
+        assert_eq!(
+            serde_json::from_value::<SymbolKind>(12u32.into()).unwrap(),
+            SymbolKind::Function
+        );
+        assert_eq!(
+            serde_json::from_value::<SymbolKind>(26u32.into()).unwrap(),
+            SymbolKind::TypeParameter
+        );
+    }
+
+    #[test]
+    fn test_document_symbol_with_children() {
+        let child = DocumentSymbol {
+            name: "child_method".to_string(),
+            kind: SymbolKind::Method,
+            detail: Some("fn()".to_string()),
+            range: Range::new(Position::new(5, 0), Position::new(5, 20)),
+            selection_range: Range::new(Position::new(5, 0), Position::new(5, 12)),
+            children: None,
+            tags: None,
+            deprecated: None,
+        };
+
+        let parent = DocumentSymbol {
+            name: "MyClass".to_string(),
+            kind: SymbolKind::Class,
+            detail: Some("struct MyClass".to_string()),
+            range: Range::new(Position::new(0, 0), Position::new(10, 0)),
+            selection_range: Range::new(Position::new(0, 0), Position::new(0, 7)),
+            children: Some(vec![child]),
+            tags: None,
+            deprecated: None,
+        };
+
+        let json = serde_json::to_string(&parent).unwrap();
+        let deserialized: DocumentSymbol = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.name, "MyClass");
+        assert_eq!(deserialized.kind, SymbolKind::Class);
+        assert!(deserialized.children.is_some());
+        assert_eq!(deserialized.children.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            deserialized.children.as_ref().unwrap()[0].name,
+            "child_method"
+        );
+    }
+
+    #[test]
+    fn test_document_symbol_params_serialization() {
+        let params = DocumentSymbolParams {
+            text_document: TextDocumentIdentifier {
+                uri: "file:///src/main.rs".to_string(),
+            },
+            work_done_progress_params: None,
+            partial_result_params: None,
+        };
+
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("\"textDocument\""));
+        assert!(json.contains("file:///src/main.rs"));
+    }
+
+    #[test]
+    fn test_document_symbol_response_hierarchical() {
+        // Test hierarchical DocumentSymbol[] response
+        let json = r#"[
+            {
+                "name": "MyStruct",
+                "kind": 23,
+                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 10, "character": 0}},
+                "selectionRange": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 8}},
+                "children": []
+            }
+        ]"#;
+
+        let response: DocumentSymbolResponse = serde_json::from_str(json).unwrap();
+        match response {
+            DocumentSymbolResponse::Hierarchical(symbols) => {
+                assert_eq!(symbols.len(), 1);
+                assert_eq!(symbols[0].name, "MyStruct");
+                assert_eq!(symbols[0].kind, SymbolKind::Struct);
+            }
+            DocumentSymbolResponse::Flat(_) => panic!("Expected hierarchical response"),
+        }
+    }
+
+    #[test]
+    fn test_document_symbol_response_flat() {
+        // Test flat SymbolInformation[] response (no range field at top level)
+        let json = r#"[
+            {
+                "name": "my_function",
+                "kind": 12,
+                "location": {"uri": "file:///src/main.rs", "range": {"start": {"line": 0, "character": 0}, "end": {"line": 5, "character": 0}}}
+            }
+        ]"#;
+
+        let response: DocumentSymbolResponse = serde_json::from_str(json).unwrap();
+        match response {
+            DocumentSymbolResponse::Flat(symbols) => {
+                assert_eq!(symbols.len(), 1);
+                assert_eq!(symbols[0].name, "my_function");
+            }
+            DocumentSymbolResponse::Hierarchical(_) => panic!("Expected flat response"),
+        }
+    }
+
+    #[test]
+    fn test_did_open_params_serialization() {
+        let params = TextDocumentDidOpenParams {
+            text_document: TextDocumentItem {
+                uri: "file:///src/main.rs".to_string(),
+                language_id: "rust".to_string(),
+                version: 1,
+                text: "fn main() {}".to_string(),
+            },
+        };
+
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("\"textDocument\""));
+        assert!(json.contains("\"languageId\":"));
+        assert!(json.contains("\"version\":"));
+    }
+
+    #[test]
+    fn test_server_capabilities_document_symbol_provider() {
+        let caps = ServerCapabilities {
+            document_symbol_provider: Some(true),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&caps).unwrap();
+        assert!(json.contains("\"documentSymbolProvider\""));
+    }
+
+    #[test]
+    fn test_lsp_message_document_symbol() {
+        let msg = LspMessage::TextDocumentDocumentSymbol(DocumentSymbolParams {
+            text_document: TextDocumentIdentifier {
+                uri: "file:///src/main.rs".to_string(),
+            },
+            work_done_progress_params: None,
+            partial_result_params: None,
+        });
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("textDocument/documentSymbol"));
+    }
+}
+
 use serde::{Deserialize, Serialize};
 
 /// Position in a text document
@@ -30,6 +222,239 @@ impl Range {
     pub fn new(start: Position, end: Position) -> Self {
         Self { start, end }
     }
+}
+
+/// Symbol kind as defined by the LSP specification
+/// Serializes/deserializes as integer values per LSP spec
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolKind {
+    File = 1,
+    Module = 2,
+    Namespace = 3,
+    Package = 4,
+    Class = 5,
+    Method = 6,
+    Property = 7,
+    Field = 8,
+    Constructor = 9,
+    Enum = 10,
+    Interface = 11,
+    Function = 12,
+    Variable = 13,
+    Constant = 14,
+    String = 15,
+    Number = 16,
+    Boolean = 17,
+    Array = 18,
+    Object = 19,
+    Key = 20,
+    Null = 21,
+    EnumMember = 22,
+    Struct = 23,
+    Event = 24,
+    Operator = 25,
+    TypeParameter = 26,
+}
+
+impl Serialize for SymbolKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_i32(*self as i32)
+    }
+}
+
+impl<'de> Deserialize<'de> for SymbolKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = i32::deserialize(deserializer)?;
+        match value {
+            1 => Ok(SymbolKind::File),
+            2 => Ok(SymbolKind::Module),
+            3 => Ok(SymbolKind::Namespace),
+            4 => Ok(SymbolKind::Package),
+            5 => Ok(SymbolKind::Class),
+            6 => Ok(SymbolKind::Method),
+            7 => Ok(SymbolKind::Property),
+            8 => Ok(SymbolKind::Field),
+            9 => Ok(SymbolKind::Constructor),
+            10 => Ok(SymbolKind::Enum),
+            11 => Ok(SymbolKind::Interface),
+            12 => Ok(SymbolKind::Function),
+            13 => Ok(SymbolKind::Variable),
+            14 => Ok(SymbolKind::Constant),
+            15 => Ok(SymbolKind::String),
+            16 => Ok(SymbolKind::Number),
+            17 => Ok(SymbolKind::Boolean),
+            18 => Ok(SymbolKind::Array),
+            19 => Ok(SymbolKind::Object),
+            20 => Ok(SymbolKind::Key),
+            21 => Ok(SymbolKind::Null),
+            22 => Ok(SymbolKind::EnumMember),
+            23 => Ok(SymbolKind::Struct),
+            24 => Ok(SymbolKind::Event),
+            25 => Ok(SymbolKind::Operator),
+            26 => Ok(SymbolKind::TypeParameter),
+            _ => Err(serde::de::Error::custom(format!(
+                "Unknown SymbolKind value: {}",
+                value
+            ))),
+        }
+    }
+}
+
+/// A document symbol with hierarchical children
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentSymbol {
+    /// The name of this symbol
+    pub name: String,
+    /// The kind of this symbol
+    pub kind: SymbolKind,
+    /// More detail for this symbol
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// The range enclosing this symbol
+    pub range: Range,
+    /// The range that should be selected
+    pub selection_range: Range,
+    /// Children of this symbol
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub children: Option<Vec<DocumentSymbol>>,
+    /// Tags for this symbol
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<SymbolTag>>,
+    /// Whether this symbol is deprecated
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecated: Option<bool>,
+}
+
+/// Symbol tag for deprecated symbols
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SymbolTag {
+    Deprecated = 1,
+}
+
+/// Flat symbol information as returned by some LSP servers
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SymbolInformation {
+    /// The name of this symbol
+    pub name: String,
+    /// The kind of this symbol
+    pub kind: SymbolKind,
+    /// The location of this symbol
+    pub location: Location,
+    /// The name of the containing symbol
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_name: Option<String>,
+    /// Tags for this symbol
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<SymbolTag>>,
+    /// Whether this symbol is deprecated
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecated: Option<bool>,
+}
+
+/// Document symbol response can be either hierarchical or flat
+#[derive(Debug, Clone, Serialize)]
+pub enum DocumentSymbolResponse {
+    /// Hierarchical document symbols
+    Hierarchical(Vec<DocumentSymbol>),
+    /// Flat symbol information
+    Flat(Vec<SymbolInformation>),
+}
+
+impl<'de> Deserialize<'de> for DocumentSymbolResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // First parse as a JSON array to inspect the first element
+        let json_value: serde_json::Value = serde::Deserialize::deserialize(deserializer)?;
+
+        if let Some(arr) = json_value.as_array()
+            && let Some(first) = arr.first()
+        {
+            // Hierarchical DocumentSymbol has "range" field
+            // Flat SymbolInformation has "location" field
+            if first.get("range").is_some() {
+                let symbols: Vec<DocumentSymbol> = serde_json::from_value(json_value)
+                    .map_err(|e| serde::de::Error::custom(e.to_string()))?;
+                return Ok(DocumentSymbolResponse::Hierarchical(symbols));
+            } else if first.get("location").is_some() {
+                let symbols: Vec<SymbolInformation> = serde_json::from_value(json_value)
+                    .map_err(|e| serde::de::Error::custom(e.to_string()))?;
+                return Ok(DocumentSymbolResponse::Flat(symbols));
+            }
+        }
+
+        // Fallback: try hierarchical
+        let symbols: Vec<DocumentSymbol> = serde_json::from_value(json_value.clone())
+            .map_err(|e| serde::de::Error::custom(e.to_string()))?;
+        Ok(DocumentSymbolResponse::Hierarchical(symbols))
+    }
+}
+
+/// Parameters for document symbol request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentSymbolParams {
+    /// The text document
+    pub text_document: TextDocumentIdentifier,
+    /// Work done progress (unused but part of LSP spec)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_done_progress_params: Option<WorkDoneProgressParams>,
+    /// Partial result progress (unused but part of LSP spec)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partial_result_params: Option<PartialResultParams>,
+}
+
+/// Work done progress parameters
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkDoneProgressParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_done_token: Option<ProgressToken>,
+}
+
+/// Partial result parameters
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PartialResultParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partial_result_token: Option<ProgressToken>,
+}
+
+/// Progress token for work done / partial result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ProgressToken {
+    Integer(i32),
+    String(String),
+}
+
+/// Parameters for textDocument/didOpen notification
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextDocumentDidOpenParams {
+    /// The text document that was opened
+    #[serde(rename = "textDocument")]
+    pub text_document: TextDocumentItem,
+}
+
+/// A text document item sent during didOpen
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextDocumentItem {
+    /// The text document's URI
+    pub uri: String,
+    /// The text document's language identifier
+    #[serde(rename = "languageId")]
+    pub language_id: String,
+    /// The version number of the document
+    pub version: i32,
+    /// The content of the document
+    pub text: String,
 }
 
 /// A location inside a resource
@@ -197,6 +622,7 @@ impl Diagnostic {
 
 /// Server capabilities
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerCapabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_document_sync: Option<u32>,
@@ -208,6 +634,8 @@ pub struct ServerCapabilities {
     pub definition_provider: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub references_provider: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document_symbol_provider: Option<bool>,
 }
 
 /// LSP Message types
@@ -242,6 +670,12 @@ pub enum LspMessage {
 
     #[serde(rename = "textDocument/publishDiagnostics")]
     PublishDiagnostics(PublishDiagnosticsParams),
+
+    #[serde(rename = "textDocument/documentSymbol")]
+    TextDocumentDocumentSymbol(DocumentSymbolParams),
+
+    #[serde(rename = "textDocument/didOpen")]
+    TextDocumentDidOpen(TextDocumentDidOpenParams),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

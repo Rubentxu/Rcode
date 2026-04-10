@@ -7,6 +7,10 @@ interface ToolResultCardProps {
   is_error: boolean;
 }
 
+/**
+ * Renders a tool result card with Material Design 3 styling.
+ * Shows success/error status indicator.
+ */
 export const ToolResultCard: Component<ToolResultCardProps> = (props) => {
   const [isExpanded, setIsExpanded] = createSignal(false);
 
@@ -26,30 +30,53 @@ export const ToolResultCard: Component<ToolResultCardProps> = (props) => {
   };
 
   return (
-    <div 
-      data-part="tool_result" 
-      class={`tool-result-card ${props.is_error ? "tool-result-error" : ""}`}
+    <div
+      data-part="tool_result"
+      class={`tool-result-card overflow-hidden rounded-lg border ${
+        props.is_error
+          ? "bg-error-container/10 border-error/20"
+          : "bg-surface-container-low border-outline-variant/10"
+      }`}
     >
-      <div 
-        class="tool-result-header"
+      <div
+        class="flex items-center gap-3 p-3 cursor-pointer hover:bg-surface-container-high/50 transition-colors"
         onClick={() => setIsExpanded(!isExpanded())}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => e.key === "Enter" && setIsExpanded(!isExpanded())}
       >
-        <span class="tool-result-icon">{props.is_error ? "✗" : "✓"}</span>
-        <span class="tool-result-label">
+        <span
+          class={`material-symbols-outlined text-[16px] ${
+            props.is_error ? "text-error" : "text-secondary"
+          }`}
+          style={props.is_error ? "" : "font-variation-settings: 'FILL' 1;"}
+        >
+          {props.is_error ? "error" : "check_circle"}
+        </span>
+
+        <span class={`text-xs font-semibold ${props.is_error ? "text-error" : "text-secondary"}`}>
           {props.is_error ? "Error" : "Result"}
         </span>
-        <span class="tool-result-expand">{isExpanded() ? "▼" : "▶"}</span>
+
+        <span class="material-symbols-outlined text-outline text-sm ml-auto">
+          {isExpanded() ? "expand_less" : "expand_more"}
+        </span>
       </div>
+
       <Show when={isExpanded()}>
-        <div class="tool-result-content">
-          <Show 
+        <div
+          class={`p-4 border-t ${
+            props.is_error ? "border-error/20" : "border-outline-variant/10"
+          }`}
+        >
+          <Show
             when={isMarkdownLike() && !props.is_error}
-            fallback={<pre><code>{props.content}</code></pre>}
+            fallback={
+              <pre class="text-xs font-mono text-on-surface-variant overflow-auto max-h-64 bg-surface-container-lowest p-3 rounded">
+                <code>{props.content}</code>
+              </pre>
+            }
           >
-            <MarkdownRenderer content={props.content} />
+            <div class="text-sm text-on-surface-variant">
+              <MarkdownRenderer content={props.content} />
+            </div>
           </Show>
         </div>
       </Show>

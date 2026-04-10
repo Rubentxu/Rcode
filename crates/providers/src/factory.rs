@@ -166,18 +166,27 @@ impl ProviderFactory {
             }
         }
 
-        // Extract API key from config if available
-        let config_api_key = get_api_key_from_config(config, &provider_id);
+        // Resolve api_key and base_url using shared helper
+        let resolution = crate::resolution::ProviderResolution::for_provider(&provider_id, config);
 
         match provider_id.as_str() {
             "anthropic" => {
-                let api_key = resolve_api_key("anthropic", config_api_key)?;
+                let api_key = resolution.api_key.ok_or_else(|| {
+                    RCodeError::Config(format!(
+                        "No API key found for {}. Set the ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN environment variable, or provide api_key in config.",
+                        provider_id
+                    ))
+                })?;
                 Ok((Arc::new(AnthropicProvider::new(api_key)), model_name))
             }
             "openai" => {
-                let api_key = resolve_api_key("openai", config_api_key)?;
-                let base_url = get_provider_config_string(config, "openai", "base_url");
-                match base_url {
+                let api_key = resolution.api_key.ok_or_else(|| {
+                    RCodeError::Config(format!(
+                        "No API key found for {}. Set the OPENAI_API_KEY environment variable, or provide api_key in config.",
+                        provider_id
+                    ))
+                })?;
+                match resolution.base_url {
                     Some(url) => Ok((
                         Arc::new(OpenAIProvider::new_with_base_url(api_key, url)),
                         model_name,
@@ -186,13 +195,22 @@ impl ProviderFactory {
                 }
             }
             "google" => {
-                let api_key = resolve_api_key("google", config_api_key)?;
+                let api_key = resolution.api_key.ok_or_else(|| {
+                    RCodeError::Config(format!(
+                        "No API key found for {}. Set the GOOGLE_API_KEY environment variable, or provide api_key in config.",
+                        provider_id
+                    ))
+                })?;
                 Ok((Arc::new(GoogleProvider::new(api_key)), model_name))
             }
             "openrouter" => {
-                let api_key = resolve_api_key("openrouter", config_api_key)?;
-                let base_url = get_provider_config_string(config, "openrouter", "base_url");
-                match base_url {
+                let api_key = resolution.api_key.ok_or_else(|| {
+                    RCodeError::Config(format!(
+                        "No API key found for {}. Set the OPENROUTER_API_KEY environment variable, or provide api_key in config.",
+                        provider_id
+                    ))
+                })?;
+                match resolution.base_url {
                     Some(url) => Ok((
                         Arc::new(OpenRouterProvider::new_with_base_url(api_key, url)),
                         model_name,
@@ -201,9 +219,13 @@ impl ProviderFactory {
                 }
             }
             "minimax" => {
-                let api_key = resolve_api_key("minimax", config_api_key)?;
-                let base_url = get_provider_config_string(config, "minimax", "base_url");
-                match base_url {
+                let api_key = resolution.api_key.ok_or_else(|| {
+                    RCodeError::Config(format!(
+                        "No API key found for {}. Set the MINIMAX_API_KEY environment variable, or provide api_key in config.",
+                        provider_id
+                    ))
+                })?;
+                match resolution.base_url {
                     Some(url) => Ok((
                         Arc::new(MiniMaxProvider::new_with_base_url(api_key, url)),
                         model_name,
@@ -212,9 +234,13 @@ impl ProviderFactory {
                 }
             }
             "zai" => {
-                let api_key = resolve_api_key("zai", config_api_key)?;
-                let base_url = get_provider_config_string(config, "zai", "base_url");
-                match base_url {
+                let api_key = resolution.api_key.ok_or_else(|| {
+                    RCodeError::Config(format!(
+                        "No API key found for {}. Set the ZAI_API_KEY environment variable, or provide api_key in config.",
+                        provider_id
+                    ))
+                })?;
+                match resolution.base_url {
                     Some(url) => Ok((
                         Arc::new(ZaiProvider::new_with_base_url(api_key, url)),
                         model_name,
@@ -224,24 +250,21 @@ impl ProviderFactory {
             }
             other => {
                 // CUSTOM PROVIDER SUPPORT
-                // Check if config has providers.<unknown_id>.api_key and providers.<unknown_id>.base_url
-                // Env var names replace hyphens with underscores
-                let env_provider_id = other.to_uppercase().replace('-', "_");
-                // First check auth.json (primary credential store)
-                let custom_api_key = rcode_core::auth::get_api_key(other)
-                    .or_else(|| get_provider_config_string(config, other, "api_key"))
-                    .or_else(|| std::env::var(format!("{}_API_KEY", env_provider_id)).ok());
-                let custom_base_url = get_provider_config_string(config, other, "base_url")
-                    .or_else(|| std::env::var(format!("{}_BASE_URL", env_provider_id)).ok());
+                // Resolution already handles auth.json, env vars, and config for custom providers
+                let custom_api_key = resolution.api_key;
+                let custom_base_url = resolution.base_url;
 
                 match (custom_api_key, custom_base_url) {
                     (Some(key), Some(url)) => {
                         Ok((Arc::new(OpenAIProvider::new_with_base_url(key, url)), model_name))
                     }
-                    _ => Err(RCodeError::Config(format!(
-                        "Unknown provider '{}'. Configure providers.{}.api_key and providers.{}.base_url in config, or set {}_API_KEY and {}_BASE_URL environment variables.",
-                        other, other, other, env_provider_id, env_provider_id
-                    ))),
+                    _ => {
+                        let env_provider_id = other.to_uppercase().replace('-', "_");
+                        Err(RCodeError::Config(format!(
+                            "Unknown provider '{}'. Configure providers.{}.api_key and providers.{}.base_url in config, or set {}_API_KEY and {}_BASE_URL environment variables.",
+                            other, other, other, env_provider_id, env_provider_id
+                        )))
+                    }
                 }
             }
         }

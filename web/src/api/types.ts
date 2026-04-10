@@ -1,23 +1,37 @@
-// Message types
-export type MessageRole = "user" | "assistant" | "system";
+// =============================================================================
+// Auto-generated types from Rust backend - DO NOT EDIT
+// This file re-exports from generated-types.ts which is regenerated on changes
+// to crates/core/src/message.rs
+// =============================================================================
+export * from './generated-types';
 
-// Union of all message part types matching backend Part enum
-export type MessagePart =
-  | { type: 'text'; content: string }
-  | { type: 'reasoning'; content: string }
-  | { type: 'tool_call'; id: string; name: string; arguments: unknown }
-  | { type: 'tool_result'; tool_call_id: string; content: string; is_error: boolean }
-  | { type: 'attachment'; id: string; name: string; mime_type: string; content: unknown };
+// Wire-format Role type (lowercase as sent over network)
+// The Rust enum uses uppercase variants (User/Assistant/System) but serde
+// serializes them as lowercase (user/assistant/system) via #[serde(rename_all = "lowercase")]
+// We need this alias for code that expects the wire format
+export type WireRole = "user" | "assistant" | "system";
 
-export interface Message {
+// Backward-compatible alias for frontend code expecting the old MessageRole name
+export type MessageRole = WireRole;
+
+// Wire-format Message type with backward-compatible fields
+// The Rust Message uses parts: Part[] but frontend historically used content: string
+// We provide content as an optional computed field for compatibility
+// session_id is optional because frontend creates messages before session association
+export interface WireMessage {
   id: string;
-  role: MessageRole;
-  content: string;
+  session_id?: string;  // Optional: frontend creates messages before session association
+  role: WireRole;
+  parts?: import('./generated-types').Part[];
+  // Backward compat: first text part as content string
+  content?: string;
   created_at: string;
-  parts?: MessagePart[];  // additive: backend may send parts[]
 }
 
-// Session types
+// Backward-compatible Message type alias (same as WireMessage)
+export type Message = WireMessage;
+
+// Session types (defined in Rust session.rs, kept here for frontend use)
 export type SessionStatus = "idle" | "running" | "completed";
 
 export interface Session {
@@ -27,7 +41,23 @@ export interface Session {
   updated_at: string;
 }
 
-// SSE event types
+// Backward-compatible Part type with arguments included as unknown
+// The Rust Part.tool_call.arguments is Box<serde_json::Value> which can't be
+// represented in TypeScript, so we use unknown
+// This is the type the frontend should use for received/sent messages
+export type MessagePart = 
+  | { type: 'text'; content: string }
+  | { type: 'reasoning'; content: string }
+  | { type: 'tool_call'; id: string; name: string; arguments?: unknown }
+  | { type: 'tool_result'; tool_call_id: string; content: string; is_error: boolean }
+  | { type: 'attachment'; id: string; name: string; mime_type: string; content?: unknown };
+
+// =============================================================================
+// SSE event types - these are defined in the server-side event system
+// They are NOT auto-generated from Rust because the SSE event schema is
+// defined in the TypeScript/SSE client code, not in Rust types
+// =============================================================================
+
 export type SSEEventType = "message_added" | "streaming_progress" | "agent_finished" | "error";
 
 export interface SSEEvent {
@@ -61,6 +91,9 @@ export interface SSEErrorEvent {
 }
 
 // Phase 3: New semantic SSE event types
+// Derived from: crates/event/src/bus.rs Event enum streaming variants
+// PSOT-5: These are manually synced with Rust. Full codegen from Event enum
+// requires ts-rs support for #[serde(tag = "type")] internally tagged enums.
 export interface SSEStreamTextDelta {
   type: "stream_text_delta";
   session_id: string;

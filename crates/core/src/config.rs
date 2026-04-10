@@ -401,6 +401,7 @@ impl RcodeConfig {
                         .ok()
                         .filter(|v| !v.is_empty())
                 })
+                .or_else(|| std::env::var("ZAI_MODEL").ok().filter(|v| !v.is_empty()))
         })
     }
 
@@ -436,6 +437,70 @@ impl RcodeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Global mutex to serialize env-sensitive tests.
+    /// This ensures only one env-sensitive test runs at a time, preventing
+    /// interference between parallel test runs.
+    static ENVVAR_LOCK: Mutex<()> = Mutex::new(());
+
+    /// RAII guard for environment variable isolation in tests.
+    /// Saves the original values of specified env vars, sets new values,
+    /// and restores originals on drop (even on panic).
+    /// Uses a global lock to serialize access when tests run in parallel.
+    struct EnvGuard {
+        originals: std::collections::HashMap<String, Option<String>>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        /// Create a new guard that:
+        /// 1. Acquires global lock to serialize env access
+        /// 2. Records current values of the given env vars
+        /// 3. Sets each var to the provided value (if Some) or removes it (if None)
+        fn new(vars: &[(&str, Option<&str>)]) -> Self {
+            // Acquire lock to serialize with other env-sensitive tests
+            let lock = ENVVAR_LOCK.lock().unwrap();
+
+            let originals: std::collections::HashMap<String, Option<String>> = vars
+                .iter()
+                .map(|(name, _)| {
+                    let original = std::env::var(*name).ok();
+                    (name.to_string(), original)
+                })
+                .collect();
+
+            // Set new values (unsafe in test mode)
+            for (name, value) in vars {
+                // SAFETY: Test-only env var manipulation - values are static strings without NUL
+                unsafe {
+                    match value {
+                        Some(v) => std::env::set_var(name, v),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+
+            Self {
+                originals,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, original) in &self.originals {
+                // SAFETY: Test-only env var cleanup - restoring original state
+                unsafe {
+                    match original {
+                        Some(v) => std::env::set_var(name, v),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_rcode_config_default() {
@@ -686,11 +751,12 @@ mod tests {
 
     #[test]
     fn test_effective_model_prefers_config_over_env() {
-        // SAFETY: Test-only environment variable manipulation
-        unsafe {
-            std::env::set_var("ANTHROPIC_MODEL", "claude-sonnet-test");
-            std::env::set_var("MINIMAX_MODEL", "minimax-test");
-        }
+        // Use EnvGuard to isolate env vars - guard drops at end of scope
+        let _guard = EnvGuard::new(&[
+            ("ANTHROPIC_MODEL", Some("claude-sonnet-test")),
+            ("MINIMAX_MODEL", Some("minimax-test")),
+            ("ZAI_MODEL", None), // removed
+        ]);
 
         let config = RcodeConfig {
             model: Some("anthropic/claude-3-5-sonnet".to_string()),
@@ -702,63 +768,42 @@ mod tests {
             config.effective_model(),
             Some("anthropic/claude-3-5-sonnet".to_string())
         );
-
-        // SAFETY: Clean up env vars after test
-        unsafe {
-            std::env::remove_var("ANTHROPIC_MODEL");
-            std::env::remove_var("MINIMAX_MODEL");
-        }
     }
 
     #[test]
     fn test_effective_model_falls_back_to_anthropic_model_env() {
-        // SAFETY: Test-only environment variable manipulation
-        unsafe {
-            std::env::remove_var("ANTHROPIC_MODEL");
-            std::env::remove_var("MINIMAX_MODEL");
-            std::env::set_var("ANTHROPIC_MODEL", "claude-sonnet-4-5");
-        }
+        let _guard = EnvGuard::new(&[
+            ("ANTHROPIC_MODEL", Some("claude-sonnet-4-5")),
+            ("MINIMAX_MODEL", None),
+            ("ZAI_MODEL", None),
+        ]);
 
         let config = RcodeConfig::default();
         assert_eq!(
             config.effective_model(),
             Some("claude-sonnet-4-5".to_string())
         );
-
-        // SAFETY: Clean up env vars after test
-        unsafe {
-            std::env::remove_var("ANTHROPIC_MODEL");
-        }
     }
 
     #[test]
     fn test_effective_model_falls_back_to_minimax_model_env() {
-        // SAFETY: Test-only environment variable manipulation
-        unsafe {
-            std::env::remove_var("ANTHROPIC_MODEL");
-            std::env::remove_var("MINIMAX_MODEL");
-            std::env::set_var("MINIMAX_MODEL", "MiniMax-M2.7");
-        }
+        let _guard = EnvGuard::new(&[
+            ("ANTHROPIC_MODEL", Some("")), // empty = ignored
+            ("MINIMAX_MODEL", Some("MiniMax-M2.7")),
+            ("ZAI_MODEL", Some("")), // empty = ignored
+        ]);
 
         let config = RcodeConfig::default();
         assert_eq!(config.effective_model(), Some("MiniMax-M2.7".to_string()));
-
-        // SAFETY: Clean up env vars after test
-        unsafe {
-            std::env::remove_var("ANTHROPIC_MODEL");
-            std::env::remove_var("MINIMAX_MODEL");
-        }
     }
 
     #[test]
     fn test_effective_model_prefers_anthropic_over_minimax() {
-        // SAFETY: Test-only environment variable manipulation
-        unsafe {
-            std::env::remove_var("ANTHROPIC_MODEL");
-            std::env::remove_var("MINIMAX_MODEL");
-            std::env::set_var("ANTHROPIC_MODEL", "claude-haiku-test");
-            std::env::set_var("MINIMAX_MODEL", "MiniMax-M2.7");
-        }
+        let _guard = EnvGuard::new(&[
+            ("ANTHROPIC_MODEL", Some("claude-haiku-test")),
+            ("MINIMAX_MODEL", Some("MiniMax-M2.7")),
+            ("ZAI_MODEL", Some("")), // empty = ignored
+        ]);
 
         let config = RcodeConfig::default();
         // ANTHROPIC_MODEL should take precedence over MINIMAX_MODEL
@@ -766,21 +811,15 @@ mod tests {
             config.effective_model(),
             Some("claude-haiku-test".to_string())
         );
-
-        // SAFETY: Clean up env vars after test
-        unsafe {
-            std::env::remove_var("ANTHROPIC_MODEL");
-            std::env::remove_var("MINIMAX_MODEL");
-        }
     }
 
     #[test]
     fn test_effective_model_returns_none_when_no_config_or_env() {
-        // SAFETY: Test-only environment variable manipulation
-        unsafe {
-            std::env::remove_var("ANTHROPIC_MODEL");
-            std::env::remove_var("MINIMAX_MODEL");
-        }
+        let _guard = EnvGuard::new(&[
+            ("ANTHROPIC_MODEL", Some("")),
+            ("MINIMAX_MODEL", Some("")),
+            ("ZAI_MODEL", Some("")),
+        ]);
 
         let config = RcodeConfig::default();
         assert_eq!(config.effective_model(), None);
@@ -788,19 +827,58 @@ mod tests {
 
     #[test]
     fn test_effective_model_ignores_empty_env_var() {
-        // SAFETY: Test-only environment variable manipulation
-        unsafe {
-            std::env::set_var("ANTHROPIC_MODEL", "");
-            std::env::remove_var("MINIMAX_MODEL");
-        }
+        let _guard = EnvGuard::new(&[
+            ("ANTHROPIC_MODEL", Some("")),
+            ("MINIMAX_MODEL", Some("")),
+            ("ZAI_MODEL", Some("")),
+        ]);
 
         let config = RcodeConfig::default();
         // Empty ANTHROPIC_MODEL should be ignored
         assert_eq!(config.effective_model(), None);
+    }
 
-        // SAFETY: Clean up env vars after test
-        unsafe {
-            std::env::remove_var("ANTHROPIC_MODEL");
-        }
+    #[test]
+    fn test_effective_model_falls_back_to_zai_model_env() {
+        let _guard = EnvGuard::new(&[
+            ("ANTHROPIC_MODEL", Some("")), // empty = ignored
+            ("MINIMAX_MODEL", Some("")),   // empty = ignored
+            ("ZAI_MODEL", Some("zai-coding-plan/zai-5.1")),
+        ]);
+
+        let config = RcodeConfig::default();
+        assert_eq!(
+            config.effective_model(),
+            Some("zai-coding-plan/zai-5.1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_effective_model_prefers_anthropic_over_zai() {
+        let _guard = EnvGuard::new(&[
+            ("ANTHROPIC_MODEL", Some("claude-haiku-test")),
+            ("MINIMAX_MODEL", Some("")), // empty = ignored
+            ("ZAI_MODEL", Some("zai-coding-plan/zai-5.1")),
+        ]);
+
+        let config = RcodeConfig::default();
+        // ANTHROPIC_MODEL should take precedence over ZAI_MODEL
+        assert_eq!(
+            config.effective_model(),
+            Some("claude-haiku-test".to_string())
+        );
+    }
+
+    #[test]
+    fn test_effective_model_prefers_minimax_over_zai() {
+        let _guard = EnvGuard::new(&[
+            ("ANTHROPIC_MODEL", Some("")), // empty = ignored
+            ("MINIMAX_MODEL", Some("MiniMax-M2.7")),
+            ("ZAI_MODEL", Some("zai-coding-plan/zai-5.1")),
+        ]);
+
+        let config = RcodeConfig::default();
+        // MINIMAX_MODEL should take precedence over ZAI_MODEL
+        assert_eq!(config.effective_model(), Some("MiniMax-M2.7".to_string()));
     }
 }

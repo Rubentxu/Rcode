@@ -2,18 +2,22 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, rename_all = "snake_case")]
 pub struct Message {
     pub id: MessageId,
     pub session_id: String,
     pub role: Role,
     pub parts: Vec<Part>,
+    #[ts(skip)]
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, TS)]
+#[ts(export)]
 pub struct MessageId(pub String);
 
 impl MessageId {
@@ -28,16 +32,18 @@ impl Default for MessageId {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(export)]
 pub enum Role {
     User,
     Assistant,
     System,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[ts(export, rename_all = "snake_case")]
 pub enum Part {
     Text {
         content: String,
@@ -45,6 +51,7 @@ pub enum Part {
     ToolCall {
         id: String,
         name: String,
+        #[ts(skip)]
         arguments: Box<serde_json::Value>,
     },
     ToolResult {
@@ -59,6 +66,7 @@ pub enum Part {
         id: String,
         name: String,
         mime_type: String,
+        #[ts(skip)]
         content: Vec<u8>,
     },
 }
@@ -86,7 +94,8 @@ impl Message {
 }
 
 /// Pagination parameters for message retrieval
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct PaginationParams {
     pub offset: usize,
     pub limit: usize,
@@ -108,7 +117,8 @@ impl PaginationParams {
 }
 
 /// Paginated message response
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct PaginatedMessages {
     pub messages: Vec<Message>,
     pub total: usize,
@@ -117,7 +127,8 @@ pub struct PaginatedMessages {
 }
 
 /// Token budget for context management
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct TokenBudget {
     pub max_tokens: usize,
     pub used_tokens: usize,

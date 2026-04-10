@@ -1,8 +1,8 @@
 //! Agent trait and related types
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::{error::Result, message::Message};
 
@@ -11,15 +11,15 @@ pub trait Agent: Send + Sync {
     fn id(&self) -> &str;
     fn name(&self) -> &str;
     fn description(&self) -> &str;
-    
+
     async fn run(&self, ctx: &mut AgentContext) -> Result<AgentResult>;
-    
+
     fn system_prompt(&self) -> String;
-    
+
     fn supported_tools(&self) -> Vec<String> {
         vec![]
     }
-    
+
     /// Returns whether this agent should be hidden from the agent list
     fn is_hidden(&self) -> bool {
         false

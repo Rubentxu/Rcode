@@ -44,7 +44,8 @@ impl LspClient {
                     },
                     "hover": {},
                     "definition": {},
-                    "references": {}
+                    "references": {},
+                    "documentSymbol": {}
                 },
                 "workspace": {}
             }
@@ -206,5 +207,162 @@ impl LspClient {
                 Ok(vec![])
             }
         }
+    }
+
+    /// Get document symbols (outline) for a file
+    /// Handles both hierarchical (DocumentSymbol[]) and flat (SymbolInformation[]) responses
+    pub async fn document_symbols(&self, uri: &str) -> Result<Vec<DocumentSymbol>> {
+        let mut transport = self.transport.lock().await;
+        
+        let params = DocumentSymbolParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.to_string(),
+            },
+            work_done_progress_params: None,
+            partial_result_params: None,
+        };
+
+        let result = transport.send_request("textDocument/documentSymbol", serde_json::to_value(params)?).await?;
+        
+        // Handle both hierarchical and flat responses
+        let response: DocumentSymbolResponse = serde_json::from_value(result)
+            .map_err(|_| LspError::InvalidResponse("Invalid document symbol response".to_string()))?;
+        
+        match response {
+            DocumentSymbolResponse::Hierarchical(symbols) => Ok(symbols),
+            DocumentSymbolResponse::Flat(symbols) => {
+                // Normalize flat SymbolInformation to hierarchical DocumentSymbol
+                Ok(symbols.into_iter().map(|si| DocumentSymbol {
+                    name: si.name,
+                    kind: si.kind,
+                    detail: si.container_name,
+                    range: si.location.range.clone(),
+                    selection_range: si.location.range.clone(),
+                    children: None,
+                    tags: si.tags,
+                    deprecated: si.deprecated,
+                }).collect())
+            }
+        }
+    }
+
+    /// Send textDocument/didOpen notification
+    /// This is fire-and-forget - no response is expected
+    pub async fn did_open(&self, uri: &str, language_id: &str, version: i32, text: &str) -> Result<()> {
+        let transport = self.transport.lock().await;
+        
+        let params = TextDocumentDidOpenParams {
+            text_document: TextDocumentItem {
+                uri: uri.to_string(),
+                language_id: language_id.to_string(),
+                version,
+                text: text.to_string(),
+            },
+        };
+
+        let msg = LspMessage::TextDocumentDidOpen(params);
+        transport.send(msg).await?;
+        
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_document_symbol_response_hierarchical_parsing() {
+        // Test that hierarchical response is correctly parsed
+        let json = r#"[
+            {
+                "name": "MyStruct",
+                "kind": 23,
+                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 10, "character": 0}},
+                "selectionRange": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 8}},
+                "children": [
+                    {
+                        "name": "my_method",
+                        "kind": 6,
+                        "range": {"start": {"line": 2, "character": 0}, "end": {"line": 4, "character": 0}},
+                        "selectionRange": {"start": {"line": 2, "character": 0}, "end": {"line": 2, "character": 10}}
+                    }
+                ]
+            }
+        ]"#;
+        
+        let response: DocumentSymbolResponse = serde_json::from_str(json).unwrap();
+        match response {
+            DocumentSymbolResponse::Hierarchical(symbols) => {
+                assert_eq!(symbols.len(), 1);
+                assert_eq!(symbols[0].name, "MyStruct");
+                assert_eq!(symbols[0].kind, SymbolKind::Struct);
+                assert!(symbols[0].children.is_some());
+                assert_eq!(symbols[0].children.as_ref().unwrap().len(), 1);
+                assert_eq!(symbols[0].children.as_ref().unwrap()[0].name, "my_method");
+            }
+            DocumentSymbolResponse::Flat(_) => panic!("Expected hierarchical"),
+        }
+    }
+
+    #[test]
+    fn test_document_symbol_response_flat_normalization() {
+        // Test that flat SymbolInformation response is normalized to hierarchical
+        let json = r#"[
+            {
+                "name": "my_function",
+                "kind": 12,
+                "location": {"uri": "file:///src/main.rs", "range": {"start": {"line": 0, "character": 0}, "end": {"line": 5, "character": 0}}}
+            }
+        ]"#;
+        
+        let response: DocumentSymbolResponse = serde_json::from_str(json).unwrap();
+        match response {
+            DocumentSymbolResponse::Hierarchical(_) => panic!("Expected flat"),
+            DocumentSymbolResponse::Flat(symbols) => {
+                assert_eq!(symbols.len(), 1);
+                assert_eq!(symbols[0].name, "my_function");
+                assert_eq!(symbols[0].kind, SymbolKind::Function);
+                // The location.range should be the same as selection_range after normalization
+            }
+        }
+    }
+
+    #[test]
+    fn test_did_open_notification_format() {
+        // Test that did_open serializes to the correct LSP notification format
+        let params = TextDocumentDidOpenParams {
+            text_document: TextDocumentItem {
+                uri: "file:///src/main.rs".to_string(),
+                language_id: "rust".to_string(),
+                version: 1,
+                text: "fn main() {}".to_string(),
+            },
+        };
+        
+        let msg = LspMessage::TextDocumentDidOpen(params);
+        let json = serde_json::to_string(&msg).unwrap();
+        
+        assert!(json.contains("textDocument/didOpen"));
+        assert!(json.contains("\"textDocument\""));
+        assert!(json.contains("\"languageId\":"));
+        assert!(json.contains("\"version\":"));
+    }
+
+    #[test]
+    fn test_document_symbol_request_format() {
+        // Test that document symbol request serializes correctly
+        let params = DocumentSymbolParams {
+            text_document: TextDocumentIdentifier {
+                uri: "file:///src/main.rs".to_string(),
+            },
+            work_done_progress_params: None,
+            partial_result_params: None,
+        };
+        
+        let json = serde_json::to_string(&params).unwrap();
+        
+        assert!(json.contains("\"textDocument\""));
+        assert!(json.contains("file:///src/main.rs"));
     }
 }

@@ -19,6 +19,7 @@ pub mod error;
 pub mod cancellation;
 pub mod subagent_runner_impl;
 pub mod cache_store_impl;
+pub mod explorer;
 
 pub use state::AppState;
 pub use error::ServerError;
@@ -117,6 +118,11 @@ pub async fn create_app(state: Arc<AppState>) -> Router {
         .route("/session/:id/diff/:file", get(routes::diff::get_diff))
         .route("/permission/:request_id/grant", post(routes::permission_grant))
         .route("/permission/:request_id/deny", post(routes::permission_deny))
+        // Explorer routes
+        .route("/explorer/bootstrap", get(routes::explorer_bootstrap))
+        .route("/explorer/tree", get(routes::explorer_tree))
+        // Outline route
+        .route("/outline", get(routes::get_outline))
         .with_state(state)
         .layer(
             TraceLayer::new_for_http()

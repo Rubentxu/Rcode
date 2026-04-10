@@ -611,41 +611,73 @@ impl DiscoveryContext {
     /// 1. auth.json (primary credential store)
     /// 2. Environment variables ({PROVIDER}_API_KEY, {PROVIDER}_BASE_URL)
     /// 3. Config file (providers.{provider_id}.api_key, providers.{provider_id}.base_url)
+    /// 4. Provider-known default (for known providers only)
     pub fn for_provider(provider_id: &str, config: Option<&rcode_core::RcodeConfig>) -> Self {
-        let env_provider_id = provider_id.to_uppercase().replace('-', "_");
-
-        // API key resolution: auth.json → env → config
-        let api_key = rcode_core::auth::get_api_key(provider_id)
-            .or_else(|| {
-                let env_key = format!("{}_API_KEY", env_provider_id);
-                std::env::var(&env_key).ok()
-            })
-            .or_else(|| {
-                let auth_key = format!("{}_AUTH_TOKEN", env_provider_id);
-                std::env::var(&auth_key).ok()
-            })
-            .or_else(|| {
-                config.and_then(|c| c.providers.get(provider_id))
-                    .and_then(|p| p.api_key.clone())
-                    .filter(|k| !k.is_empty())
-            });
-
-        // Base URL resolution: env → config
-        let base_url = std::env::var(format!("{}_BASE_URL", env_provider_id))
-            .ok()
-            .or_else(|| {
-                config.and_then(|c| c.providers.get(provider_id))
-                    .and_then(|p| p.base_url.clone())
-                    .filter(|u| !u.is_empty())
-            });
-
-        Self { api_key, base_url }
+        let resolution = crate::resolution::ProviderResolution::for_provider(provider_id, config);
+        Self {
+            api_key: resolution.api_key,
+            base_url: resolution.base_url,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Global mutex to serialize env-sensitive tests.
+    /// This ensures only one env-sensitive test runs at a time, preventing
+    /// interference between parallel test runs.
+    static ENVVAR_LOCK: Mutex<()> = Mutex::new(());
+
+    /// RAII guard for environment variable isolation in tests.
+    /// Saves the original values of specified env vars, sets new values,
+    /// and restores originals on drop (even on panic).
+    struct EnvGuard {
+        originals: std::collections::HashMap<String, Option<String>>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn new(vars: &[(&str, Option<&str>)]) -> Self {
+            let lock = ENVVAR_LOCK.lock().unwrap();
+
+            let originals: std::collections::HashMap<String, Option<String>> = vars
+                .iter()
+                .map(|(name, _)| {
+                    let original = std::env::var(*name).ok();
+                    (name.to_string(), original)
+                })
+                .collect();
+
+            for (name, value) in vars {
+                // SAFETY: Test-only env var manipulation
+                unsafe {
+                    match value {
+                        Some(v) => std::env::set_var(name, v),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+
+            Self { originals, _lock: lock }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, original) in &self.originals {
+                // SAFETY: Test-only env var cleanup
+                unsafe {
+                    match original {
+                        Some(v) => std::env::set_var(name, v),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_discovery_context_resolves_env_vars() {
@@ -712,6 +744,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_discovery_context_uses_known_default_base_url_for_openai() {
+        // Verify that DiscoveryContext returns known default base_url for openai
+        // when no env var or config is set. This fixes the discovery/runtime divergence.
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::remove_var("OPENAI_API_KEY");
+            std::env::remove_var("OPENAI_BASE_URL");
+
+            let ctx = DiscoveryContext::for_provider("openai", None);
+            assert_eq!(
+                ctx.base_url,
+                Some("https://api.openai.com/v1".to_string()),
+                "Should use known default base URL for openai"
+            );
+        }
+    }
+
+    #[test]
+    fn test_discovery_context_uses_known_default_base_url_for_minimax() {
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::remove_var("MINIMAX_API_KEY");
+            std::env::remove_var("MINIMAX_BASE_URL");
+
+            let ctx = DiscoveryContext::for_provider("minimax", None);
+            assert_eq!(
+                ctx.base_url,
+                Some("https://api.minimax.chat/v1".to_string()),
+                "Should use known default base URL for minimax"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn test_second_request_reuses_cached_models() {
         // Verify that calling list_models twice returns the same cached data
@@ -770,35 +836,57 @@ mod tests {
     #[test]
     fn test_has_credentials_from_env() {
         // SAFETY: Test-only environment variable manipulation
+        // Properly save and restore all sensitive env vars to avoid polluting other tests
         unsafe {
-            std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+            // Save original values (may not exist)
+            let orig_openai_key = std::env::var("OPENAI_API_KEY").ok();
+            let orig_openai_token = std::env::var("OPENAI_AUTH_TOKEN").ok();
+            let orig_anthropic_key = std::env::var("ANTHROPIC_API_KEY").ok();
+
+            // Clear all relevant env vars for a clean test state
             std::env::remove_var("OPENAI_API_KEY");
             std::env::remove_var("OPENAI_AUTH_TOKEN");
-        }
-        
-        let config = rcode_core::RcodeConfig::default();
-        let has_creds = |provider_id: &str| -> bool {
-            // auth.json first (won't have test creds, so falls through)
-            if rcode_core::auth::has_credential(provider_id) { return true; }
-            // env vars second
-            let env_key = format!("{}_API_KEY", provider_id.to_uppercase().replace('-', "_"));
-            if std::env::var(&env_key).is_ok() { return true; }
-            let auth_key = format!("{}_AUTH_TOKEN", provider_id.to_uppercase().replace('-', "_"));
-            if std::env::var(&auth_key).is_ok() { return true; }
-            // config fallback
-            config.providers.get(provider_id)
-                .and_then(|p| p.api_key.as_deref())
-                .map(|k| !k.is_empty())
-                .unwrap_or(false)
-        };
-        
-        assert!(has_creds("anthropic"));
-        assert!(!has_creds("openai")); // Not set
-        
-        unsafe {
             std::env::remove_var("ANTHROPIC_API_KEY");
-            std::env::remove_var("OPENAI_API_KEY");
-            std::env::remove_var("OPENAI_AUTH_TOKEN");
+
+            // Set test credential for anthropic only
+            std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+
+            let config = rcode_core::RcodeConfig::default();
+            let has_creds = |provider_id: &str| -> bool {
+                // auth.json first (won't have test creds, so falls through)
+                if rcode_core::auth::has_credential(provider_id) { return true; }
+                // env vars second
+                let env_key = format!("{}_API_KEY", provider_id.to_uppercase().replace('-', "_"));
+                if std::env::var(&env_key).is_ok() { return true; }
+                let auth_key = format!("{}_AUTH_TOKEN", provider_id.to_uppercase().replace('-', "_"));
+                if std::env::var(&auth_key).is_ok() { return true; }
+                // config fallback
+                config.providers.get(provider_id)
+                    .and_then(|p| p.api_key.as_deref())
+                    .map(|k| !k.is_empty())
+                    .unwrap_or(false)
+            };
+
+            assert!(has_creds("anthropic"), "Anthropic should have creds with ANTHROPIC_API_KEY set");
+            // Use a fake provider that won't exist in any environment
+            assert!(!has_creds("test_fake_provider_no_creds_xyz"), "Fake provider should never have creds");
+
+            // Clean up test env vars
+            std::env::remove_var("ANTHROPIC_API_KEY");
+
+            // Restore original values
+            match orig_openai_key {
+                Some(v) => std::env::set_var("OPENAI_API_KEY", v),
+                None => std::env::remove_var("OPENAI_API_KEY"),
+            }
+            match orig_openai_token {
+                Some(v) => std::env::set_var("OPENAI_AUTH_TOKEN", v),
+                None => std::env::remove_var("OPENAI_AUTH_TOKEN"),
+            }
+            match orig_anthropic_key {
+                Some(v) => std::env::set_var("ANTHROPIC_API_KEY", v),
+                None => std::env::remove_var("ANTHROPIC_API_KEY"),
+            }
         }
     }
 
@@ -1355,39 +1443,23 @@ mod tests {
 
     #[test]
     fn test_ttl_reads_from_env_var() {
-        // SAFETY: Test-only environment variable manipulation
-        unsafe {
-            let original = std::env::var("CATALOG_REFRESH_TTL_SECS").ok();
-            std::env::set_var("CATALOG_REFRESH_TTL_SECS", "600");
+        let _guard = EnvGuard::new(&[
+            ("CATALOG_REFRESH_TTL_SECS", Some("600")),
+        ]);
 
-            let service = ModelCatalogService::new();
-            assert_eq!(service.ttl, std::time::Duration::from_secs(600),
-                "TTL should be 600s from env var");
-
-            // Restore
-            match original {
-                Some(v) => std::env::set_var("CATALOG_REFRESH_TTL_SECS", v),
-                None => std::env::remove_var("CATALOG_REFRESH_TTL_SECS"),
-            }
-        }
+        let service = ModelCatalogService::new();
+        assert_eq!(service.ttl, std::time::Duration::from_secs(600),
+            "TTL should be 600s from env var");
     }
 
     #[test]
     fn test_ttl_defaults_to_300_when_env_unset() {
-        // SAFETY: Test-only environment variable manipulation
-        unsafe {
-            let original = std::env::var("CATALOG_REFRESH_TTL_SECS").ok();
-            std::env::remove_var("CATALOG_REFRESH_TTL_SECS");
+        let _guard = EnvGuard::new(&[
+            ("CATALOG_REFRESH_TTL_SECS", None),  // removed = defaults to 300
+        ]);
 
-            let service = ModelCatalogService::new();
-            assert_eq!(service.ttl, std::time::Duration::from_secs(300),
-                "TTL should default to 300s");
-
-            // Restore
-            match original {
-                Some(v) => std::env::set_var("CATALOG_REFRESH_TTL_SECS", v),
-                None => std::env::remove_var("CATALOG_REFRESH_TTL_SECS"),
-            }
-        }
+        let service = ModelCatalogService::new();
+        assert_eq!(service.ttl, std::time::Duration::from_secs(300),
+            "TTL should default to 300s");
     }
 }

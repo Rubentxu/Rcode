@@ -9,17 +9,20 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
+use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::state::AppState;
 use crate::error::ServerError;
+use crate::explorer::{ExplorerBootstrap, TreeResponse, TreeFilter};
 use rcode_core::{
     Session, SessionId, SessionStatus, Message, Part, MessageId, 
     PaginationParams, PaginatedMessages, AgentContext, save_config, ProviderConfig, AgentDefinition, DynamicAgent,
 };
 use rcode_agent::{AgentExecutor, DefaultAgent};
 use rcode_providers::ProviderFactory;
+use rcode_lsp::LanguageServerRegistry;
 use tracing::{debug, error, info, warn, Instrument};
 
 /// Adapter to wrap rcode_providers::LlmProvider and expose it as rcode_core::LlmProvider
@@ -1031,6 +1034,15 @@ pub async fn get_providers(
             .unwrap_or(serde_json::Value::Null)
     };
 
+    // Compute whether a provider is enabled based on disabled_providers config
+    let is_provider_enabled = |provider_id: &str| -> bool {
+        config
+            .disabled_providers
+            .as_ref()
+            .map(|disabled| !disabled.contains(&provider_id.to_string()))
+            .unwrap_or(true)
+    };
+
     // Well-known providers shown by default (id → display name)
     let known: &[(&str, &str)] = &[
         ("anthropic",  "Anthropic"),
@@ -1054,7 +1066,7 @@ pub async fn get_providers(
             "has_key":   check_has_key(id),
             "key_source": get_key_source(id),
             "base_url":  get_base_url(id),
-            "enabled":   true,
+            "enabled":   is_provider_enabled(id),
         }));
     }
 
@@ -1084,7 +1096,7 @@ pub async fn get_providers(
             "has_key":   check_has_key(id),
             "key_source": get_key_source(id),
             "base_url":  get_base_url(id),
-            "enabled":   true,
+            "enabled":   is_provider_enabled(id),
         }));
     }
 
@@ -1266,9 +1278,362 @@ pub async fn permission_deny(
     Err(ServerError::not_found())
 }
 
+// ========== Explorer Endpoints ==========
+
+/// Query parameters for explorer endpoints
+#[derive(Debug, Deserialize)]
+pub struct ExplorerQuery {
+    pub session_id: String,
+}
+
+/// Query parameters for tree/children endpoint
+#[derive(Debug, Deserialize)]
+pub struct TreeQuery {
+    pub session_id: String,
+    /// Path to get children for (absolute or relative to workspace root)
+    #[serde(default)]
+    pub path: String,
+    /// Depth to load (default 1 for immediate children only)
+    #[serde(default = "default_depth")]
+    pub depth: usize,
+    /// Filter mode: all, changed, staged, untracked, conflicted
+    #[serde(default = "default_filter")]
+    pub filter: String,
+    /// Include ignored files (default false)
+    #[serde(default)]
+    pub include_ignored: bool,
+    /// Include outside repo files (default false)
+    #[serde(default)]
+    pub include_outside_repo: bool,
+}
+
+fn default_depth() -> usize { 1 }
+fn default_filter() -> String { "all".to_string() }
+
+/// GET /explorer/bootstrap?session_id=<id>
+/// Returns workspace metadata for the explorer
+pub async fn explorer_bootstrap(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ExplorerQuery>,
+) -> Result<Json<ExplorerBootstrap>, ServerError> {
+    // Verify session exists and get project_path
+    let session = state.session_service.get(&SessionId(query.session_id.clone()))
+        .ok_or_else(|| ServerError::not_found())?;
+    
+    let workspace_root = session.project_path.clone();
+    let bootstrap = state.explorer_service.get_bootstrap(&workspace_root)
+        .await
+        .map_err(|e| ServerError::internal(e.to_string()))?;
+    
+    Ok(Json(bootstrap))
+}
+
+/// GET /explorer/tree?session_id=<id>&path=<path>&depth=1&filter=all
+/// Returns children for a directory path (lazy loading)
+pub async fn explorer_tree(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<TreeQuery>,
+) -> Result<Json<TreeResponse>, ServerError> {
+    // Verify session exists and get project_path
+    let session = state.session_service.get(&SessionId(query.session_id.clone()))
+        .ok_or_else(|| ServerError::not_found())?;
+    
+    let workspace_root = session.project_path.clone();
+    let path = if query.path.is_empty() || query.path == "." {
+        PathBuf::from(".")
+    } else {
+        PathBuf::from(&query.path)
+    };
+    
+    let response = state.explorer_service.get_children(
+        &workspace_root, 
+        &path, 
+        query.depth,
+        TreeFilter::parse(&query.filter),
+        query.include_ignored,
+        query.include_outside_repo,
+    )
+        .await
+        .map_err(|e| ServerError::internal(e.to_string()))?;
+    
+    Ok(Json(response))
+}
+
+// ========== Outline Endpoint ==========
+
+/// Timeout for LSP document_symbols requests in seconds
+const OUTLINE_TIMEOUT_SECS: u64 = 5;
+
+/// Query parameters for outline endpoint
+#[derive(Debug, Deserialize)]
+pub struct OutlineQuery {
+    pub session_id: String,
+    pub path: String,
+}
+
+/// Capabilities supported by the outline endpoint
+#[derive(Debug, Clone, Serialize)]
+pub struct OutlineCapabilities {
+    pub document_symbols: bool,
+    pub hierarchical: bool,
+}
+
+/// A symbol in the outline tree with frontend-compatible types
+/// This DTO converts LSP types to the wire format expected by the frontend:
+/// - `kind` is converted from LSP integer to string name
+/// - `selection_range` uses snake_case (not camelCase)
+#[derive(Debug, Clone, Serialize)]
+pub struct OutlineSymbolDto {
+    pub name: String,
+    #[serde(rename = "kind")]
+    pub kind_string: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub range: rcode_lsp::Range,
+    #[serde(rename = "selectionRange")]
+    pub selection_range: rcode_lsp::Range,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub children: Option<Vec<OutlineSymbolDto>>,
+}
+
+/// Response for outline endpoint
+#[derive(Debug, Serialize)]
+pub struct OutlineResponse {
+    pub path: String,
+    pub absolute_path: String,
+    pub language: String,
+    pub source: OutlineSource,
+    pub capabilities: OutlineCapabilities,
+    pub symbols: Vec<OutlineSymbolDto>,
+    // T4.5: Session metadata
+    pub message_count: usize,
+    pub token_estimate: Option<usize>,
+}
+
+/// Source of outline data
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutlineSource {
+    Lsp,
+    Unavailable,
+}
+
+/// Convert LSP DocumentSymbol to frontend-compatible OutlineSymbolDto
+/// This handles:
+/// - Converting SymbolKind integer to string name (e.g., 12 -> "Function")
+/// - Recursively converting children
+fn document_symbol_to_dto(symbol: rcode_lsp::DocumentSymbol) -> OutlineSymbolDto {
+    fn kind_to_string(kind: rcode_lsp::SymbolKind) -> &'static str {
+        match kind {
+            rcode_lsp::SymbolKind::File => "File",
+            rcode_lsp::SymbolKind::Module => "Module",
+            rcode_lsp::SymbolKind::Namespace => "Namespace",
+            rcode_lsp::SymbolKind::Package => "Package",
+            rcode_lsp::SymbolKind::Class => "Class",
+            rcode_lsp::SymbolKind::Method => "Method",
+            rcode_lsp::SymbolKind::Property => "Property",
+            rcode_lsp::SymbolKind::Field => "Field",
+            rcode_lsp::SymbolKind::Constructor => "Constructor",
+            rcode_lsp::SymbolKind::Enum => "Enum",
+            rcode_lsp::SymbolKind::Interface => "Interface",
+            rcode_lsp::SymbolKind::Function => "Function",
+            rcode_lsp::SymbolKind::Variable => "Variable",
+            rcode_lsp::SymbolKind::Constant => "Constant",
+            rcode_lsp::SymbolKind::String => "String",
+            rcode_lsp::SymbolKind::Number => "Number",
+            rcode_lsp::SymbolKind::Boolean => "Boolean",
+            rcode_lsp::SymbolKind::Array => "Array",
+            rcode_lsp::SymbolKind::Object => "Object",
+            rcode_lsp::SymbolKind::Key => "Key",
+            rcode_lsp::SymbolKind::Null => "Null",
+            rcode_lsp::SymbolKind::EnumMember => "EnumMember",
+            rcode_lsp::SymbolKind::Struct => "Struct",
+            rcode_lsp::SymbolKind::Event => "Event",
+            rcode_lsp::SymbolKind::Operator => "Operator",
+            rcode_lsp::SymbolKind::TypeParameter => "TypeParameter",
+        }
+    }
+
+    fn convert(symbol: rcode_lsp::DocumentSymbol) -> OutlineSymbolDto {
+        OutlineSymbolDto {
+            name: symbol.name,
+            kind_string: kind_to_string(symbol.kind).to_string(),
+            detail: symbol.detail,
+            range: symbol.range,
+            selection_range: symbol.selection_range,
+            children: symbol.children.map(|children| {
+                children.into_iter().map(convert).collect()
+            }),
+        }
+    }
+
+    convert(symbol)
+}
+
+/// Build unavailable response with capabilities
+fn build_unavailable_response(
+    path: String, 
+    absolute_path: String, 
+    language: String,
+    message_count: usize,
+    token_estimate: Option<usize>,
+) -> Json<OutlineResponse> {
+    Json(OutlineResponse {
+        path,
+        absolute_path,
+        language,
+        source: OutlineSource::Unavailable,
+        capabilities: OutlineCapabilities {
+            document_symbols: false,
+            hierarchical: false,
+        },
+        symbols: vec![],
+        message_count,
+        token_estimate,
+    })
+}
+
+/// GET /outline?session_id=<id>&path=<workspace-relative-path>
+/// Returns document symbols (outline) for a file using LSP
+pub async fn get_outline(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<OutlineQuery>,
+) -> Result<Json<OutlineResponse>, ServerError> {
+    // Validate session_id is present (already required by Query deserialization)
+    // Validate path is present (already required by Query deserialization)
+    
+    // Get session and verify it exists
+    let session = state.session_service.get(&SessionId(query.session_id.clone()))
+        .ok_or_else(|| ServerError::not_found())?;
+    
+    let project_path = session.project_path.clone();
+    
+    // T4.5: Get message count and estimate tokens for session metadata
+    let messages = state.session_service.get_messages(&query.session_id);
+    let message_count = messages.len();
+    // Rough token estimate: average 4 chars per token
+    let token_estimate = messages.iter()
+        .map(|m| {
+            let rcode_core::Message { parts, .. } = m;
+            parts.iter().map(|p| match p {
+                rcode_core::Part::Text { content } => content.len(),
+                rcode_core::Part::Reasoning { content } => content.len(),
+                rcode_core::Part::ToolCall { name, arguments, .. } => {
+                    name.len() + arguments.to_string().len()
+                }
+                rcode_core::Part::ToolResult { content, .. } => content.len(),
+                rcode_core::Part::Attachment { .. } => 0,
+            }).sum::<usize>()
+        })
+        .sum::<usize>() / 4; // Rough: 4 chars per token
+    
+    // Resolve the path - it should be relative to project root
+    let requested_path = std::path::Path::new(&query.path);
+    
+    // Security check: ensure path doesn't traverse outside project_path
+    let absolute_requested = if requested_path.is_absolute() {
+        requested_path.to_path_buf()
+    } else {
+        project_path.join(requested_path)
+    };
+    
+    // Normalize and check for path traversal
+    let canonical = absolute_requested.canonicalize()
+        .map_err(|e| ServerError::bad_request(format!("Invalid path: {}", e)))?;
+    let canonical_project = project_path.canonicalize()
+        .map_err(|e| ServerError::internal(format!("Invalid project path: {}", e)))?;
+    
+    // Check that the canonical path is within the project
+    if !canonical.starts_with(&canonical_project) {
+        return Err(ServerError::forbidden("Path outside project directory"));
+    }
+    
+    // Check that path is a file, not a directory
+    if canonical.is_dir() {
+        return Err(ServerError::bad_request("Path is a directory, expected a file"));
+    }
+    
+    // Detect language from file extension
+    let language = LanguageServerRegistry::detect_language(&canonical)
+        .unwrap_or_else(|| "unknown".to_string());
+    
+    // Get or start LSP server for this language
+    let lsp_client = state.lsp_registry
+        .get_or_start_for_language(&language, &project_path)
+        .await;
+    
+    // Convert path to file URI
+    let file_uri = format!("file://{}", canonical.display());
+    
+    let symbols = if let Some(client) = lsp_client {
+        // CRITICAL 1: Read file content and call did_open BEFORE document_symbols
+        // Many LSP servers require the document to be registered before they return symbols
+        let file_content = tokio::fs::read_to_string(&canonical)
+            .await
+            .map_err(|e| ServerError::internal(format!("Failed to read file: {}", e)))?;
+        
+        // Call did_open to notify the LSP server about the opened file
+        // Version is 1 for new files (LSP spec: version should increment on each change)
+        if let Err(e) = client.did_open(&file_uri, &language, 1, &file_content).await {
+            tracing::warn!(uri = %file_uri, error = %e, "Failed to send did_open notification");
+            // Continue anyway - some servers handle this gracefully
+        }
+        
+        // Apply timeout to LSP request
+        let symbols_result = tokio::time::timeout(
+            std::time::Duration::from_secs(OUTLINE_TIMEOUT_SECS),
+            client.document_symbols(&file_uri)
+        ).await;
+        
+        match symbols_result {
+            Ok(Ok(symbols)) => symbols,
+            Ok(Err(_)) | Err(_) => {
+                // LSP error or timeout - return unavailable with empty symbols
+                return Ok(build_unavailable_response(
+                    query.path,
+                    canonical.to_string_lossy().to_string(),
+                    language,
+                    message_count,
+                    Some(token_estimate),
+                ));
+            }
+        }
+    } else {
+        // No LSP server available for this language
+        return Ok(build_unavailable_response(
+            query.path,
+            canonical.to_string_lossy().to_string(),
+            language,
+            message_count,
+            Some(token_estimate),
+        ));
+    };
+    
+    // Convert symbols to frontend-compatible DTO format
+    let symbol_dtos: Vec<OutlineSymbolDto> = symbols
+        .into_iter()
+        .map(document_symbol_to_dto)
+        .collect();
+    
+    Ok(Json(OutlineResponse {
+        path: query.path,
+        absolute_path: canonical.to_string_lossy().to_string(),
+        language,
+        source: OutlineSource::Lsp,
+        capabilities: OutlineCapabilities {
+            document_symbols: true,
+            hierarchical: true,
+        },
+        symbols: symbol_dtos,
+        message_count,
+        token_estimate: Some(token_estimate),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_fast_path_shell_command;
+    use super::{parse_fast_path_shell_command, document_symbol_to_dto};
+    use rcode_lsp::{DocumentSymbol, Range, Position, SymbolKind};
 
     #[test]
     fn fast_path_accepts_simple_allowed_command() {
@@ -1298,5 +1663,214 @@ mod tests {
             parse_fast_path_shell_command("pwd", Some(&allowed)),
             Some("pwd".to_string())
         );
+    }
+
+    // ========== Outline DTO Tests ==========
+
+    #[test]
+    fn test_document_symbol_to_dto_converts_kind_to_string() {
+        let symbol = DocumentSymbol {
+            name: "my_function".to_string(),
+            kind: SymbolKind::Function,
+            detail: Some("fn() -> ()".to_string()),
+            range: Range::new(Position::new(0, 0), Position::new(10, 0)),
+            selection_range: Range::new(Position::new(0, 0), Position::new(10, 0)),
+            children: None,
+            tags: None,
+            deprecated: None,
+        };
+
+        let dto = document_symbol_to_dto(symbol);
+
+        assert_eq!(dto.name, "my_function");
+        assert_eq!(dto.kind_string, "Function");
+        assert_eq!(dto.detail, Some("fn() -> ()".to_string()));
+    }
+
+    #[test]
+    fn test_document_symbol_to_dto_converts_all_symbol_kinds() {
+        // Test that all major SymbolKind values convert to the correct string
+        let cases = vec![
+            (SymbolKind::File, "File"),
+            (SymbolKind::Module, "Module"),
+            (SymbolKind::Namespace, "Namespace"),
+            (SymbolKind::Package, "Package"),
+            (SymbolKind::Class, "Class"),
+            (SymbolKind::Method, "Method"),
+            (SymbolKind::Property, "Property"),
+            (SymbolKind::Field, "Field"),
+            (SymbolKind::Constructor, "Constructor"),
+            (SymbolKind::Enum, "Enum"),
+            (SymbolKind::Interface, "Interface"),
+            (SymbolKind::Function, "Function"),
+            (SymbolKind::Variable, "Variable"),
+            (SymbolKind::Constant, "Constant"),
+            (SymbolKind::Struct, "Struct"),
+            (SymbolKind::EnumMember, "EnumMember"),
+            (SymbolKind::TypeParameter, "TypeParameter"),
+        ];
+
+        for (kind, expected_str) in cases {
+            let symbol = DocumentSymbol {
+                name: "test".to_string(),
+                kind,
+                detail: None,
+                range: Range::new(Position::new(0, 0), Position::new(1, 0)),
+                selection_range: Range::new(Position::new(0, 0), Position::new(1, 0)),
+                children: None,
+                tags: None,
+                deprecated: None,
+            };
+            let dto = document_symbol_to_dto(symbol);
+            assert_eq!(dto.kind_string, expected_str, "Kind {:?} should convert to {}", kind, expected_str);
+        }
+    }
+
+    #[test]
+    fn test_document_symbol_to_dto_preserves_range() {
+        let symbol = DocumentSymbol {
+            name: "test".to_string(),
+            kind: SymbolKind::Function,
+            detail: None,
+            range: Range::new(Position::new(5, 10), Position::new(15, 20)),
+            selection_range: Range::new(Position::new(5, 10), Position::new(5, 14)),
+            children: None,
+            tags: None,
+            deprecated: None,
+        };
+
+        let dto = document_symbol_to_dto(symbol);
+
+        assert_eq!(dto.range.start.line, 5);
+        assert_eq!(dto.range.start.character, 10);
+        assert_eq!(dto.range.end.line, 15);
+        assert_eq!(dto.range.end.character, 20);
+        assert_eq!(dto.selection_range.start.line, 5);
+        assert_eq!(dto.selection_range.start.character, 10);
+        assert_eq!(dto.selection_range.end.line, 5);
+        assert_eq!(dto.selection_range.end.character, 14);
+    }
+
+    #[test]
+    fn test_document_symbol_to_dto_with_children() {
+        let child = DocumentSymbol {
+            name: "child_method".to_string(),
+            kind: SymbolKind::Method,
+            detail: None,
+            range: Range::new(Position::new(2, 0), Position::new(5, 0)),
+            selection_range: Range::new(Position::new(2, 0), Position::new(2, 12)),
+            children: None,
+            tags: None,
+            deprecated: None,
+        };
+
+        let parent = DocumentSymbol {
+            name: "MyClass".to_string(),
+            kind: SymbolKind::Class,
+            detail: Some("struct MyClass".to_string()),
+            range: Range::new(Position::new(0, 0), Position::new(10, 0)),
+            selection_range: Range::new(Position::new(0, 0), Position::new(0, 7)),
+            children: Some(vec![child]),
+            tags: None,
+            deprecated: None,
+        };
+
+        let dto = document_symbol_to_dto(parent);
+
+        assert_eq!(dto.name, "MyClass");
+        assert_eq!(dto.kind_string, "Class");
+        assert!(dto.children.is_some());
+        let children = dto.children.unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].name, "child_method");
+        assert_eq!(children[0].kind_string, "Method");
+    }
+
+    #[test]
+    fn test_document_symbol_to_dto_serialization_format() {
+        // Verify that the DTO serializes with the correct field names for the frontend
+        let symbol = DocumentSymbol {
+            name: "test_func".to_string(),
+            kind: SymbolKind::Function,
+            detail: None,
+            range: Range::new(Position::new(0, 0), Position::new(5, 0)),
+            selection_range: Range::new(Position::new(0, 0), Position::new(0, 9)),
+            children: None,
+            tags: None,
+            deprecated: None,
+        };
+
+        let dto = document_symbol_to_dto(symbol);
+        let json = serde_json::to_string(&dto).unwrap();
+
+        // Should use "kind" as the field name (via #[serde(rename = "kind")])
+        // Should use "selectionRange" for selection_range (via #[serde(rename = "selectionRange")])
+        assert!(json.contains(r#""name":"test_func""#));
+        assert!(json.contains(r#""kind":"Function""#));
+        assert!(json.contains(r#""selectionRange""#));
+        // Should NOT contain snake_case "selection_range"
+        assert!(!json.contains(r#""selection_range""#));
+    }
+
+    #[test]
+    fn test_outline_timeout_constant_is_5_seconds() {
+        // Verify the timeout constant is correctly set to 5 seconds
+        // This proves the timeout is configured as specified in the requirements
+        assert_eq!(super::OUTLINE_TIMEOUT_SECS, 5);
+        // Also verify it's used correctly in Duration creation
+        let duration = std::time::Duration::from_secs(super::OUTLINE_TIMEOUT_SECS);
+        assert_eq!(duration.as_secs(), 5);
+    }
+
+    #[test]
+    fn test_outline_source_lsp_serialization() {
+        // Verify OutlineSource::Lsp serializes correctly
+        use super::OutlineSource;
+        let source = OutlineSource::Lsp;
+        let json = serde_json::to_string(&source).unwrap();
+        assert_eq!(json, "\"lsp\"");
+    }
+
+    #[test]
+    fn test_outline_source_unavailable_serialization() {
+        // Verify OutlineSource::Unavailable serializes correctly
+        use super::OutlineSource;
+        let source = OutlineSource::Unavailable;
+        let json = serde_json::to_string(&source).unwrap();
+        assert_eq!(json, "\"unavailable\"");
+    }
+
+    #[test]
+    fn test_outline_response_with_lsp_source() {
+        // Verify OutlineResponse with OutlineSource::Lsp serializes with correct source field
+        use super::{OutlineResponse, OutlineSource, OutlineCapabilities, OutlineSymbolDto};
+        
+        let response = OutlineResponse {
+            path: "main.rs".to_string(),
+            absolute_path: "/project/main.rs".to_string(),
+            language: "rust".to_string(),
+            source: OutlineSource::Lsp,
+            capabilities: OutlineCapabilities {
+                document_symbols: true,
+                hierarchical: true,
+            },
+            symbols: vec![OutlineSymbolDto {
+                name: "main".to_string(),
+                kind_string: "Function".to_string(),
+                detail: None,
+                range: Range::new(Position::new(0, 0), Position::new(5, 0)),
+                selection_range: Range::new(Position::new(0, 0), Position::new(0, 4)),
+                children: None,
+            }],
+            message_count: 5,
+            token_estimate: Some(100),
+        };
+        
+        let json = serde_json::to_string(&response).unwrap();
+        // Verify source is "lsp" not "Lsp" (lowercase due to #[serde(rename_all = "lowercase")])
+        assert!(json.contains(r#""source":"lsp""#));
+        assert!(json.contains(r#""language":"rust""#));
+        assert!(json.contains(r#""name":"main""#));
+        assert!(json.contains(r#""kind":"Function""#));
     }
 }

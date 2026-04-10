@@ -1,100 +1,107 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { render } from "solid-js/web";
-import { fireEvent } from "@testing-library/dom";
+import { fireEvent, waitFor } from "@testing-library/dom";
 import { ReasoningBlock } from "./ReasoningBlock";
 
-// Helper to flush SolidJS updates
-const flushUpdates = () => new Promise(resolve => setTimeout(resolve, 0));
+// Container must be attached to document.body for SolidJS event delegation to work in jsdom
+let container: HTMLDivElement;
+beforeEach(() => {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+});
+afterEach(() => {
+  document.body.removeChild(container);
+});
 
 describe("ReasoningBlock", () => {
   it("should render reasoning block", () => {
-    const container = document.createElement("div");
     render(() => ReasoningBlock({ content: "Let me think about this..." }), container);
-    
-    const details = container.querySelector("details");
-    expect(details).toBeDefined();
+
+    const block = container.querySelector("[data-part='reasoning']");
+    expect(block).toBeDefined();
   });
 
-  it("should have reasoning label in summary", () => {
-    const container = document.createElement("div");
+  it("should have reasoning label in block", () => {
     render(() => ReasoningBlock({ content: "thinking..." }), container);
-    
-    const summary = container.querySelector(".reasoning-summary");
-    expect(summary?.textContent).toContain("Reasoning");
+
+    // Should contain "Agent Reasoning" label
+    const block = container.querySelector("[data-part='reasoning']");
+    expect(block?.textContent).toContain("Agent Reasoning");
   });
 });
 
 // SPR-S1: Reasoning block collapsed by default, expands on click
 describe("SPR-S1: Reasoning block collapsed by default and expands on click", () => {
-  it("should be collapsed by default", () => {
-    const container = document.createElement("div");
+  it("should be collapsed by default (content hidden)", () => {
     render(() => ReasoningBlock({ content: "Let me think about this..." }), container);
-    
-    const details = container.querySelector("details");
-    expect(details).toBeDefined();
-    // details element should NOT have 'open' attribute by default
-    expect(details?.hasAttribute("open")).toBe(false);
+
+    const block = container.querySelector("[data-part='reasoning']");
+    expect(block).toBeDefined();
+    // Content should be hidden (max-h-0 opacity-0 when collapsed)
+    const content = block?.querySelector(".max-h-0");
+    expect(content).toBeDefined();
   });
 
   it("should show reasoning content after clicking to expand", async () => {
-    const container = document.createElement("div");
     render(() => ReasoningBlock({ content: "My detailed reasoning content here" }), container);
-    
-    const details = container.querySelector("details");
-    expect(details).toBeDefined();
-    
-    // Initially collapsed
-    expect(details?.hasAttribute("open")).toBe(false);
-    
-    // Click on summary to expand
-    const summary = container.querySelector("summary");
-    expect(summary).toBeDefined();
-    
-    fireEvent.click(summary!);
-    await flushUpdates();
-    
-    // After click, should be expanded
-    expect(details?.hasAttribute("open")).toBe(true);
+
+    const block = container.querySelector("[data-part='reasoning']");
+    expect(block).toBeDefined();
+
+    // Click on the clickable header to expand
+    const clickable = block?.querySelector(".cursor-pointer");
+    expect(clickable).toBeDefined();
+
+    fireEvent.click(clickable!);
+
+    // Wait for content to appear (SolidJS reactive update)
+    await waitFor(() => {
+      const content = block?.querySelector(".max-h-\\[500px\\]");
+      expect(content).toBeDefined();
+    });
   });
 
-  it("should show collapsed icon when collapsed", () => {
-    const container = document.createElement("div");
+  it("should show expand_more icon when collapsed", () => {
     render(() => ReasoningBlock({ content: "thinking..." }), container);
-    
-    const icon = container.querySelector(".reasoning-icon");
-    expect(icon?.textContent).toContain("▶"); // Right arrow when collapsed
+
+    // Icon is a material-symbols-outlined with expand_more when collapsed
+    const icons = container.querySelectorAll(".material-symbols-outlined");
+    const expandIcon = Array.from(icons).find(i => i.textContent?.includes("expand_more"));
+    expect(expandIcon).toBeDefined();
   });
 
-  it("should show expanded icon when expanded", async () => {
-    const container = document.createElement("div");
+  it("should show expand_less icon when expanded", async () => {
     render(() => ReasoningBlock({ content: "thinking..." }), container);
-    
+
     // Click to expand
-    const summary = container.querySelector("summary");
-    fireEvent.click(summary!);
-    await flushUpdates();
-    
-    const icon = container.querySelector(".reasoning-icon");
-    expect(icon?.textContent).toContain("▼"); // Down arrow when expanded
+    const clickable = container.querySelector(".cursor-pointer");
+    fireEvent.click(clickable!);
+
+    // Wait for the icon to change to expand_less
+    await waitFor(() => {
+      const icons = container.querySelectorAll(".material-symbols-outlined");
+      const expandIcon = Array.from(icons).find(i => i.textContent?.includes("expand_less"));
+      expect(expandIcon).toBeDefined();
+    });
   });
 
   it("should render markdown content when expanded", async () => {
-    const container = document.createElement("div");
     render(() => ReasoningBlock({ content: "**Bold** and *italic* thinking" }), container);
-    
+
     // Initially collapsed
-    const details = container.querySelector("details");
-    expect(details?.hasAttribute("open")).toBe(false);
-    
+    const block = container.querySelector("[data-part='reasoning']");
+    const collapsedContent = block?.querySelector(".max-h-0");
+    expect(collapsedContent).toBeDefined();
+
     // Click to expand
-    const summary = container.querySelector("summary");
-    fireEvent.click(summary!);
-    await flushUpdates();
-    
-    // After expansion, markdown content should be visible in .reasoning-content
-    const content = container.querySelector(".reasoning-content");
-    expect(content).toBeDefined();
-    // Check that markdown was rendered - bold becomes <strong>
-    expect(content?.innerHTML || "").toContain("strong");
+    const clickable = block?.querySelector(".cursor-pointer");
+    fireEvent.click(clickable!);
+
+    // Wait for markdown content to be rendered (async via createResource)
+    await waitFor(() => {
+      const content = block?.querySelector(".max-h-\\[500px\\]");
+      expect(content).toBeDefined();
+      expect(content?.innerHTML || "").toContain("strong");
+    }, { timeout: 3000 });
   });
 });

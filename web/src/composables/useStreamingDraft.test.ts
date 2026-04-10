@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applyStreamEvent, type DraftMessage } from "./useStreamingDraft";
+import { applyStreamEvent, createDraftStore, type DraftMessage } from "./useStreamingDraft";
 
 describe("useStreamingDraft applyStreamEvent", () => {
   const sessionId = "test-session";
@@ -218,5 +218,166 @@ describe("useStreamingDraft applyStreamEvent", () => {
 
       expect(result).toBeNull();
     });
+
+    it("should return null even with complex multi-part draft (commit merge)", () => {
+      // SS-4: Commit merge without visual discontinuity
+      // The draft with all its accumulated parts merges into persisted messages
+      // and the draft returns to null
+      const complexDraft: DraftMessage = {
+        id: "draft-1",
+        parts: [
+          { type: "text", content: "Final response text" },
+          { type: "reasoning", content: "thinking..." },
+          { type: "tool_call", id: "call_1", name: "bash", arguments_delta: "{}", status: "completed" },
+          { type: "tool_result", tool_call_id: "call_1", content: "/home/user", is_error: false },
+        ],
+      };
+
+      const result = applyStreamEvent(complexDraft, {
+        type: "stream_assistant_committed",
+        session_id: sessionId,
+      });
+
+      expect(result).toBeNull();
+    });
+
+    it("should return null for agent_finished event as well", () => {
+      const draft: DraftMessage = {
+        id: "draft-1",
+        parts: [{ type: "text", content: "Some content" }],
+      };
+
+      const result = applyStreamEvent(draft, {
+        type: "agent_finished",
+        session_id: sessionId,
+      });
+
+      expect(result).toBeNull();
+    });
+  });
+
+  // SS-1: Optimistic shell tests — isOptimistic flag lifecycle
+  describe("SS-1: Optimistic shell flag lifecycle", () => {
+    it("should set isOptimistic to false on first stream_text_delta", () => {
+      // Simulate optimistic shell: draft with isOptimistic: true
+      const optimisticDraft: DraftMessage = {
+        id: "draft-1",
+        parts: [{ type: "text", content: "" }],
+        isOptimistic: true,
+      };
+
+      const result = applyStreamEvent(optimisticDraft, {
+        type: "stream_text_delta",
+        session_id: sessionId,
+        delta: "Hello",
+      });
+
+      expect(result.isOptimistic).toBe(false);
+      expect((result.parts[0] as { type: "text"; content: string }).content).toBe("Hello");
+    });
+
+    it("should set isOptimistic to false on first stream_text_snapshot (legacy)", () => {
+      const optimisticDraft: DraftMessage = {
+        id: "draft-1",
+        parts: [{ type: "text", content: "" }],
+        isOptimistic: true,
+      };
+
+      const result = applyStreamEvent(optimisticDraft, {
+        type: "stream_text_snapshot",
+        session_id: sessionId,
+        accumulated_text: "Legacy accumulated text",
+      });
+
+      expect(result.isOptimistic).toBe(false);
+      expect((result.parts[0] as { type: "text"; content: string }).content).toBe("Legacy accumulated text");
+    });
+
+    it("should set isOptimistic to false on first stream_reasoning_delta", () => {
+      const optimisticDraft: DraftMessage = {
+        id: "draft-1",
+        parts: [{ type: "text", content: "" }],
+        isOptimistic: true,
+      };
+
+      const result = applyStreamEvent(optimisticDraft, {
+        type: "stream_reasoning_delta",
+        session_id: sessionId,
+        delta: "thinking...",
+      });
+
+      expect(result.isOptimistic).toBe(false);
+      expect(result.parts.length).toBe(2); // original text + new reasoning
+    });
+
+    it("should set isOptimistic to false on stream_tool_call_start", () => {
+      const optimisticDraft: DraftMessage = {
+        id: "draft-1",
+        parts: [{ type: "text", content: "" }],
+        isOptimistic: true,
+      };
+
+      const result = applyStreamEvent(optimisticDraft, {
+        type: "stream_tool_call_start",
+        session_id: sessionId,
+        tool_call_id: "call_1",
+        name: "bash",
+      });
+
+      expect(result.isOptimistic).toBe(false);
+      expect(result.parts.length).toBe(2); // text + tool_call
+    });
+
+    it("should preserve isOptimistic: false when already false (subsequent deltas)", () => {
+      const streamingDraft: DraftMessage = {
+        id: "draft-1",
+        parts: [{ type: "text", content: "Hello" }],
+        isOptimistic: false,
+      };
+
+      const result = applyStreamEvent(streamingDraft, {
+        type: "stream_text_delta",
+        session_id: sessionId,
+        delta: " world",
+      });
+
+      expect(result.isOptimistic).toBe(false);
+      expect((result.parts[0] as { type: "text"; content: string }).content).toBe("Hello world");
+    });
+  });
+});
+
+describe("createDraftStore initOptimisticShell", () => {
+  it("should create draft with isOptimistic: true and empty text part", () => {
+    const store = createDraftStore();
+    store.initOptimisticShell("session-123");
+
+    const draft = store.draft();
+    expect(draft).not.toBeNull();
+    expect(draft!.isOptimistic).toBe(true);
+    expect(draft!.parts).toHaveLength(1);
+    expect(draft!.parts[0].type).toBe("text");
+    expect((draft!.parts[0] as { type: "text"; content: string }).content).toBe("");
+    expect(draft!.id).toContain("session-123");
+  });
+
+  it("should clear draft when clear() is called", () => {
+    const store = createDraftStore();
+    store.initOptimisticShell("session-123");
+    store.clear();
+
+    expect(store.draft()).toBeNull();
+  });
+
+  it("should overwrite existing draft when initOptimisticShell called twice", () => {
+    const store = createDraftStore();
+    store.initOptimisticShell("session-1");
+    const firstDraft = store.draft();
+
+    store.initOptimisticShell("session-2");
+    const secondDraft = store.draft();
+
+    expect(secondDraft!.id).not.toBe(firstDraft!.id);
+    expect(secondDraft!.isOptimistic).toBe(true);
   });
 });

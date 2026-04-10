@@ -1,5 +1,32 @@
-import { describe, it, expect } from "vitest";
-import { renderMarkdownToHtml } from "./MarkdownRenderer";
+import { cleanup, render, waitFor } from "@solidjs/testing-library";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  enhanceMermaidDiagrams,
+  MarkdownRenderer,
+  renderMarkdownToHtml,
+  resetMarkdownRendererTestState,
+} from "./MarkdownRenderer";
+
+const mermaidInitialize = vi.fn();
+const mermaidRender = vi.fn();
+
+vi.mock("mermaid", () => ({
+  default: {
+    initialize: mermaidInitialize,
+    render: mermaidRender,
+  },
+}));
+
+beforeEach(() => {
+  cleanup();
+  mermaidInitialize.mockReset();
+  mermaidRender.mockReset();
+  resetMarkdownRendererTestState();
+});
+
+afterEach(() => {
+  cleanup();
+});
 
 describe("MarkdownRenderer - GFM Elements", () => {
   describe("headings", () => {
@@ -117,6 +144,81 @@ describe("MarkdownRenderer - GFM Elements", () => {
       // Should not contain script tags
       expect(html).not.toContain("<script>");
       expect(html).not.toContain("alert");
+    });
+  });
+
+  describe("KaTeX", () => {
+    it("should render inline math", async () => {
+      const html = await renderMarkdownToHtml("Inline math $a^2 + b^2 = c^2$ works.");
+      expect(html).toContain('class="katex"');
+      expect(html).toContain('annotation encoding="application/x-tex">a^2 + b^2 = c^2</annotation>');
+    });
+
+    it("should render display math", async () => {
+      const html = await renderMarkdownToHtml("$$\n\\int_0^1 x^2 dx\n$$");
+      expect(html).toContain('class="katex-display"');
+      expect(html).toContain("∫");
+    });
+
+    it("should keep invalid LaTeX as katex error output", async () => {
+      const html = await renderMarkdownToHtml("$\\notacommand{$");
+      expect(html).toContain('class="katex-error"');
+    });
+  });
+
+  describe("Mermaid", () => {
+    it("should render Mermaid fences as lazy placeholders", async () => {
+      const html = await renderMarkdownToHtml("```mermaid\ngraph TD\n  A-->B\n```");
+
+      const container = document.createElement("div");
+      container.innerHTML = html;
+
+      const block = container.querySelector("pre.mermaid");
+      expect(block).not.toBeNull();
+      expect(block?.getAttribute("data-mermaid-source")).toBe("graph TD\n  A-->B");
+      expect(block?.getAttribute("data-mermaid-status")).toBe("pending");
+    });
+
+    it("should not load Mermaid when no diagram is present", async () => {
+      const { container } = render(() => <MarkdownRenderer content="Regular paragraph only." />);
+
+      await waitFor(() => {
+        expect(container.querySelector("p")).not.toBeNull();
+      });
+
+      expect(mermaidInitialize).not.toHaveBeenCalled();
+      expect(mermaidRender).not.toHaveBeenCalled();
+    });
+
+    it("should lazy load Mermaid only when a diagram is present", async () => {
+      mermaidRender.mockResolvedValue({ svg: '<svg><text>diagram</text></svg>' });
+
+      const { container } = render(() => (
+        <MarkdownRenderer content={"```mermaid\ngraph TD\n  A-->B\n```"} />
+      ));
+
+      await waitFor(() => {
+        expect(mermaidInitialize).toHaveBeenCalledTimes(1);
+        expect(mermaidRender).toHaveBeenCalledTimes(1);
+      });
+
+      const block = container.querySelector("pre.mermaid");
+      expect(block?.getAttribute("data-mermaid-status")).toBe("rendered");
+      expect(block?.innerHTML).toContain("<svg>");
+    });
+
+    it("should show Mermaid fallback when render fails", async () => {
+      mermaidRender.mockRejectedValue(new Error("invalid diagram"));
+
+      const container = document.createElement("div");
+      container.innerHTML =
+        '<pre class="mermaid" data-mermaid-source="graph TD" data-mermaid-status="pending">graph TD</pre>';
+
+      await enhanceMermaidDiagrams(container);
+
+      const block = container.querySelector("pre.mermaid");
+      expect(block?.getAttribute("data-mermaid-status")).toBe("error");
+      expect(block?.textContent).toContain("Unable to render Mermaid diagram.");
     });
   });
 });

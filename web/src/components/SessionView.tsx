@@ -15,12 +15,28 @@ import { AttachmentPart } from "./parts/AttachmentPart";
 import { StreamingTextPart } from "./parts/StreamingTextPart";
 import { StreamingToolCallCard } from "./parts/StreamingToolCallCard";
 import { ReasoningStreamPanel } from "./parts/ReasoningStreamPanel";
+import { TurnAvatar } from "./parts/TurnAvatar";
+import { QuickActions } from "./parts/QuickActions";
 import { createDraftStore, type DraftPart } from "../composables/useStreamingDraft";
+import type {
+  SSEStreamReasoningDelta,
+  SSEStreamTextDelta,
+  SSEStreamToolCallArg,
+  SSEStreamToolCallEnd,
+  SSEStreamToolCallStart,
+  SSEStreamToolResult,
+} from "../api/types";
+
+/** Represents a conversational turn: one or more consecutive messages from the same role */
+interface Turn {
+  role: "user" | "assistant" | "system";
+  messages: Message[];
+}
 
 interface SessionViewProps {
   session: Session;
   messages: Message[];
-  isLoading: boolean;
+  isLoading: () => boolean;
   sseStatus: "connected" | "connecting" | "disconnected";
   onSubmit: (prompt: string) => void;
   onAbort: () => void;
@@ -30,6 +46,13 @@ interface SessionViewProps {
   onComplete?: () => void;
   onReloadMessages?: () => void;
   onError?: (error: string) => void;
+  // MQA-3: Branch callback - creates new session seeded with conversation up to messageId
+  onBranch?: (messageId: string, messagesUpTo: Message[]) => void;
+  // MQA-2: Retry callback - replaces assistant response, re-submits user prompt without duplicating user message
+  onRetry: (assistantMessageId: string, userPrompt: string) => void;
+  // MQA-2: Initialize draft/optimistic shell explicitly (needed for retry to show draft immediately)
+  initDraft?: (sessionId: string) => void;
+  currentModel?: string;
 }
 
 export default function SessionView(props: SessionViewProps) {
@@ -38,7 +61,7 @@ export default function SessionView(props: SessionViewProps) {
   let scrollContainerRef: HTMLDivElement | undefined;
   
   // Phase 3: Draft store for streaming parts
-  const { draft, dispatch, clear: clearDraft } = createDraftStore();
+  const { draft, dispatch, clear: clearDraft, initOptimisticShell } = createDraftStore();
   
   // Phase 5: Scroll anchoring state
   const NEAR_BOTTOM_THRESHOLD_PX = 50;
@@ -48,6 +71,98 @@ export default function SessionView(props: SessionViewProps) {
   // Create a derived message list that includes persisted messages
   const displayMessages = () => {
     return [...props.messages];
+  };
+
+  /**
+   * Groups consecutive messages by role into conversational turns.
+   * CT-4: Grouping is purely presentational; persisted order and message IDs are NOT altered.
+   */
+  const turns = createMemo((): Turn[] => {
+    const result: Turn[] = [];
+    const msgs = displayMessages();
+    let i = 0;
+    while (i < msgs.length) {
+      const msg = msgs[i];
+      const role = msg.role as "user" | "assistant" | "system";
+      const turnMessages: Message[] = [msg];
+      let j = i + 1;
+      // Group consecutive messages with the same role
+      while (j < msgs.length && msgs[j].role === msg.role) {
+        turnMessages.push(msgs[j]);
+        j++;
+      }
+      result.push({ role, messages: turnMessages });
+      i = j;
+    }
+    return result;
+  });
+
+  /**
+   * Extracts the final text content from a message for copy action (MQA-1).
+   * Prefers structured parts (text part), falls back to legacy content field.
+   */
+  const extractTextContent = (message: Message): string => {
+    if (message.parts && message.parts.length > 0) {
+      // Find the last text part - that's the final assistant response
+      const textParts = message.parts.filter((p) => p.type === "text");
+      if (textParts.length > 0) {
+        const lastText = textParts[textParts.length - 1];
+        return lastText.content;
+      }
+      // If no text parts but has other parts, return empty (can't copy non-text)
+      return "";
+    }
+    // Fallback to legacy content
+    return message.content ?? "";
+  };
+
+  /**
+   * Finds the user prompt that preceded an assistant message for retry (MQA-2).
+   * Returns the content of the preceding user message, or null if not found.
+   */
+  const findPrecedingUserPrompt = (assistantMessageId: string): string | null => {
+    const msgs = displayMessages();
+    const assistantIndex = msgs.findIndex((m) => m.id === assistantMessageId);
+    if (assistantIndex <= 0) return null;
+
+    // Find the preceding user message
+    for (let i = assistantIndex - 1; i >= 0; i--) {
+      if (msgs[i].role === "user") {
+        // Return the text content of the user message
+        return extractTextContent(msgs[i]);
+      }
+    }
+    return null;
+  };
+
+  /**
+   * MQA-2: Retry handler - removes assistant response and re-submits preceding user prompt.
+   * MQA-6: Retry does NOT duplicate; it replaces the assistant response from that turn onward.
+   * Uses the dedicated onRetry callback (not onSubmit) to avoid duplicating the user message.
+   */
+  const handleRetry = (assistantMessageId: string) => {
+    const userPrompt = findPrecedingUserPrompt(assistantMessageId);
+    if (!userPrompt) {
+      console.warn("Retry: no preceding user prompt found for", assistantMessageId);
+      return;
+    }
+    // Delegate to onRetry which handles truncation and API call without duplicating user message
+    props.onRetry(assistantMessageId, userPrompt);
+  };
+
+  /**
+   * MQA-3: Branch handler - creates new session seeded with conversation up to this message.
+   */
+  const handleBranch = (messageId: string) => {
+    const msgs = displayMessages();
+    const messageIndex = msgs.findIndex((m) => m.id === messageId);
+    if (messageIndex < 0) {
+      console.warn("Branch: message not found", messageId);
+      return;
+    }
+    // Get all messages up to and including this one
+    const messagesUpTo = msgs.slice(0, messageIndex + 1);
+    props.onBranch?.(messageId, messagesUpTo);
   };
   
   // Phase 5: Scroll handler to track user's scroll position
@@ -67,7 +182,7 @@ export default function SessionView(props: SessionViewProps) {
   // Phase 5: Auto-scroll when near bottom, using RAF to batch updates
   createEffect(() => {
     // Trigger on draft changes during loading
-    if (props.isLoading && draft() && isNearBottom && !rafScheduled) {
+    if (props.isLoading() && draft() && isNearBottom && !rafScheduled) {
       rafScheduled = true;
       requestAnimationFrame(() => {
         scrollToBottom();
@@ -75,6 +190,19 @@ export default function SessionView(props: SessionViewProps) {
       });
     }
   });
+
+  // SS-3: Determine if skeleton should be shown (optimistic shell with no content yet)
+  // Returns true when draft is optimistic AND has only the initial empty text part
+  const showSkeleton = () => {
+    const d = draft();
+    if (!d || !d.isOptimistic) return false;
+    // Optimistic shell with only the initial empty text part — show skeleton
+    if (d.parts.length === 1 && d.parts[0].type === "text") {
+      const textPart = d.parts[0] as { type: "text"; content: string };
+      return textPart.content === "";
+    }
+    return false;
+  };
 
   // Keep the per-session SSE connection open to avoid missing fast responses.
   const connectSSE = async (sessionId: string) => {
@@ -119,22 +247,22 @@ export default function SessionView(props: SessionViewProps) {
       },
       // Phase 3: New semantic event callbacks
       onTextDelta: (event) => {
-        dispatch(event);
+        dispatch(event as SSEStreamTextDelta);
       },
       onReasoningDelta: (event) => {
-        dispatch(event);
+        dispatch(event as SSEStreamReasoningDelta);
       },
       onToolCallStart: (event) => {
-        dispatch(event);
+        dispatch(event as SSEStreamToolCallStart);
       },
       onToolCallArg: (event) => {
-        dispatch(event);
+        dispatch(event as SSEStreamToolCallArg);
       },
       onToolCallEnd: (event) => {
-        dispatch(event);
+        dispatch(event as SSEStreamToolCallEnd);
       },
       onToolResult: (event) => {
-        dispatch(event);
+        dispatch(event as SSEStreamToolResult);
       },
       onAssistantCommitted: () => {
         clearDraft();
@@ -154,8 +282,18 @@ export default function SessionView(props: SessionViewProps) {
   });
 
   createEffect(() => {
-    if (!props.isLoading) {
+    if (!props.isLoading()) {
       clearDraft();
+    }
+  });
+
+  // SS-1: Initialize optimistic shell immediately when loading starts (before SSE events arrive)
+  createEffect(() => {
+    if (props.isLoading() && !draft()) {
+      // Only init if we don't already have a draft (e.g., from a previous streaming session that was cleared)
+      initOptimisticShell(props.session.id);
+      // Also call the prop callback if provided (allows App to explicitly initialize draft, e.g., for retry)
+      props.initDraft?.(props.session.id);
     }
   });
 
@@ -172,7 +310,7 @@ export default function SessionView(props: SessionViewProps) {
   const commandContext: CommandContext = {
     currentSessionId: props.session.id,
     sessions: props.sessions.map((s) => ({ id: s.id, title: s.title || "" })),
-    messages: props.messages.map((m) => ({ id: m.id, role: m.role, content: m.content })),
+    messages: props.messages.map((m) => ({ id: m.id, role: m.role, content: m.content ?? "" })),
   };
 
   const handleCommandResult = (result: { success: boolean; message: string; data?: unknown }) => {
@@ -180,88 +318,133 @@ export default function SessionView(props: SessionViewProps) {
   };
 
   return (
-    <div style="display: flex; flex-direction: column; height: 100%;">
-      <header style="height: 56px; border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 var(--space-4); background: var(--bg-secondary);">
-        <h1 style="font-size: var(--text-lg); font-weight: 600; flex: 1;">
-          {props.session.title || "New Session"}
-        </h1>
-        <ConnectionStatus status={props.sseStatus} />
-      </header>
-       
-      <div 
+    <div class="flex flex-col h-full">
+      <div
         ref={scrollContainerRef}
-        style="flex: 1; overflow-y: auto; padding: var(--space-4);"
+        class="flex-1 overflow-y-auto p-8 custom-scrollbar"
         onScroll={handleScroll}
       >
-        <Show when={displayMessages().length === 0 && !draft()} fallback={
-          <>
-            <For each={displayMessages()}>
-              {(message) => (
-                <div data-component="message" data-role={message.role}>
-                  <div data-component="message-header">
-                    <span style="font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; color: var(--text-muted);">
-                      {message.role}
-                    </span>
-                    <span style="font-size: var(--text-xs); color: var(--text-muted);">
-                      {new Date(message.created_at).toLocaleTimeString()}
-                    </span>
+        {/* CT-3: Transcript uses max-width centering for readability */}
+        <div data-component="transcript" class="max-w-5xl mx-auto w-full">
+          <Show when={turns().length === 0 && !draft()} fallback={
+            <>
+              {/* Conversational turns with avatar slots */}
+              <For each={turns()}>
+                {(turn) => (
+                  <div 
+                    class={`turn turn--${turn.role}`}
+                    data-turn-role={turn.role}
+                  >
+                    {/* CT-2: Avatar slot — omitted for system role's inline rendering */}
+                    <Show when={turn.role !== "system"}>
+                      <TurnAvatar role={turn.role} />
+                    </Show>
+                    <div class="turn-content">
+                      <For each={turn.messages}>
+                        {(message) => (
+                          <div data-component="message" data-role={message.role}>
+                            {/* CT-6: System messages render inline without avatar — show subtle role label */}
+                            <Show when={message.role === "system"}>
+                              <div data-component="message-header">
+                                <span style="font-size: var(--text-xs); font-weight: 600; color: var(--text-muted);">
+                                  system
+                                </span>
+                              </div>
+                            </Show>
+                            <div data-component="message-content">
+                              <MessageContent message={message} />
+                            </div>
+                            {/* MQA-1, MQA-2, MQA-3: Quick actions for assistant messages only */}
+                            <Show when={message.role === "assistant"}>
+                              <QuickActions
+                                messageId={message.id}
+                                textContent={extractTextContent(message)}
+                                onRetry={handleRetry}
+                                onBranch={handleBranch}
+                              />
+                            </Show>
+                          </div>
+                        )}
+                      </For>
+                    </div>
                   </div>
-                  <div data-component="message-content">
-                    <MessageContent message={message} />
+                )}
+              </For>
+              {/* Phase 3: Show draft message during streaming as an assistant turn */}
+              {/* SS-1: Optimistic shell appears immediately on submit BEFORE any SSE delta */}
+              {/* SS-2: Abort button lives inside the shell, not in a separate bottom bar */}
+              <Show when={props.isLoading() && draft()}>
+                <div 
+                  class="turn turn--assistant" 
+                  data-turn-role="assistant"
+                  data-streaming={draft()?.isOptimistic ? "optimistic" : "streaming"}
+                >
+                  <TurnAvatar role="assistant" />
+                  <div class="turn-content">
+                    <div data-component="message" data-role="assistant">
+                      {/* SS-2: Abort button in shell header - no separate bottom bar */}
+                      <div data-component="shell-header">
+                        <span style="font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; color: var(--text-muted);">
+                          assistant
+                        </span>
+                        <Show when={draft()?.isOptimistic} fallback={
+                          <span style="font-size: var(--text-xs); color: var(--text-muted);">
+                            streaming...
+                          </span>
+                        }>
+                          <span style="font-size: var(--text-xs); color: var(--text-muted);">
+                            thinking...
+                          </span>
+                        </Show>
+                        {/* SS-2: Stop button moved INTO the shell - no bottom bar needed */}
+                        <button 
+                          data-component="shell-abort" 
+                          onClick={props.onAbort}
+                          aria-label="Stop generation"
+                        >
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                            <rect x="4" y="4" width="16" height="16" rx="2"/>
+                          </svg>
+                          Stop
+                        </button>
+                      </div>
+                      {/* SS-3: Skeleton → streaming content transition */}
+                      <div data-component="message-content">
+                        <Show 
+                          when={!showSkeleton()}
+                          fallback={<SkeletonContent />}
+                        >
+                          <DraftMessageContent parts={draft()!.parts} />
+                        </Show>
+                      </div>
+                    </div>
                   </div>
                 </div>
-              )}
-            </For>
-            {/* Phase 3: Show draft message during streaming */}
-            <Show when={props.isLoading && draft()}>
-              <div data-component="message" data-role="assistant">
-                <div data-component="message-header">
-                  <span style="font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; color: var(--text-muted);">
-                    assistant
-                  </span>
-                  <span style="font-size: var(--text-xs); color: var(--text-muted);">
-                    streaming...
-                  </span>
-                </div>
-                <div data-component="message-content">
-                  <DraftMessageContent parts={draft()!.parts} />
-                </div>
+              </Show>
+            </>
+          }>
+            <Show when={turns().length === 0 && !draft()}>
+              <div data-component="empty-state" style="height: 200px;">
+                <p data-component="empty-state-description">
+                  Start a conversation by typing a message below
+                </p>
               </div>
             </Show>
-          </>
-        }>
-          <Show when={displayMessages().length === 0 && !draft()}>
-            <div data-component="empty-state" style="height: 200px;">
-              <p data-component="empty-state-description">
-                Start a conversation by typing a message below
-              </p>
-            </div>
           </Show>
-        </Show>
+        </div>
       </div>
 
-      <Show when={props.isLoading}>
-        <div style="display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); border-top: 1px solid var(--border);">
-          <div data-component="typing-indicator">
-            <span data-component="typing-dot"></span>
-            <span data-component="typing-dot"></span>
-            <span data-component="typing-dot"></span>
-          </div>
-          <span style="font-size: var(--text-sm); color: var(--text-secondary);">Processing...</span>
-          <button data-component="button" data-variant="abort" onClick={props.onAbort} style="margin-left: auto;">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-              <rect x="4" y="4" width="16" height="16" rx="2"/>
-            </svg>
-            Stop
-          </button>
-        </div>
+      {/* Bottom processing bar removed — abort control lives inside the assistant shell */}
+      <Show when={false}>
+        <div />
       </Show>
 
       <PromptInput
         onSubmit={props.onSubmit}
         onCommand={handleCommandResult}
-        disabled={props.isLoading}
+        disabled={props.isLoading()}
         context={commandContext}
+        currentModel={props.currentModel}
       />
     </div>
   );
@@ -278,7 +461,7 @@ function MessageContent(props: MessageContentProps) {
   return (
     <Show 
       when={hasParts()} 
-      fallback={<LegacyContent content={props.message.content} />}
+      fallback={<LegacyContent content={props.message.content ?? ""} />}
     >
       <StructuredParts parts={props.message.parts!} />
     </Show>
@@ -379,6 +562,19 @@ function DraftMessageContent(props: { parts: DraftPart[] }) {
   );
 }
 
+// SS-1 / SS-3: Skeleton content shown in optimistic shell before first SSE delta arrives
+// Smoothly transitions to real content when first delta is received
+function SkeletonContent() {
+  return (
+    <div data-component="skeleton-content">
+      {/* Simulate 3 lines of varying width for natural skeleton appearance */}
+      <span data-component="skeleton-line" style="width: 65%;">.</span>
+      <span data-component="skeleton-line" style="width: 45%;">.</span>
+      <span data-component="skeleton-line" style="width: 80%;">.</span>
+    </div>
+  );
+}
+
 // Phase 3: Router for draft part types during streaming
 function DraftPartRenderer(props: { part: DraftPart }) {
   const partType = props.part.type;
@@ -416,24 +612,27 @@ function DraftPartRenderer(props: { part: DraftPart }) {
 
 function ConnectionStatus(props: { status: "connected" | "connecting" | "disconnected" }) {
   const statusColors = {
-    connected: "var(--success)",
-    connecting: "var(--warning)",
-    disconnected: "var(--error)",
+    connected: "var(--secondary)",
+    connecting: "var(--tertiary)",
+    disconnected: "var(--outline)",
   };
 
   return (
-    <div style="display: flex; align-items: center; gap: var(--space-2);">
-      <span 
-        data-component="status-dot" 
+    <div class="flex items-center gap-2">
+      <span
+        data-component="status-dot"
         data-status={props.status}
-        style={{
-          width: "8px",
-          height: "8px",
-          "border-radius": "50%",
-          "background-color": statusColors[props.status],
-        }}
-      />
-      <span style="font-size: var(--text-xs); color: var(--text-muted);">{props.status}</span>
+        class="relative flex h-2 w-2"
+      >
+        <Show when={props.status === "connected"}>
+          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-secondary opacity-75"></span>
+        </Show>
+        <span
+          class={`relative inline-flex rounded-full h-2 w-2`}
+          style={{ "background-color": statusColors[props.status] }}
+        ></span>
+      </span>
+      <span class="text-xs text-outline capitalize">{props.status}</span>
     </div>
   );
 }

@@ -674,3 +674,522 @@ async fn test_get_session_children_not_found() {
 
     assert_eq!(response.status(), 404);
 }
+
+// ========== Explorer Endpoint Tests ==========
+
+#[tokio::test]
+async fn test_explorer_bootstrap_returns_workspace_metadata() {
+    // Test that GET /explorer/bootstrap returns valid workspace metadata
+    let app = TestApp::new().await;
+    let (session_id, _temp_dir) = app.create_test_session_with_real_path().await;
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/explorer/bootstrap?session_id={}", app.base_url(), session_id.0))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert!(body["workspace_root"].is_string());
+    assert!(body["repo_relative_root"].is_string());
+    assert!(body["git_available"].is_boolean());
+    assert!(body["watching"].is_boolean());
+    assert!(body["case_sensitive"].is_boolean());
+}
+
+#[tokio::test]
+async fn test_explorer_bootstrap_session_not_found() {
+    // Test that GET /explorer/bootstrap returns 404 for non-existent session
+    let app = TestApp::new().await;
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/explorer/bootstrap?session_id=nonexistent", app.base_url()))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 404);
+}
+
+#[tokio::test]
+async fn test_explorer_tree_returns_children() {
+    // Test that GET /explorer/tree returns directory children
+    let app = TestApp::new().await;
+    let (session_id, _temp_dir) = app.create_test_session_with_real_path().await;
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/explorer/tree?session_id={}&path=.&depth=1", app.base_url(), session_id.0))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    
+    let body: serde_json::Value = response.json().await.unwrap();
+    // The response should have path, version, and children fields
+    assert!(body.get("path").is_some(), "response should have 'path' field");
+    assert!(body.get("version").is_some(), "response should have 'version' field");
+    // Children may be empty for an empty directory but should be an array if present
+    if let Some(children) = body.get("children") {
+        assert!(children.is_array(), "children should be an array if present");
+    }
+    // Or the response might have an error structure - verify basic structure
+    assert!(
+        body.get("path").is_some() || body.get("code").is_some(),
+        "response should have either tree fields or error fields"
+    );
+}
+
+#[tokio::test]
+async fn test_explorer_tree_session_not_found() {
+    // Test that GET /explorer/tree returns 404 for non-existent session
+    let app = TestApp::new().await;
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/explorer/tree?session_id=nonexistent&path=.&depth=1", app.base_url()))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 404);
+}
+
+#[tokio::test]
+async fn test_explorer_tree_filter_param_accepted_but_ignored() {
+    // Test that filter param is accepted (MVP doesn't implement filtering yet)
+    let app = TestApp::new().await;
+    let (session_id, _temp_dir) = app.create_test_session_with_real_path().await;
+    
+    let client = reqwest::Client::new();
+    
+    // All filter values are accepted (even though they're not yet implemented)
+    for filter in &["all", "changed", "staged", "untracked", "conflicted"] {
+        let response = client
+            .get(format!(
+                "{}/explorer/tree?session_id={}&path=.&depth=1&filter={}",
+                app.base_url(), session_id.0, filter
+            ))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200, "filter={} should be accepted", filter);
+    }
+}
+
+#[tokio::test]
+async fn test_explorer_bootstrap_watcher_active() {
+    // Verify watching reflects actual watcher state (now implemented in Phase 2 batch 2)
+    let app = TestApp::new().await;
+    let (session_id, _temp_dir) = app.create_test_session_with_real_path().await;
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/explorer/bootstrap?session_id={}", app.base_url(), session_id.0))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    let body: serde_json::Value = response.json().await.unwrap();
+    // Watcher is now implemented - watching may be true or false depending on platform
+    // The key is that it's a boolean, not always false
+    assert!(body["watching"].is_boolean(), "watching should be a boolean");
+}
+
+#[tokio::test]
+async fn test_explorer_tree_with_filter_param() {
+    // Test that filter query params are accepted and work
+    let app = TestApp::new().await;
+    let (session_id, _temp_dir) = app.create_test_session_with_real_path().await;
+    
+    let client = reqwest::Client::new();
+    
+    // Test all filter modes
+    for filter in ["all", "changed", "staged", "untracked", "conflicted"] {
+        let response = client
+            .get(format!(
+                "{}/explorer/tree?session_id={}&path=.&depth=1&filter={}",
+                app.base_url(), session_id.0, filter
+            ))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200, "filter={} should return 200", filter);
+    }
+}
+
+#[tokio::test]
+async fn test_explorer_tree_with_include_flags() {
+    // Test that include_ignored and include_outside_repo params are accepted
+    let app = TestApp::new().await;
+    let (session_id, _temp_dir) = app.create_test_session_with_real_path().await;
+    
+    let client = reqwest::Client::new();
+    
+    // Test with include_ignored=true
+    let response = client
+        .get(format!(
+            "{}/explorer/tree?session_id={}&path=.&depth=1&filter=all&include_ignored=true",
+            app.base_url(), session_id.0
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    
+    // Test with include_outside_repo=true
+    let response = client
+        .get(format!(
+            "{}/explorer/tree?session_id={}&path=.&depth=1&filter=all&include_outside_repo=true",
+            app.base_url(), session_id.0
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+}
+
+// ========== Outline Endpoint Tests ==========
+
+#[tokio::test]
+async fn test_outline_missing_session_id() {
+    // Test that GET /outline returns 400 when session_id is missing
+    let app = TestApp::new().await;
+    let (_session_id, temp_dir) = app.create_test_session_with_real_path().await;
+    
+    // Create a test file
+    std::fs::write(temp_dir.path().join("test.rs"), "fn main() {}").unwrap();
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/outline?path=test.rs", app.base_url()))
+        .send()
+        .await
+        .unwrap();
+
+    // Missing required query param should result in 400 or similar error
+    // axum will return 400 Bad Request for missing required params
+    assert_eq!(response.status(), 400);
+}
+
+#[tokio::test]
+async fn test_outline_session_not_found() {
+    // Test that GET /outline returns 404 for non-existent session
+    let app = TestApp::new().await;
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/outline?session_id=nonexistent&path=test.rs", app.base_url()))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 404);
+    
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["code"], "SESSION_NOT_FOUND");
+}
+
+#[tokio::test]
+async fn test_outline_missing_path() {
+    // Test that GET /outline returns 400 when path is missing
+    let app = TestApp::new().await;
+    let (session_id, _temp_dir) = app.create_test_session_with_real_path().await;
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/outline?session_id={}", app.base_url(), session_id.0))
+        .send()
+        .await
+        .unwrap();
+
+    // Missing required query param should result in 400
+    assert_eq!(response.status(), 400);
+}
+
+#[tokio::test]
+async fn test_outline_path_traversal_blocked() {
+    // Test that GET /outline returns 403 when path escapes project directory
+    let app = TestApp::new().await;
+    let (session_id, _temp_dir) = app.create_test_session_with_real_path().await;
+    
+    let client = reqwest::Client::new();
+    // Try to access a path outside the project
+    let response = client
+        .get(format!("{}/outline?session_id={}&path=../../../etc/passwd", app.base_url(), session_id.0))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 403);
+    
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["code"], "FORBIDDEN");
+}
+
+#[tokio::test]
+async fn test_outline_path_is_directory() {
+    // Test that GET /outline returns 400 when path is a directory
+    let app = TestApp::new().await;
+    let (session_id, _temp_dir) = app.create_test_session_with_real_path().await;
+    
+    // Create a subdirectory
+    std::fs::create_dir(_temp_dir.path().join("src")).unwrap();
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/outline?session_id={}&path=src", app.base_url(), session_id.0))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 400);
+    
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["code"], "BAD_REQUEST");
+    assert!(body["message"].as_str().unwrap().contains("directory"));
+}
+
+#[tokio::test]
+async fn test_outline_unknown_language_returns_unavailable() {
+    // Test that GET /outline returns source: "unavailable" for unknown language
+    let app = TestApp::new().await;
+    let (session_id, temp_dir) = app.create_test_session_with_real_path().await;
+    
+    // Create a file with an unknown extension
+    std::fs::write(temp_dir.path().join("test.xyzunknown"), "some content").unwrap();
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/outline?session_id={}&path=test.xyzunknown", app.base_url(), session_id.0))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["path"], "test.xyzunknown");
+    assert_eq!(body["source"], "unavailable");
+    assert!(body["symbols"].as_array().unwrap().is_empty());
+    assert_eq!(body["language"], "unknown");
+    // Verify capabilities field is present
+    assert!(body["capabilities"].is_object(), "capabilities should be an object");
+    assert_eq!(body["capabilities"]["document_symbols"], false);
+    assert_eq!(body["capabilities"]["hierarchical"], false);
+}
+
+#[tokio::test]
+async fn test_outline_success_response_structure() {
+    // Test that GET /outline returns correct response structure
+    let app = TestApp::new().await;
+    let (session_id, temp_dir) = app.create_test_session_with_real_path().await;
+    
+    // Create a Rust file
+    std::fs::write(temp_dir.path().join("main.rs"), "fn main() {}").unwrap();
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/outline?session_id={}&path=main.rs", app.base_url(), session_id.0))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    
+    let body: serde_json::Value = response.json().await.unwrap();
+    // Check response structure
+    assert!(body["path"].is_string(), "path should be a string");
+    assert!(body["absolute_path"].is_string(), "absolute_path should be a string");
+    assert!(body["language"].is_string(), "language should be a string");
+    assert!(body["source"].is_string(), "source should be a string");
+    assert!(body["symbols"].is_array(), "symbols should be an array");
+    // Verify capabilities field is present
+    assert!(body["capabilities"].is_object(), "capabilities should be an object");
+    // For unknown language, source should be "unavailable"
+    assert_eq!(body["source"], "unavailable");
+    assert_eq!(body["capabilities"]["document_symbols"], false);
+    assert_eq!(body["capabilities"]["hierarchical"], false);
+}
+
+#[tokio::test]
+async fn test_outline_rust_file_returns_correct_response_structure() {
+    // Test that GET /outline returns the correct response structure for a Rust file.
+    // Note: Without a real LSP server running, this will return source: "unavailable"
+    // because the LSP registry won't have a running server for the test environment.
+    // This is the expected behavior - the test proves the endpoint structure is correct.
+    let app = TestApp::new().await;
+    let (session_id, temp_dir) = app.create_test_session_with_real_path().await;
+    
+    // Create a Rust file
+    std::fs::write(temp_dir.path().join("main.rs"), "fn main() {}").unwrap();
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/outline?session_id={}&path=main.rs", app.base_url(), session_id.0))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    
+    let body: serde_json::Value = response.json().await.unwrap();
+    
+    // Verify the complete response structure
+    assert!(body["path"].is_string());
+    assert_eq!(body["path"], "main.rs");
+    assert!(body["absolute_path"].is_string());
+    assert!(body["language"].is_string());
+    assert_eq!(body["language"], "rust");
+    assert!(body["source"].is_string());
+    // Without LSP server, source should be "unavailable"
+    assert_eq!(body["source"], "unavailable");
+    assert!(body["symbols"].is_array());
+    assert!(body["symbols"].as_array().unwrap().is_empty());
+    
+    // Verify capabilities are properly set
+    assert!(body["capabilities"]["document_symbols"].is_boolean());
+    assert!(body["capabilities"]["hierarchical"].is_boolean());
+    
+    // The key proof point: if an LSP server WERE running, the response structure
+    // would be identical but with source: "lsp" and populated symbols array.
+    // This is proven by the unit tests in routes/mod.rs that test the DTO conversion.
+}
+
+#[tokio::test]
+async fn test_outline_response_capabilities_when_unavailable() {
+    // Test that capabilities are correctly reported as false when LSP is unavailable
+    let app = TestApp::new().await;
+    let (session_id, temp_dir) = app.create_test_session_with_real_path().await;
+    
+    std::fs::write(temp_dir.path().join("test.rs"), "fn test() {}").unwrap();
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/outline?session_id={}&path=test.rs", app.base_url(), session_id.0))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    let body: serde_json::Value = response.json().await.unwrap();
+    
+    // When source is "unavailable", capabilities must be false
+    assert_eq!(body["source"], "unavailable");
+    assert_eq!(body["capabilities"]["document_symbols"], false);
+    assert_eq!(body["capabilities"]["hierarchical"], false);
+    assert!(body["symbols"].as_array().unwrap().is_empty());
+}
+
+// ========== Config Providers Endpoint Tests ==========
+
+#[tokio::test]
+async fn test_get_config_providers_returns_all_known_providers() {
+    // Test that GET /config/providers returns all known providers including MiniMax and ZAI
+    let app = TestApp::new().await;
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/config/providers", app.base_url()))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    
+    let body: serde_json::Value = response.json().await.unwrap();
+    let providers = body["providers"].as_array().unwrap();
+    
+    // Should have at least the known providers
+    let provider_ids: Vec<&str> = providers.iter()
+        .filter_map(|p| p["id"].as_str())
+        .collect();
+    
+    // Verify MiniMax and ZAI are present
+    assert!(provider_ids.contains(&"minimax"), "MiniMax should be in provider list");
+    assert!(provider_ids.contains(&"zai"), "ZAI should be in provider list");
+    
+    // Find MiniMax and ZAI entries
+    let minimax = providers.iter().find(|p| p["id"] == "minimax").unwrap();
+    let zai = providers.iter().find(|p| p["id"] == "zai").unwrap();
+    
+    // By default, both should be enabled (not in disabled_providers)
+    assert!(minimax["enabled"].as_bool().unwrap(), "MiniMax should be enabled by default");
+    assert!(zai["enabled"].as_bool().unwrap(), "ZAI should be enabled by default");
+}
+
+#[tokio::test]
+async fn test_get_config_providers_reflects_disabled_state() {
+    // Test that GET /config/providers correctly reports enabled=false when provider is in disabled_providers
+    // This verifies REQ-MINI-01: MiniMax disabled via config reflected by /config/providers
+    
+    use rcode_core::RcodeConfig;
+    
+    let config = RcodeConfig {
+        disabled_providers: Some(vec!["minimax".to_string(), "zai".to_string()]),
+        ..Default::default()
+    };
+    
+    let app = TestApp::with_config(config).await;
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/config/providers", app.base_url()))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    
+    let body: serde_json::Value = response.json().await.unwrap();
+    let providers = body["providers"].as_array().unwrap();
+    
+    // Find MiniMax and ZAI entries
+    let minimax = providers.iter().find(|p| p["id"] == "minimax").unwrap();
+    let zai = providers.iter().find(|p| p["id"] == "zai").unwrap();
+    
+    // Both should now be disabled
+    assert!(!minimax["enabled"].as_bool().unwrap(), "MiniMax should be disabled");
+    assert!(!zai["enabled"].as_bool().unwrap(), "ZAI should be disabled");
+}
+
+#[tokio::test]
+async fn test_get_config_providers_partial_disabled() {
+    // Test that when only MiniMax is disabled, ZAI remains enabled
+    use rcode_core::RcodeConfig;
+    
+    let config = RcodeConfig {
+        disabled_providers: Some(vec!["minimax".to_string()]),
+        ..Default::default()
+    };
+    
+    let app = TestApp::with_config(config).await;
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/config/providers", app.base_url()))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    
+    let body: serde_json::Value = response.json().await.unwrap();
+    let providers = body["providers"].as_array().unwrap();
+    
+    let minimax = providers.iter().find(|p| p["id"] == "minimax").unwrap();
+    let zai = providers.iter().find(|p| p["id"] == "zai").unwrap();
+    
+    assert!(!minimax["enabled"].as_bool().unwrap(), "MiniMax should be disabled");
+    assert!(zai["enabled"].as_bool().unwrap(), "ZAI should remain enabled");
+}

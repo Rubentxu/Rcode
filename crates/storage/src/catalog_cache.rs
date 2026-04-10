@@ -142,6 +142,29 @@ impl CatalogCacheRepository {
 
         Ok(deleted)
     }
+
+    /// Clear the entire cache by dropping and recreating the table.
+    /// Used for schema-mismatch recovery.
+    pub fn clear(&self) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::LockPoisoned(e.to_string()))?;
+
+        conn.execute_batch(
+            r#"
+            DROP TABLE IF EXISTS model_catalog_cache;
+            CREATE TABLE model_catalog_cache (
+                provider_id TEXT PRIMARY KEY,
+                models TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            "#,
+        )
+        .context("Failed to clear catalog cache")?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -197,5 +220,98 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].provider_id, "anthropic");
         assert_eq!(loaded[0].models.len(), 1);
+    }
+
+    #[test]
+    fn test_clear_drops_and_recreates_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE model_catalog_cache (
+                provider_id TEXT PRIMARY KEY,
+                models TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            "#,
+        )
+        .unwrap();
+
+        let repo = CatalogCacheRepository::new(conn);
+
+        // Insert an entry
+        let entry = CachedCatalogEntry {
+            provider_id: "anthropic".into(),
+            models: vec![CachedModel {
+                id: "anthropic/claude-1".into(),
+                provider: "anthropic".into(),
+                display_name: "Claude 1".into(),
+                has_credentials: true,
+                source: "api".into(),
+                enabled: true,
+            }],
+            updated_at: SystemTime::now(),
+        };
+        repo.upsert_batch(std::slice::from_ref(&entry)).unwrap();
+
+        // Verify entry exists
+        assert_eq!(repo.get_all().unwrap().len(), 1);
+
+        // Clear the cache
+        repo.clear().unwrap();
+
+        // Cache should be empty after clear
+        assert!(repo.get_all().unwrap().is_empty());
+
+        // Should be able to write new entries after clear
+        let new_entry = CachedCatalogEntry {
+            provider_id: "openai".into(),
+            models: vec![CachedModel {
+                id: "openai/gpt-4o".into(),
+                provider: "openai".into(),
+                display_name: "GPT-4o".into(),
+                has_credentials: true,
+                source: "api".into(),
+                enabled: true,
+            }],
+            updated_at: SystemTime::now(),
+        };
+        repo.upsert_batch(std::slice::from_ref(&new_entry)).unwrap();
+        assert_eq!(repo.get_all().unwrap().len(), 1);
+        assert_eq!(repo.get_all().unwrap()[0].provider_id, "openai");
+    }
+
+    #[test]
+    fn test_clear_with_corrupted_schema() {
+        // Simulate a corrupted schema by creating table with wrong columns
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE model_catalog_cache (
+                provider_id TEXT PRIMARY KEY,
+                -- "models" column intentionally renamed to cause schema mismatch
+                cached_models TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            "#,
+        )
+        .unwrap();
+
+        let repo = CatalogCacheRepository::new(conn);
+
+        // get_all should fail due to schema mismatch
+        let result = repo.get_all();
+        assert!(result.is_err(), "get_all should fail with wrong schema");
+
+        // clear should succeed and recreate proper schema
+        repo.clear().unwrap();
+
+        // Should be able to write after clear
+        let entry = CachedCatalogEntry {
+            provider_id: "test".into(),
+            models: vec![],
+            updated_at: SystemTime::now(),
+        };
+        repo.upsert_batch(std::slice::from_ref(&entry)).unwrap();
+        assert_eq!(repo.get_all().unwrap().len(), 1);
     }
 }

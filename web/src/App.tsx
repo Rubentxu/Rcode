@@ -1,6 +1,5 @@
-import { createSignal, onMount, Show, For } from "solid-js";
-import Header from "./components/Header";
-import Sidebar from "./components/Sidebar";
+import { createSignal, onMount, Show } from "solid-js";
+import Workbench from "./components/Workbench";
 import SessionView from "./components/SessionView";
 import EmptySessionView from "./components/EmptySessionView";
 import Terminal from "./components/Terminal";
@@ -28,19 +27,28 @@ interface ModelCatalogEntry {
   enabled: boolean;
 }
 
-const MOCK_MODE = false; // Set to false when backend is available
+const MOCK_MODE = import.meta.env.VITE_MOCK_MODE === "true"; // Set via env var for testing
 
 // Mock data for testing without backend
 const mockSessions: Session[] = [
   { id: "1", title: "Welcome Session", status: "completed", updated_at: new Date().toISOString() },
 ];
 
-const mockResponses = [
-  "I can help you with that! Let me analyze the code and provide suggestions.",
-  "Based on my analysis, here are the key points to consider:\n\n1. The code structure looks good\n2. There might be a potential issue with error handling\n3. Consider adding unit tests",
-  "Here's a code suggestion:\n```rust\nfn process_data(input: &str) -> Result<String, Error> {\n    // Implementation here\n    Ok(input.to_string())\n}\n```",
-  "I've identified the issue. The problem is in the data flow. Let me explain...",
-];
+// Mock responses - selected deterministically based on prompt for reproducible test behavior
+const mockResponses: Record<string, string> = {
+  default: "I can help you with that! Let me analyze the code and provide suggestions.",
+  hello: "hello hi hey",
+  bash: "[Tool call: bash]\nThe current working directory is /home/rubentxu/Proyectos/rust/rust-code",
+  tool: "Tool executed successfully with results.",
+};
+
+function getMockResponse(prompt: string): string {
+  const lower = prompt.toLowerCase();
+  if (lower.includes("hello")) return mockResponses.hello;
+  if (lower.includes("bash") || lower.includes("pwd")) return mockResponses.bash;
+  if (lower.includes("tool")) return mockResponses.tool;
+  return mockResponses.default;
+}
 
 function normalizeMessageId(id: unknown): string {
   if (typeof id === "string") {
@@ -62,9 +70,9 @@ function pickPreferredModel(models: ModelCatalogEntry[]): string | null {
     return null;
   }
 
+  // Use the first enabled model from the catalog; fallback to first model available
   return (
-    models.find((model) => model.enabled && model.id === "anthropic/MiniMax-M2.7-highspeed")?.id
-    ?? models.find((model) => model.enabled)?.id
+    models.find((model) => model.enabled)?.id
     ?? models[0]?.id
     ?? null
   );
@@ -225,7 +233,7 @@ export default function App() {
       const assistantMsg: Message = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: mockResponses[Math.floor(Math.random() * mockResponses.length)],
+        content: getMockResponse(prompt),
         created_at: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, assistantMsg]);
@@ -369,69 +377,132 @@ export default function App() {
     }
   };
 
+  /**
+   * MQA-2: Retry handler - replaces assistant response and re-submits user prompt.
+   * Truncates messages from the assistant turn onward, then calls the API directly
+   * WITHOUT adding a duplicate user message to local state.
+   */
+  const handleRetry = async (assistantMessageId: string, userPrompt: string) => {
+    const session = currentSession();
+    if (!session) return;
+
+    // Truncate messages from the assistant turn onward
+    setMessages((prev) => {
+      const assistantIndex = prev.findIndex((m) => m.id === assistantMessageId);
+      if (assistantIndex < 0) return prev;
+      return prev.slice(0, assistantIndex);
+    });
+
+    setIsLoading(true);
+
+    if (MOCK_MODE) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const assistantMsg: Message = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: getMockResponse(userPrompt),
+        created_at: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
+      setIsLoading(false);
+      return;
+    }
+
+    try {
+      const response = await fetch(`${await getApiBase()}/session/${session.id}/prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: userPrompt }),
+      });
+      if (response.ok) {
+        const promptResponse = (await response.json()) as PromptResponse;
+        console.info("Retry prompt accepted", {
+          sessionId: session.id,
+          requestId: promptResponse.request_id,
+          status: promptResponse.status,
+        });
+        await loadMessages(session.id);
+      } else {
+        setIsLoading(false);
+        let errorMsg = `Request failed: ${response.status}`;
+        try {
+          const errorData = await response.json();
+          errorMsg = errorData.message || errorMsg;
+        } catch { /* use status text */ }
+        console.error(`Retry prompt failed: ${errorMsg}`);
+        showToast({ type: "error", message: errorMsg, duration: 5000 });
+        loadMessages(session.id).catch(() => {});
+      }
+    } catch (e) {
+      console.error("Retry failed:", e);
+      setIsLoading(false);
+      showToast({
+        type: "error",
+        message: `Network error: Could not connect to server.`,
+        duration: 6000,
+      });
+    }
+  };
+
   onMount(() => {
     loadPreferredModel();
     loadSessions();
   });
 
   return (
-    <div style="display: flex; flex-direction: column; height: 100vh; background: var(--bg-primary); color: var(--text-primary);">
-      <Header 
-        title="RCode" 
-        sseStatus={sseStatus()} 
-        terminalOpen={terminalOpen()}
+    <>
+      <Workbench
+        sessions={sessions()}
+        currentSession={currentSession()}
         currentModel={currentModel()}
+        sseStatus={sseStatus()}
+        terminalOpen={terminalOpen()}
+        showSettings={showSettings()}
+        onSelectSession={selectSession}
+        onNewSession={createSession}
         onModelChange={setCurrentModel}
-        activeSessionId={currentSession()?.id}
         onTerminalToggle={() => setTerminalOpen(!terminalOpen())}
         onSettingsClick={() => setShowSettings(true)}
-      />
-      <main style="flex: 1; display: flex; overflow: hidden;">
-        <Sidebar
-          sessions={sessions()}
-          currentSessionId={currentSession()?.id}
-          onSelect={selectSession}
-          onNewSession={createSession}
-        />
-        <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
-          <Show
-            when={currentSession()}
-            fallback={<EmptySessionView onCreateSession={createSession} />}
-          >
-            <SessionView
-              session={currentSession()!}
-              messages={messages()}
-              isLoading={isLoading()}
-              sseStatus={sseStatus()}
-              onSubmit={submitPrompt}
-              onAbort={abortSession}
-              onSSEStatusChange={setSseStatus}
-              sessions={sessions()}
-              onCommandResult={handleCommandResult}
-              onComplete={() => setIsLoading(false)}
-              onReloadMessages={async () => {
-                const session = currentSession();
-                if (session) {
-                  await loadMessages(session.id);
-                }
-              }}
-              onError={(errorMsg) => {
-                setIsLoading(false);
-                showToast({
-                  type: "error",
-                  message: `Agent error: ${errorMsg}`,
-                  duration: 6000,
-                });
-              }}
-            />
-          </Show>
-        </div>
-      </main>
+      >
+        <Show
+          when={currentSession()}
+          fallback={<EmptySessionView onCreateSession={createSession} />}
+        >
+          <SessionView
+            session={currentSession()!}
+            messages={messages()}
+            isLoading={isLoading}
+            sseStatus={sseStatus()}
+            onSubmit={submitPrompt}
+            onAbort={abortSession}
+            onSSEStatusChange={setSseStatus}
+            sessions={sessions()}
+            onCommandResult={handleCommandResult}
+            onComplete={() => setIsLoading(false)}
+            onReloadMessages={async () => {
+              const session = currentSession();
+              if (session) {
+                await loadMessages(session.id);
+              }
+            }}
+            onError={(errorMsg) => {
+              setIsLoading(false);
+              showToast({
+                type: "error",
+                message: `Agent error: ${errorMsg}`,
+                duration: 6000,
+              });
+            }}
+            onRetry={handleRetry}
+            currentModel={currentModel()}
+          />
+        </Show>
+      </Workbench>
       <Terminal isOpen={terminalOpen()} onClose={() => setTerminalOpen(false)} />
       <Show when={showSettings()}>
         <Settings onClose={() => setShowSettings(false)} />
       </Show>
       <ToastContainer />
-    </div>
+    </>
   );
 }

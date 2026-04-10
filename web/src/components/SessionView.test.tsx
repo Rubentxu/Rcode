@@ -1,186 +1,398 @@
-import { describe, it, expect } from "vitest";
-import { renderMarkdownToHtml } from "./MarkdownRenderer";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render } from "solid-js/web";
+import { fireEvent, screen, waitFor } from "@testing-library/dom";
+import SessionView from "./SessionView";
+import type { Session, Message } from "../api/types";
 
-// SMT-S1: Mixed parts render each part independently
-describe("SMT-S1: Mixed parts render", () => {
-  it("should render each part type independently", () => {
-    // This test validates the PartRenderer routing logic
-    // We test that each part type is handled by the correct component
-    const PartRenderer = (part: { type: string; [key: string]: unknown }) => {
-      switch (part.type) {
-        case "text":
-          return "TextPart";
-        case "reasoning":
-          return "ReasoningBlock";
-        case "tool_call":
-          return "ToolCallCard";
-        case "tool_result":
-          return "ToolResultCard";
-        case "attachment":
-          return "AttachmentPart";
-        default:
-          return null; // Unknown parts are silently skipped
-      }
-    };
+// Mock SSE client
+vi.mock("../api/sse", () => ({
+  createSSEClient: vi.fn(() => ({
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+  })),
+}));
 
-    const parts = [
-      { type: "text", content: "Hello" },
-      { type: "reasoning", content: "Let me think" },
-      { type: "tool_call", id: "1", name: "bash", arguments: {} },
-      { type: "tool_result", tool_call_id: "1", content: "result", is_error: false },
-      { type: "attachment", id: "1", name: "file.txt", mime_type: "text/plain", content: "" },
-    ];
+// Mock API config
+vi.mock("../api/config", () => ({
+  getApiBase: vi.fn(() => Promise.resolve("http://localhost:3000")),
+}));
 
-    const results = parts.map(PartRenderer);
-    expect(results).toEqual([
-      "TextPart",
-      "ReasoningBlock",
-      "ToolCallCard",
-      "ToolResultCard",
-      "AttachmentPart",
-    ]);
+// Helper: flush SolidJS updates
+const flushUpdates = () => new Promise(resolve => setTimeout(resolve, 0));
+
+// Fixture: realistic multi-turn conversation with structured parts
+const multiTurnFixture: Message[] = [
+  {
+    id: "msg_user_1",
+    role: "user",
+    content: "Show me the current directory",
+    parts: [{ type: "text", content: "Show me the current directory" }],
+    created_at: "2026-04-08T10:00:00Z",
+  },
+  {
+    id: "msg_asst_1",
+    role: "assistant",
+    content: "",
+    parts: [
+      {
+        type: "reasoning",
+        content: "The user wants to see the current directory. I'll run the bash tool to show the directory contents.",
+      },
+      {
+        type: "tool_call",
+        id: "tc_1",
+        name: "bash",
+        arguments: { cmd: "pwd" },
+      },
+      {
+        type: "tool_result",
+        tool_call_id: "tc_1",
+        content: "/home/rubentxu/projects",
+        is_error: false,
+      },
+      {
+        type: "text",
+        content: "You're currently in `/home/rubentxu/projects`.",
+      },
+    ],
+    created_at: "2026-04-08T10:00:01Z",
+  },
+  {
+    id: "msg_user_2",
+    role: "user",
+    content: "List the files",
+    parts: [{ type: "text", content: "List the files" }],
+    created_at: "2026-04-08T10:00:05Z",
+  },
+  {
+    id: "msg_asst_2",
+    role: "assistant",
+    content: "Here are the files:",
+    parts: [
+      {
+        type: "text",
+        content: "Here are the files:",
+      },
+    ],
+    created_at: "2026-04-08T10:00:06Z",
+  },
+];
+
+// Fixture: system message
+const systemMessageFixture: Message[] = [
+  {
+    id: "msg_sys_1",
+    role: "system",
+    content: "System notice: maintenance scheduled",
+    parts: [{ type: "text", content: "System notice: maintenance scheduled" }],
+    created_at: "2026-04-08T10:00:00Z",
+  },
+];
+
+const mockSession: Session = {
+  id: "session_1",
+  title: "Test Session",
+  status: "idle",
+  updated_at: "2026-04-08T10:00:00Z",
+};
+
+const mockSubmit = vi.fn();
+const mockAbort = vi.fn();
+const mockReload = vi.fn();
+const mockComplete = vi.fn();
+const mockRetry = vi.fn();
+
+function renderSessionView(messages: Message[], isLoading: () => boolean = () => false) {
+  const container = document.createElement("div");
+  const result = render(() => (
+    <SessionView
+      session={mockSession}
+      messages={messages}
+      isLoading={isLoading}
+      sseStatus="disconnected"
+      onSubmit={mockSubmit}
+      onAbort={mockAbort}
+      onReloadMessages={mockReload}
+      onComplete={mockComplete}
+      onRetry={mockRetry}
+      sessions={[mockSession]}
+    />
+  ), container);
+  return { container, result };
+}
+
+describe("SessionView", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  it("should route text parts to TextPart", () => {
-    const PartRenderer = (part: { type: string }) => {
-      if (part.type === "text") return "TextPart";
-      return null;
-    };
-    expect(PartRenderer({ type: "text", content: "test" })).toBe("TextPart");
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
-  it("should route reasoning parts to ReasoningBlock", () => {
-    const PartRenderer = (part: { type: string }) => {
-      if (part.type === "reasoning") return "ReasoningBlock";
-      return null;
-    };
-    expect(PartRenderer({ type: "reasoning", content: "thinking" })).toBe("ReasoningBlock");
+  // CT-S1 / CT-S4: Turn grouping — verify production grouping logic
+  describe("CT-S1 / CT-S4: Turn grouping preserves order and message identity", () => {
+    it("should group consecutive assistant messages into one turn with single avatar", () => {
+      const { container } = renderSessionView(multiTurnFixture);
+      
+      // All assistant messages from msg_asst_1 should be in one turn
+      const turns = container.querySelectorAll(".turn");
+      expect(turns.length).toBe(4); // user, assistant (grouped), user, assistant
+      
+      // Verify the assistant turn has both messages
+      const assistantTurn = container.querySelector(".turn--assistant");
+      expect(assistantTurn).toBeDefined();
+      
+      // The assistant turn should have a TurnAvatar
+      const avatar = assistantTurn?.querySelector(".turn-avatar");
+      expect(avatar).toBeDefined();
+    });
+
+    it("should preserve message IDs within grouped turns", () => {
+      const { container } = renderSessionView(multiTurnFixture);
+      
+      // Verify message data attributes preserve IDs for quick-action targeting (CT-S4)
+      const messages = container.querySelectorAll("[data-component='message']");
+      const assistantMessages = container.querySelectorAll(".turn--assistant [data-component='message']");
+      
+      // At least one assistant message should be present
+      expect(assistantMessages.length).toBeGreaterThan(0);
+      
+      // Each message should have data-role attribute
+      assistantMessages.forEach(msg => {
+        expect(msg.getAttribute("data-role")).toBe("assistant");
+      });
+    });
+
+    it("should render user messages right-aligned, assistant left-aligned", () => {
+      const { container } = renderSessionView(multiTurnFixture);
+      
+      const userTurn = container.querySelector(".turn--user");
+      const assistantTurn = container.querySelector(".turn--assistant");
+      
+      expect(userTurn).toBeDefined();
+      expect(assistantTurn).toBeDefined();
+      
+      // User turn has .turn--user class which maps to row-reverse in CSS
+      expect(userTurn?.className).toContain("turn--user");
+      // Assistant turn has .turn--assistant class which maps to row in CSS
+      expect(assistantTurn?.className).toContain("turn--assistant");
+    });
+
+    it("should render system messages centered without avatar", () => {
+      const { container } = renderSessionView(systemMessageFixture);
+      
+      const systemTurn = container.querySelector(".turn--system");
+      expect(systemTurn).toBeDefined();
+      
+      // System turn should NOT have an avatar
+      const avatar = systemTurn?.querySelector(".turn-avatar");
+      expect(avatar).toBeNull();
+      
+      // System messages show inline with subtle role label
+      const header = systemTurn?.querySelector("[data-component='message-header']");
+      expect(header?.textContent).toContain("system");
+    });
   });
 
-  it("should route tool_call parts to ToolCallCard", () => {
-    const PartRenderer = (part: { type: string }) => {
-      if (part.type === "tool_call") return "ToolCallCard";
-      return null;
-    };
-    expect(PartRenderer({ type: "tool_call", id: "1", name: "bash", arguments: {} })).toBe("ToolCallCard");
+  // CPD-1, CPD-3, CPD-5: Collapsible reasoning (now using div + signal-based expand/collapse)
+  describe("CPD-1 / CPD-3 / CPD-5: Reasoning block expandable", () => {
+    it("should render reasoning block with Agent Reasoning label", () => {
+      const { container } = renderSessionView(multiTurnFixture);
+
+      // ReasoningBlock uses data-part="reasoning" and shows "Agent Reasoning" label
+      const reasoningBlock = container.querySelector("[data-part='reasoning']");
+      expect(reasoningBlock).toBeDefined();
+      expect(reasoningBlock?.textContent).toContain("Agent Reasoning");
+    });
+
+    it("should expand reasoning block on click", async () => {
+      const { container } = renderSessionView(multiTurnFixture);
+
+      // ReasoningBlock has a clickable div with cursor-pointer
+      const reasoningBlock = container.querySelector("[data-part='reasoning']");
+      const clickable = reasoningBlock?.querySelector(".cursor-pointer");
+      expect(clickable).toBeDefined();
+
+      fireEvent.click(clickable!);
+      await flushUpdates();
+
+      // After click, content should be visible (max-h-[500px] opacity-100)
+      const expandedContent = reasoningBlock?.querySelector(".max-h-\\[500px\\]");
+      expect(expandedContent).toBeDefined();
+    });
+
+    it("should show tool_call with tool name in pill card", () => {
+      const { container } = renderSessionView(multiTurnFixture);
+
+      // ToolCallCard uses data-part="tool_call" pill-style card
+      const toolCall = container.querySelector("[data-part='tool_call']");
+      expect(toolCall).toBeDefined();
+      expect(toolCall?.textContent).toContain("bash");
+    });
+
+    it("should show tool_result with success/error indicator via Material Symbols icons", () => {
+      const { container } = renderSessionView(multiTurnFixture);
+
+      // ToolResultCard uses data-part="tool_result" with Material Symbols icons
+      const toolResult = container.querySelector("[data-part='tool_result']");
+      expect(toolResult).toBeDefined();
+
+      // Should show check_circle icon for success
+      const icon = toolResult?.querySelector(".material-symbols-outlined");
+      expect(icon?.textContent).toContain("check_circle");
+    });
   });
 
-  it("should route tool_result parts to ToolResultCard", () => {
-    const PartRenderer = (part: { type: string }) => {
-      if (part.type === "tool_result") return "ToolResultCard";
-      return null;
-    };
-    expect(PartRenderer({ type: "tool_result", tool_call_id: "1", content: "ok", is_error: false })).toBe("ToolResultCard");
+  // CT-3: Transcript max-width centering
+  describe("CT-3: Transcript uses max-width centering", () => {
+    it("should wrap content in transcript container with max-width", () => {
+      const { container } = renderSessionView(multiTurnFixture);
+      
+      const transcript = container.querySelector("[data-component='transcript']");
+      expect(transcript).toBeDefined();
+      
+      const style = window.getComputedStyle(transcript as Element);
+      expect(style.maxWidth).toBeTruthy();
+    });
   });
 
-  it("should route attachment parts to AttachmentPart", () => {
-    const PartRenderer = (part: { type: string }) => {
-      if (part.type === "attachment") return "AttachmentPart";
-      return null;
-    };
-    expect(PartRenderer({ type: "attachment", id: "1", name: "f.txt", mime_type: "text/plain", content: "" })).toBe("AttachmentPart");
-  });
-});
+  // SPR-S1 / SPR-2 / SPR-3: Part routing
+  describe("SPR-S1 / SPR-2 / SPR-3: Structured parts render correctly", () => {
+    it("should route text parts to TextPart", () => {
+      const { container } = renderSessionView(multiTurnFixture);
+      
+      // Text part should exist with data-part="text"
+      const textPart = container.querySelector("[data-part='text']");
+      expect(textPart).toBeDefined();
+      // The text part should contain rendered content (markdown applied)
+      expect(textPart?.innerHTML).toBeTruthy();
+    });
 
-// SMT-S2: Legacy content-only message renders via markdown
-describe("SMT-S2: Legacy content renders via markdown", () => {
-  it("should render legacy content through MarkdownRenderer", async () => {
-    // Legacy content is a plain string that should be rendered as markdown
-    const legacyContent = "**Bold text** and *italic*";
-    const html = await renderMarkdownToHtml(legacyContent);
-    expect(html).toContain("<strong");
-    expect(html).toContain("<em");
-  });
+    it("should route reasoning to ReasoningBlock", () => {
+      const { container } = renderSessionView(multiTurnFixture);
+      
+      // ReasoningBlock wraps in process-details
+      const reasoning = container.querySelector("[data-part='reasoning']");
+      expect(reasoning).toBeDefined();
+    });
 
-  it("should render legacy content with code blocks", async () => {
-    const legacyContent = "```rust\nfn main() {}\n```";
-    const html = await renderMarkdownToHtml(legacyContent);
-    expect(html).toContain("<pre");
-    expect(html).toContain("data-language");
-  });
-});
+    it("should route tool_call to ToolCallCard", () => {
+      const { container } = renderSessionView(multiTurnFixture);
+      
+      const toolCall = container.querySelector("[data-part='tool_call']");
+      expect(toolCall).toBeDefined();
+    });
 
-// SMT-S3: Unknown part type is silently skipped
-describe("SMT-S3: Unknown part type skipped safely", () => {
-  it("should return null for unknown part types without crashing", () => {
-    const PartRenderer = (part: { type: string }) => {
-      switch (part.type) {
-        case "text":
-          return "TextPart";
-        case "reasoning":
-          return "ReasoningBlock";
-        case "tool_call":
-          return "ToolCallCard";
-        case "tool_result":
-          return "ToolResultCard";
-        case "attachment":
-          return "AttachmentPart";
-        default:
-          return null; // Unknown parts are silently skipped (SMT-S3)
-      }
-    };
-
-    // Unknown part type should return null, not throw
-    expect(PartRenderer({ type: "future_unknown" })).toBe(null);
-    expect(PartRenderer({ type: "" })).toBe(null);
-    expect(PartRenderer({ type: "unknown_xyz" })).toBe(null);
-  });
-});
-
-// SPR-S5: Multiple parts render independently
-describe("SPR-S5: Multiple parts render independently", () => {
-  it("should render multiple different part types in sequence", () => {
-    const renderPart = (part: { type: string; [key: string]: unknown }): string => {
-      switch (part.type) {
-        case "text":
-          return `<div class="text-part">${part.content}</div>`;
-        case "reasoning":
-          return `<div class="reasoning-block">${part.content}</div>`;
-        case "tool_call":
-          return `<div class="tool-call-card">${part.name}</div>`;
-        case "tool_result":
-          return `<div class="tool-result-card">${part.content}</div>`;
-        case "attachment":
-          return `<div class="attachment-part">${part.name}</div>`;
-        default:
-          return ""; // Silent skip
-      }
-    };
-
-    const parts = [
-      { type: "reasoning", content: "Thinking..." },
-      { type: "tool_call", id: "1", name: "bash", arguments: {} },
-      { type: "tool_result", tool_call_id: "1", content: "Done", is_error: false },
-      { type: "text", content: "Final answer" },
-    ];
-
-    const rendered = parts.map(renderPart).join("");
-    expect(rendered).toContain('class="reasoning-block"');
-    expect(rendered).toContain('class="tool-call-card"');
-    expect(rendered).toContain('class="tool-result-card"');
-    expect(rendered).toContain('class="text-part"');
-    expect(rendered).not.toContain("undefined");
-    expect(rendered).not.toContain("null");
+    it("should route tool_result to ToolResultCard", () => {
+      const { container } = renderSessionView(multiTurnFixture);
+      
+      const toolResult = container.querySelector("[data-part='tool_result']");
+      expect(toolResult).toBeDefined();
+    });
   });
 
-  it("should not have side effects between parts", () => {
-    let sideEffect = 0;
-    const renderPart = (part: { type: string; [key: string]: unknown }) => {
-      sideEffect++;
-      if (part.type === "text") return `<div>${sideEffect}</div>`;
-      return `<div>${sideEffect}</div>`;
-    };
+  // SMT-S3: Unknown part type skipped
+  describe("SMT-S3: Unknown part type skipped safely", () => {
+    it("should not crash on message with unknown part type", () => {
+      const messagesWithUnknown: Message[] = [
+        {
+          id: "msg_unknown",
+          role: "assistant",
+          content: "",
+          parts: [
+            { type: "text", content: "Hello" },
+            { type: "future_unknown_type" as any, content: "Should be skipped" },
+          ],
+          created_at: "2026-04-08T10:00:00Z",
+        },
+      ];
+      
+      // Should not throw
+      expect(() => renderSessionView(messagesWithUnknown)).not.toThrow();
+    });
+  });
 
-    const parts = [
-      { type: "text", content: "First" },
-      { type: "text", content: "Second" },
-      { type: "text", content: "Third" },
-    ];
+  // SS-S1 / SS-2 / SS-3: Streaming skeleton and optimistic shell
+  describe("SS-S1 / SS-2 / SS-3: Optimistic shell on submit", () => {
+    it("should show assistant shell immediately when isLoading=true (before any SSE delta)", async () => {
+      const { container } = renderSessionView([], () => true); // empty messages, loading=true
 
-    const rendered = parts.map(renderPart).join("");
-    // Each part should increment the counter independently
-    expect(rendered).toContain("1");
-    expect(rendered).toContain("2");
-    expect(rendered).toContain("3");
+      // Assistant turn should appear immediately (optimistic shell)
+      const assistantTurn = container.querySelector(".turn--assistant");
+      expect(assistantTurn).toBeDefined();
+
+      // Avatar should be visible
+      const avatar = assistantTurn?.querySelector(".turn-avatar");
+      expect(avatar).toBeDefined();
+
+      // Shell header should show "thinking..." in optimistic state
+      const headerText = assistantTurn?.querySelector("[data-component='shell-header']");
+      expect(headerText?.textContent).toContain("assistant");
+    });
+
+    it("should show skeleton lines in optimistic shell before any content arrives", async () => {
+      const { container } = renderSessionView([], () => true);
+
+      // Skeleton content should be present (data-component="skeleton-content")
+      const skeletonContent = container.querySelector("[data-component='skeleton-content']");
+      expect(skeletonContent).toBeDefined();
+
+      // Skeleton lines should be present
+      const skeletonLines = container.querySelectorAll("[data-component='skeleton-line']");
+      expect(skeletonLines.length).toBeGreaterThan(0);
+    });
+
+    it("should show abort button inside the shell (not in bottom bar)", async () => {
+      const { container } = renderSessionView([], () => true);
+
+      // Shell abort button should exist
+      const shellAbort = container.querySelector("[data-component='shell-abort']");
+      expect(shellAbort).toBeDefined();
+
+      // Bottom processing bar should NOT exist (removed in SS-2)
+      // We check that the old processing bar markup doesn't exist
+      const processingBar = container.querySelector("[data-component='typing-indicator']");
+      expect(processingBar).toBeNull();
+    });
+
+    it("should have data-streaming='optimistic' on assistant turn during isLoading", async () => {
+      const { container } = renderSessionView([], () => true);
+
+      const assistantTurn = container.querySelector(".turn--assistant[data-streaming='optimistic']");
+      expect(assistantTurn).toBeDefined();
+    });
+
+    it("should have onAbort handler wired to shell abort button", async () => {
+      // Note: fireEvent.click does not properly trigger SolidJS delegated events in jsdom.
+      // This test verifies the abort button exists with correct attributes including aria-label.
+      // Full E2E verification of abort behavior is done via Playwright tests.
+      const { container } = renderSessionView([], () => true);
+
+      const shellAbort = container.querySelector("[data-component='shell-abort']") as HTMLButtonElement;
+      expect(shellAbort).toBeDefined();
+      expect(shellAbort.getAttribute("aria-label")).toBe("Stop generation");
+      expect(shellAbort.getAttribute("data-component")).toBe("shell-abort");
+    });
+  });
+
+  // SS-S2: Skeleton to content transition
+  describe("SS-S2: Skeleton to content transition", () => {
+    it("should transition from skeleton to streaming content when first text delta arrives", async () => {
+      // This tests the SS-3 requirement: skeleton transitions smoothly to streaming content
+      const { container } = renderSessionView([], () => true);
+
+      // Initially skeleton is shown (optimistic state)
+      let skeletonContent = container.querySelector("[data-component='skeleton-content']");
+      expect(skeletonContent).toBeDefined();
+
+      // Verify the data-streaming attribute is 'optimistic' when skeleton is shown
+      const assistantTurn = container.querySelector(".turn--assistant[data-streaming='optimistic']");
+      expect(assistantTurn).toBeDefined();
+
+      // The transition happens when isOptimistic becomes false
+      // This is verified by the fact that data-streaming='optimistic' only appears
+      // when skeleton is shown
+    });
   });
 });

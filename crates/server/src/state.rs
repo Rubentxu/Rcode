@@ -18,6 +18,7 @@ use tokio::sync::Mutex as TokioMutex;
 
 use crate::cache_store_impl::ServerCacheStore;
 use crate::cancellation::CancellationRegistry;
+use crate::explorer::ExplorerService;
 use crate::subagent_runner_impl::ServerSubagentRunner;
 
 pub struct AppState {
@@ -34,6 +35,8 @@ pub struct AppState {
     pub lsp_registry: Arc<LanguageServerRegistry>,
     /// Optional mock provider for testing (injected via TestApp)
     pub mock_provider: Arc<std::sync::Mutex<Option<Arc<dyn LlmProvider>>>>,
+    /// Explorer service for workspace file tree
+    pub explorer_service: Arc<ExplorerService>,
 }
 
 fn create_storage_path() -> std::path::PathBuf {
@@ -118,6 +121,7 @@ impl AppState {
                     permission_services: Arc::new(TokioMutex::new(HashMap::new())),
                     lsp_registry,
                     mock_provider: Arc::new(std::sync::Mutex::new(None)),
+                    explorer_service: Arc::new(ExplorerService::new()),
                 };
             }
         };
@@ -145,6 +149,7 @@ impl AppState {
                 permission_services: Arc::new(TokioMutex::new(HashMap::new())),
                 lsp_registry,
                 mock_provider: Arc::new(std::sync::Mutex::new(None)),
+                explorer_service: Arc::new(ExplorerService::new()),
             };
         }
 
@@ -170,6 +175,7 @@ impl AppState {
                     permission_services: Arc::new(TokioMutex::new(HashMap::new())),
                     lsp_registry,
                     mock_provider: Arc::new(std::sync::Mutex::new(None)),
+                    explorer_service: Arc::new(ExplorerService::new()),
                 };
             }
         };
@@ -203,6 +209,7 @@ impl AppState {
                     permission_services: Arc::new(TokioMutex::new(HashMap::new())),
                     lsp_registry,
                     mock_provider: Arc::new(std::sync::Mutex::new(None)),
+                    explorer_service: Arc::new(ExplorerService::new()),
                 };
             }
         };
@@ -258,6 +265,7 @@ impl AppState {
             permission_services: Arc::new(TokioMutex::new(HashMap::new())),
             lsp_registry,
             mock_provider: Arc::new(std::sync::Mutex::new(None)),
+            explorer_service: Arc::new(ExplorerService::new()),
         }
     }
 }

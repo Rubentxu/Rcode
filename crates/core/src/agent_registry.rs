@@ -1,13 +1,13 @@
 //! Agent registry for managing available agents
 
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::RwLock;
 
 use crate::agent::{Agent, AgentInfo};
-use crate::error::Result;
 use crate::agent_loader::AgentLoader;
 use crate::dynamic_agent::DynamicAgent;
+use crate::error::Result;
 
 /// Registry for managing agents - both built-in and custom
 pub struct AgentRegistry {
@@ -156,7 +156,10 @@ mod tests {
         registry.register(agent.clone());
 
         assert!(registry.contains("test-1"));
-        assert_eq!(registry.get("test-1").map(|a| a.id().to_string()), Some("test-1".to_string()));
+        assert_eq!(
+            registry.get("test-1").map(|a| a.id().to_string()),
+            Some("test-1".to_string())
+        );
     }
 
     #[test]
@@ -216,10 +219,10 @@ mod tests {
     fn test_contains_method() {
         let registry = AgentRegistry::new();
         assert!(!registry.contains("test-1"));
-        
+
         let agent = create_test_agent("test-1", "Test Agent 1");
         registry.register(agent);
-        
+
         assert!(registry.contains("test-1"));
         assert!(!registry.contains("nonexistent"));
     }
@@ -289,7 +292,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let loader = AgentLoader::with_paths(vec![temp_dir.path().to_path_buf()]);
         let registry = AgentRegistry::with_loader(loader);
-        
+
         registry.load_all().await.unwrap();
         assert!(registry.is_empty());
     }

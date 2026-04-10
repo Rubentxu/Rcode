@@ -28,7 +28,7 @@ const SETTINGS_NAV: Array<{ id: SettingsSection; title: string; group: string; i
   { id: "models", title: "Models", group: "Server", icon: "✦" },
 ];
 
-const POPULAR_PROVIDER_IDS = ["opencode-zen", "opencode-go", "anthropic", "openai", "google", "openrouter"];
+const POPULAR_PROVIDER_IDS = ["opencode-zen", "opencode-go", "anthropic", "openai", "google", "openrouter", "minimax", "zai"];
 
 const PROVIDER_URLS: Record<string, Array<{ label: string; url: string }>> = {
   anthropic: [
@@ -278,21 +278,38 @@ export function Settings(props: { onClose: () => void }) {
     }
   }
 
-  const connectedProviders = createMemo(() => providers().filter((provider) => provider.has_key));
-  const popularProviders = createMemo(() => {
-    const existingIds = new Set(providers().map((provider) => provider.id));
-    return POPULAR_PROVIDER_IDS
-      .filter((id) => !existingIds.has(id))
-      .map((id) => ({
-        id,
-        name: id === "opencode-zen" ? "OpenCode Zen" : id === "opencode-go" ? "OpenCode Go" : id.charAt(0).toUpperCase() + id.slice(1),
-        description:
-          id === "opencode-zen"
-            ? "Selected premium models including Claude, GPT, Gemini, and more"
-            : id === "opencode-go"
-              ? "Economic subscription for everyone"
-              : "Connect this provider to unlock its model catalog",
-      }));
+  // All providers: backend providers + known popular providers not returned by backend
+  // This ensures MiniMax/ZAI appear even when has_key is false
+  const allProviders = createMemo(() => {
+    const existingById = new Map(providers().map((p) => [p.id, p]));
+    const merged: Provider[] = [];
+
+    // First add all providers returned by backend
+    for (const p of providers()) {
+      merged.push(p);
+    }
+
+    // Then add popular IDs that aren't already in backend list
+    const backendIds = new Set(providers().map((p) => p.id));
+    for (const id of POPULAR_PROVIDER_IDS) {
+      if (!backendIds.has(id)) {
+        merged.push({
+          id,
+          name: id === "opencode-zen" ? "OpenCode Zen" : id === "opencode-go" ? "OpenCode Go" : id.charAt(0).toUpperCase() + id.slice(1),
+          has_key: false,
+          base_url: null,
+          enabled: true,
+          key_source: undefined,
+        });
+      }
+    }
+
+    return merged;
+  });
+
+  const connectedProviders = createMemo(() => allProviders().filter((provider) => provider.has_key));
+  const unconnectedProviders = createMemo(() => {
+    return allProviders().filter((provider) => !provider.has_key);
   });
 
   const filteredModels = createMemo(() => {
@@ -425,32 +442,37 @@ export function Settings(props: { onClose: () => void }) {
         </For>
       </div>
 
-      <p style="margin: 28px 0 14px; color: var(--text-secondary); font-size: 14px;">Popular providers</p>
+      <p style="margin: 28px 0 14px; color: var(--text-secondary); font-size: 14px;">Known providers</p>
       <div style={`${cardStyle}; display: flex; flex-direction: column; gap: 0;`}>
-        <For each={popularProviders()}>
-          {(provider, index) => (
-            <div style={`padding: 14px 0; ${index() > 0 ? "border-top: 1px solid var(--border);" : ""}`}>
-              <div style="display: flex; justify-content: space-between; align-items: center; gap: 16px;">
-                <div>
-                  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
-                    <strong style="font-size: 15px; color: var(--text-primary);">{provider.name}</strong>
-                    <span style="font-size: 11px; padding: 2px 8px; border-radius: 999px; background: rgba(148,163,184,0.14); color: var(--text-secondary);">recommended</span>
+        <For each={unconnectedProviders()}>
+          {(provider, index) => {
+            const badge = providerBadge(provider);
+            return (
+              <div style={`padding: 14px 0; ${index() > 0 ? "border-top: 1px solid var(--border);" : ""}`}>
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 16px;">
+                  <div style="display: flex; align-items: center; gap: 12px; min-width: 0;">
+                    <div style="width: 28px; height: 28px; border-radius: 8px; background: var(--bg-tertiary); display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: var(--text-primary); text-transform: uppercase;">
+                      {provider.name.slice(0, 1)}
+                    </div>
+                    <div>
+                      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 2px;">
+                        <strong style="font-size: 15px; color: var(--text-primary);">{provider.name}</strong>
+                        <span style={`font-size: 11px; padding: 2px 8px; border-radius: 999px; background: ${badge.bg}; color: ${badge.color};`}>
+                          {badge.label}
+                        </span>
+                      </div>
+                    </div>
                   </div>
-                  <div style="font-size: 13px; color: var(--text-secondary);">{provider.description}</div>
+                  <button
+                    onClick={() => startEditing(provider)}
+                    style="padding: 8px 14px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255,255,255,0.04); color: var(--text-primary); cursor: pointer;"
+                  >
+                    + Connect
+                  </button>
                 </div>
-                <button
-                  onClick={() => {
-                    setActiveSection("providers");
-                    setShowCustomForm(true);
-                    setCustomProviderId(provider.id);
-                  }}
-                  style="padding: 8px 14px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255,255,255,0.04); color: var(--text-primary); cursor: pointer;"
-                >
-                  + Connect
-                </button>
               </div>
-            </div>
-          )}
+            );
+          }}
         </For>
       </div>
 

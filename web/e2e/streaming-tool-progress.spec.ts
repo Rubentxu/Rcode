@@ -3,9 +3,12 @@ import { test, expect } from "@playwright/test";
 /**
  * T12: Streaming smoke test for Phase 3 streaming UX
  * Verifies:
- * 1. Streaming text deltas accumulate properly
+ * 1. Assistant shell appears immediately on submit (optimistic)
  * 2. Tool call cards appear during streaming
  * 3. Final persisted message contains tool_call and tool_result parts
+ * 
+ * Note: "Processing..." bottom bar was removed per SS-2. The assistant shell
+ * now shows "thinking..." (optimistic) or "streaming..." (active) in the shell header.
  */
 test("streaming text and tool progress through SSE", async ({ page }) => {
   await page.goto("/");
@@ -24,8 +27,9 @@ test("streaming text and tool progress through SSE", async ({ page }) => {
   // Verify prompt is shown
   await expect(page.getByText(prompt)).toBeVisible();
 
-  // T12-1: Verify streaming progress indicator appears
-  await expect(page.getByText("Processing...")).toBeVisible({ timeout: 5000 });
+  // T12-1: Verify assistant shell appears immediately (optimistic shell per SS-1)
+  // The shell shows "thinking..." in the header when in optimistic state
+  await expect(page.getByText("thinking...")).toBeVisible({ timeout: 5000 });
 
   // T12-2: Verify tool call card appears during streaming (if streaming UX is working)
   // This checks that the new semantic events are flowing
@@ -34,7 +38,7 @@ test("streaming text and tool progress through SSE", async ({ page }) => {
     // Check for tool call related content
     return {
       hasToolName: /bash|pwd/i.test(body),
-      hasStreamingIndicator: /Processing|streaming/i.test(body),
+      hasStreamingIndicator: /streaming|thinking/i.test(body),
     };
   }, { timeout: 30000 }).toMatchObject({
     hasToolName: true,
@@ -52,12 +56,14 @@ test("streaming text and tool progress through SSE", async ({ page }) => {
     hasFinalAnswer: true,
   });
 
-  // T12-4: Verify streaming indicator is gone after completion
-  await expect(page.getByText("Processing...")).not.toBeVisible({ timeout: 10000 });
+  // T12-4: Verify assistant shell is gone after completion
+  await expect(page.getByText("thinking...")).not.toBeVisible({ timeout: 10000 });
+  await expect(page.getByText("streaming...")).not.toBeVisible({ timeout: 10000 });
 });
 
 /**
  * T12: Legacy regression test - verify old streaming_progress path still works
+ * SS-5: Legacy streaming_progress path must continue to function identically
  */
 test("legacy streaming_progress path still works", async ({ page }) => {
   await page.goto("/");
@@ -76,8 +82,8 @@ test("legacy streaming_progress path still works", async ({ page }) => {
   // Verify prompt is shown
   await expect(page.getByText(prompt)).toBeVisible();
 
-  // Verify streaming indicator appears
-  await expect(page.getByText("Processing...")).toBeVisible({ timeout: 5000 });
+  // SS-1: Verify assistant shell appears immediately (optimistic state)
+  await expect(page.getByText("thinking...")).toBeVisible({ timeout: 5000 });
 
   // Wait for response
   await expect.poll(async () => {
@@ -85,6 +91,7 @@ test("legacy streaming_progress path still works", async ({ page }) => {
     return /hello|hi|hey/i.test(body);
   }, { timeout: 30000 }).toBeTruthy();
 
-  // Verify streaming indicator is gone after completion
-  await expect(page.getByText("Processing...")).not.toBeVisible({ timeout: 10000 });
+  // Verify assistant shell is gone after completion
+  await expect(page.getByText("thinking...")).not.toBeVisible({ timeout: 10000 });
+  await expect(page.getByText("streaming...")).not.toBeVisible({ timeout: 10000 });
 });
