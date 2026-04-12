@@ -23,6 +23,7 @@
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.7.0",
     "katex": "^0.16.45",
+    "marked": "^18.0.0",
     "mermaid": "^11.14.0",
     "rehype-katex": "^7.0.1",
     "rehype-pretty-code": "^0.14.3",

@@ -145,6 +145,9 @@ export default function App() {
     }
   };
 
+  // Track whether we're doing an initial session load (full replace) vs an incremental reload
+  let isSessionLoad = false;
+
   const loadMessages = async (sessionId: string) => {
     if (MOCK_MODE) {
       // Messages are managed locally in mock mode
@@ -180,21 +183,30 @@ export default function App() {
             parts: m.parts as MessagePart[] | undefined,
           };
         });
-        // Merge-safe: if loading (streaming in progress), only update messages
-        // that already exist in state. Don't remove local-only messages (e.g.,
-        // the just-added user message) or truncate the list before the backend
-        // has caught up. When NOT loading, do a full replace (session switch, etc.)
-        if (isLoading()) {
+
+        if (isSessionLoad) {
+          // Full replace only on initial session selection
+          isSessionLoad = false;
+          setMessages(structuredMessages);
+        } else {
+          // Incremental reload (from SSE onDone/onAssistantCommitted/onReloadMessages):
+          // Always merge — never remove messages that exist locally.
+          // The backend may not have all messages persisted yet (race condition),
+          // so we use a length-based heuristic: if backend has >= local count,
+          // do a full replace (backend is authoritative). Otherwise, merge only
+          // messages that exist in both.
           setMessages((prev) => {
-            // Build a map of backend messages by ID for fast lookup
+            if (structuredMessages.length >= prev.length) {
+              // Backend is caught up — full replace is safe
+              return structuredMessages;
+            }
+            // Backend is behind — merge existing messages but keep local-only ones
             const backendMap = new Map(structuredMessages.map((m) => [m.id, m]));
             return prev.map((local) => {
               const fromBackend = backendMap.get(local.id);
               return fromBackend ?? local;
             });
           });
-        } else {
-          setMessages(structuredMessages);
         }
       } else {
         console.error("Failed to load messages", { sessionId, status: response.status, statusText: response.statusText });
@@ -209,6 +221,7 @@ export default function App() {
     if (session.model_id) {
       setCurrentModel(session.model_id);
     }
+    isSessionLoad = true;
     loadMessages(session.id);
     setSseStatus("connected");
   };

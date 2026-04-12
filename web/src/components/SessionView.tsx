@@ -280,8 +280,16 @@ export default function SessionView(props: SessionViewProps) {
       },
       onDone: () => {
         clearDraft();
-        props.onReloadMessages?.();
-        props.onComplete?.();
+        // IMPORTANT: Reload messages FIRST, then mark complete.
+        // If we mark complete first, the merge logic in loadMessages sees
+        // isLoading=false and does a full replace before the backend has
+        // the complete message — causing a flash of empty content.
+        const reloadPromise = props.onReloadMessages?.();
+        if (reloadPromise instanceof Promise) {
+          reloadPromise.then(() => props.onComplete?.());
+        } else {
+          props.onComplete?.();
+        }
       },
       onError: (event) => {
         console.error("SSE error:", event.error);
@@ -309,8 +317,13 @@ export default function SessionView(props: SessionViewProps) {
       },
       onAssistantCommitted: () => {
         clearDraft();
-        props.onReloadMessages?.();
-        props.onComplete?.();
+        // Reload first, then mark complete — same ordering fix as onDone
+        const reloadPromise = props.onReloadMessages?.();
+        if (reloadPromise instanceof Promise) {
+          reloadPromise.then(() => props.onComplete?.());
+        } else {
+          props.onComplete?.();
+        }
       },
     });
 
