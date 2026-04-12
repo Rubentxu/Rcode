@@ -166,8 +166,8 @@
 }
 
 [data-component="message-content"] {
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
+  padding: 0;
+  border-radius: 0;
   font-size: var(--text-sm);
   line-height: 1.6;
 }
@@ -177,13 +177,12 @@
 }
 
 [data-component="message"][data-role="user"] [data-component="message-content"] {
-  background: var(--surface-container);
+  background: var(--bg-tertiary);
   color: var(--on-surface);
-  border: 1px solid rgba(67, 70, 86, 0.1);
-  border-radius: 1.5rem;
-  border-top-right-radius: 0.25rem;
-  padding: 1.25rem;
-  max-width: 42rem;
+  border: none;
+  border-radius: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  max-width: 85%;
 }
 
 [data-component="message"][data-role="assistant"] {
@@ -191,7 +190,7 @@
 }
 
 [data-component="message"][data-role="assistant"] [data-component="message-content"] {
-  background: var(--surface-container);
+  background: transparent;
   color: var(--text-primary);
 }
 
@@ -720,9 +719,7 @@
   display: flex;
   gap: var(--space-3);
   margin-bottom: var(--turn-spacing);
-  max-width: var(--transcript-max-width);
-  margin-left: auto;
-  margin-right: auto;
+  width: 100%;
 }
 
 .turn--user {
@@ -763,7 +760,6 @@
 .turn--assistant .turn-avatar {
   background: var(--avatar-assistant-bg);
   color: var(--avatar-assistant-color);
-  border: 1px solid rgba(67, 70, 86, 0.2);
 }
 
 .turn--system .turn-avatar {
@@ -781,7 +777,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  max-width: calc(var(--transcript-max-width) - var(--avatar-size) - var(--space-3));
 }
 
 .turn--user .turn-content {
@@ -805,8 +800,9 @@
   width: 100%;
 }
 
-/* Transcript container — centers messages with reading-width lock */
+/* Transcript container — fluid width, centered with responsive max */
 [data-component="transcript"] {
+  width: 100%;
   max-width: var(--transcript-max-width);
   margin: 0 auto;
   padding: 0 var(--space-4);
@@ -876,7 +872,7 @@
 /* Skeleton line - pulsing placeholder for streaming text */
 [data-component="skeleton-line"] {
   display: inline-block;
-  height: 14px;
+  height: 8px;
   background: linear-gradient(
     90deg,
     var(--bg-tertiary) 25%,
@@ -976,7 +972,7 @@
   height: 28px;
   padding: 0;
   background: transparent;
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius-md);
   color: var(--text-muted);
   cursor: pointer;
@@ -1031,11 +1027,9 @@
    ============================== */
 
 [data-component="reasoning-stream-panel"] {
-  background: var(--surface-container-low);
-  border-left: 2px solid rgba(78, 222, 163, 0.3);
-  border: 1px solid rgba(67, 70, 86, 0.1);
-  padding: 1rem;
-  border-radius: 0.5rem;
+  background: transparent;
+  border-left: 1px solid var(--border);
+  padding: 0.25rem 0.5rem;
   margin-bottom: 0.5rem;
 }
 
@@ -1056,13 +1050,12 @@
    ============================== */
 
 [data-component="streaming-tool-call-card"] {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 0.75rem;
-  background: var(--surface-container-lowest);
-  border: 1px solid rgba(67, 70, 86, 0.2);
-  padding: 0.5rem 1rem;
-  border-radius: 9999px;
+  gap: 0.375rem;
+  background: transparent;
+  border: none;
+  padding: 0;
   width: fit-content;
   margin-bottom: 0.5rem;
 }
@@ -1119,7 +1112,7 @@
 
 [data-part="text"] {
   font-size: var(--text-sm);
-  line-height: 1.6;
+  line-height: 1.75;
   color: var(--on-surface);
 }
 
@@ -1206,8 +1199,8 @@
 .tool-result-card {
   border-radius: 0.5rem;
   overflow: hidden;
-  border: 1px solid var(--outline-variant);
-  background: var(--surface-container-low);
+  border: none;
+  background: var(--bg-tertiary);
   margin-bottom: 0.5rem;
 }
 
@@ -1240,4 +1233,176 @@
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+/* ==============================
+   OpenCode-like Chat Workspace
+   ============================== */
+
+/* Chat context bar — sticky top row inside center pane */
+[data-component="chat-context-bar"] {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--chat-context-bar-height);
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--border-subtle, rgba(67, 70, 86, 0.12));
+  background: var(--bg-primary, var(--surface-container-lowest, #0d1117));
+  font-size: var(--text-xs, 11px);
+  color: var(--text-muted, #8e90a2);
+  flex-shrink: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+[data-component="chat-context-bar"] [data-context-chip] {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface-container, #1a1e24);
+  border: 1px solid var(--border-subtle, rgba(67, 70, 86, 0.12));
+  color: var(--text-secondary, #c9cdd4);
+}
+
+[data-component="chat-context-bar"] [data-context-chip] .material-symbols-outlined {
+  font-size: 13px;
+}
+
+/* Assistant document-style message — full width, no bubble */
+[data-component="assistant-document-message"] {
+  width: 100%;
+  display: flex;
+  gap: var(--turn-gap);
+  align-items: flex-start;
+  margin-bottom: var(--turn-spacing);
+}
+
+[data-component="assistant-document-message"] .turn-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+[data-component="assistant-document-message"] [data-component="message-content"] {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+}
+
+[data-component="assistant-document-message"] [data-component="message-content"] :global(.prose),
+[data-component="assistant-document-message"] [data-component="message-content"] :global(.markdown) {
+  max-width: none;
+}
+
+/* User bubble message — right-aligned, contained width */
+[data-component="user-bubble-message"] {
+  width: 100%;
+  display: flex;
+  flex-direction: row-reverse;
+  gap: var(--turn-gap);
+  align-items: flex-start;
+  margin-bottom: var(--turn-spacing);
+}
+
+[data-component="user-bubble-message"] .turn-content {
+  max-width: var(--user-bubble-max-width);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+[data-component="user-bubble-message"] [data-component="message-content"] {
+  background: var(--bg-tertiary);
+  color: var(--on-surface, #e1e4e8);
+  border: none;
+  border-radius: 0.75rem;
+  padding: 0.5rem 0.75rem;
+}
+
+/* ==============================
+   Compact Tool / Thinking Rows
+   ============================== */
+
+/* Tool event row — compact single-line for tool_call display */
+[data-component="tool-event-row"] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: var(--text-xs, 11px);
+  color: var(--text-muted, #8e90a2);
+  cursor: default;
+}
+
+[data-component="tool-event-row"] .tool-event-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--surface-container, #1a1e24);
+  flex-shrink: 0;
+}
+
+[data-component="tool-event-row"] .tool-event-icon .material-symbols-outlined {
+  font-size: 11px;
+}
+
+[data-component="tool-event-row"] .tool-event-name {
+  font-family: var(--font-mono, monospace);
+  font-weight: 500;
+  color: var(--text-secondary, #c9cdd4);
+}
+
+[data-component="tool-event-row"] .tool-event-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+}
+
+/* Hide the default card header inside a compact row — the row IS the header */
+[data-component="tool-event-row"] [data-component="tool-call-card"] > div:first-child {
+  display: none;
+}
+
+[data-component="tool-event-row"] [data-component="tool-call-card"] {
+  border: none;
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
+  width: 100%;
+}
+
+/* Thinking/status row — compact reasoning indicator */
+[data-component="thinking-status-row"] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  font-size: var(--text-xs, 11px);
+  color: var(--text-muted, #8e90a2);
+}
+
+[data-component="thinking-status-row"] .material-symbols-outlined {
+  font-size: 14px;
+  color: var(--secondary, #8b949e);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+[data-component="thinking-status-row"] .thinking-label {
+  font-style: italic;
+}
+
+/* Override reasoning block inside assistant-document to be more compact */
+[data-component="assistant-document-message"] [data-part="reasoning"] {
+  border-left-width: 1px;
+  padding: 8px 12px;
+  background: transparent;
 }

@@ -13,13 +13,13 @@ export const ReasoningBlock: Component<ReasoningBlockProps> = (props) => {
   const [isExpanded, setIsExpanded] = createSignal(false);
 
   return (
-    <div data-part="reasoning" class="bg-surface-container-low border-l-2 border-secondary/30 p-4 rounded-lg">
+    <div data-part="reasoning" class="border-l border-secondary/50 px-3 py-2">
       <div
-        class="flex items-center gap-2 mb-3 cursor-pointer"
+        class="flex items-center gap-2 cursor-pointer"
         onClick={() => setIsExpanded(!isExpanded())}
       >
         <span class="material-symbols-outlined text-secondary text-sm" style="font-variation-settings: 'FILL' 1;">memory</span>
-        <span class="text-[11px] font-mono uppercase tracking-widest text-secondary/70">Agent Reasoning</span>
+        <span class="text-[11px] font-mono uppercase tracking-widest text-secondary/70">Reasoning</span>
         <span class="material-symbols-outlined text-outline text-xs ml-auto">
           {isExpanded() ? "expand_less" : "expand_more"}
         </span>
@@ -35,7 +35,7 @@ export const ReasoningBlock: Component<ReasoningBlockProps> = (props) => {
 
       {!isExpanded() && (
         <div class="text-xs text-outline font-mono truncate">
-          Click to expand reasoning...
+          Click to expand...
         </div>
       )}
     </div>

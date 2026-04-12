@@ -1,93 +1,93 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { render } from "solid-js/web";
 import { StreamingToolCallCard } from "./StreamingToolCallCard";
+
+let container: HTMLDivElement;
+
+beforeEach(() => {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+});
+
+afterEach(() => {
+  document.body.removeChild(container);
+});
 
 describe("StreamingToolCallCard", () => {
   it("should display spinner when status is running", () => {
-    const container = document.createElement("div");
-    const result = StreamingToolCallCard({
-      id: "call_123",
-      name: "bash",
-      arguments_delta: '{"cmd": "ls"}',
-      status: "running",
-    });
-    container.appendChild(result as Node);
+    render(() => (
+      <StreamingToolCallCard
+        id="call_123"
+        name="bash"
+        arguments_delta='{"cmd": "ls"}'
+        status="running"
+      />
+    ), container);
 
     const card = container.querySelector("[data-component='streaming-tool-call-card']");
     expect(card).toBeDefined();
     expect(card?.getAttribute("data-status")).toBe("running");
 
-    // Should show spinner for running status
-    const spinner = container.querySelector(".status-running");
+    const spinner = container.querySelector("svg.spinner");
     expect(spinner).toBeDefined();
   });
 
-  it("should show checkmark when status is completed", () => {
-    const container = document.createElement("div");
-    const result = StreamingToolCallCard({
-      id: "call_123",
-      name: "bash",
-      arguments_delta: '{"cmd": "ls"}',
-      status: "completed",
-    });
-    container.appendChild(result as Node);
+  it("should show completed checkmark in simplified inline layout", () => {
+    render(() => (
+      <StreamingToolCallCard
+        id="call_123"
+        name="bash"
+        arguments_delta='{"cmd": "ls"}'
+        status="completed"
+      />
+    ), container);
 
     const card = container.querySelector("[data-component='streaming-tool-call-card']");
     expect(card?.getAttribute("data-status")).toBe("completed");
 
-    // Should show checkmark for completed status
-    const checkmark = container.querySelector(".status-complete");
+    const checkmark = Array.from(container.querySelectorAll("span")).find((span) => span.textContent === "✓");
     expect(checkmark).toBeDefined();
     expect(checkmark?.textContent).toBe("✓");
   });
 
   it("should display tool name", () => {
-    const container = document.createElement("div");
-    const result = StreamingToolCallCard({
-      id: "call_123",
-      name: "bash",
-      arguments_delta: "",
-      status: "running",
-    });
-    container.appendChild(result as Node);
+    render(() => (
+      <StreamingToolCallCard
+        id="call_123"
+        name="bash"
+        arguments_delta=""
+        status="running"
+      />
+    ), container);
 
-    const toolName = container.querySelector("[data-component='tool-name']");
-    expect(toolName?.textContent).toBe("bash");
+    expect(container.textContent).toContain("bash");
   });
 
-  it("should show arguments when expanded", () => {
-    const container = document.createElement("div");
-    const result = StreamingToolCallCard({
-      id: "call_123",
-      name: "bash",
-      arguments_delta: '{"cmd": "ls -la"}',
-      status: "running",
-    });
-    container.appendChild(result as Node);
+  it("should not render arguments section in the simplified layout", () => {
+    render(() => (
+      <StreamingToolCallCard
+        id="call_123"
+        name="bash"
+        arguments_delta='{"cmd": "ls -la"}'
+        status="running"
+      />
+    ), container);
 
-    // Initially not expanded, but arguments_delta exists so it should show
     const argsSection = container.querySelector("[data-component='tool-call-args']");
-    expect(argsSection).toBeDefined();
+    expect(argsSection).toBeNull();
   });
 
-  it("should toggle expand on button click", () => {
-    const container = document.createElement("div");
-    const result = StreamingToolCallCard({
-      id: "call_123",
-      name: "bash",
-      arguments_delta: '{"cmd": "ls"}',
-      status: "running",
-    });
-    container.appendChild(result as Node);
+  it("should not render expand toggle anymore", () => {
+    render(() => (
+      <StreamingToolCallCard
+        id="call_123"
+        name="bash"
+        arguments_delta='{"cmd": "ls"}'
+        status="running"
+      />
+    ), container);
 
-    // Find the toggle button
     const toggleBtn = container.querySelector("[data-component='toggle-expand']") as HTMLButtonElement;
-    expect(toggleBtn).toBeDefined();
-
-    // Click to expand
-    toggleBtn.click();
-
-    // After click, should show expanded content
-    const content = container.querySelector("[data-component='tool-call-args'] pre");
-    expect(content).toBeDefined();
+    expect(toggleBtn).toBeNull();
   });
 });

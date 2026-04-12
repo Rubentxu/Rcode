@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render } from "solid-js/web";
 import { fireEvent, screen, waitFor } from "@testing-library/dom";
+import { createSignal } from "solid-js";
 import SessionView from "./SessionView";
 import type { Session, Message } from "../api/types";
 
@@ -197,13 +198,13 @@ describe("SessionView", () => {
 
   // CPD-1, CPD-3, CPD-5: Collapsible reasoning (now using div + signal-based expand/collapse)
   describe("CPD-1 / CPD-3 / CPD-5: Reasoning block expandable", () => {
-    it("should render reasoning block with Agent Reasoning label", () => {
+    it("should render reasoning block with simplified Reasoning label", () => {
       const { container } = renderSessionView(multiTurnFixture);
 
-      // ReasoningBlock uses data-part="reasoning" and shows "Agent Reasoning" label
+      // ReasoningBlock uses data-part="reasoning" and shows the simplified "Reasoning" label
       const reasoningBlock = container.querySelector("[data-part='reasoning']");
       expect(reasoningBlock).toBeDefined();
-      expect(reasoningBlock?.textContent).toContain("Agent Reasoning");
+      expect(reasoningBlock?.textContent).toContain("Reasoning");
     });
 
     it("should expand reasoning block on click", async () => {
@@ -222,10 +223,10 @@ describe("SessionView", () => {
       expect(expandedContent).toBeDefined();
     });
 
-    it("should show tool_call with tool name in pill card", () => {
+    it("should show tool_call with tool name in inline row", () => {
       const { container } = renderSessionView(multiTurnFixture);
 
-      // ToolCallCard uses data-part="tool_call" pill-style card
+      // ToolCallCard now renders as an inline compact row
       const toolCall = container.querySelector("[data-part='tool_call']");
       expect(toolCall).toBeDefined();
       expect(toolCall?.textContent).toContain("bash");
@@ -289,6 +290,83 @@ describe("SessionView", () => {
       
       const toolResult = container.querySelector("[data-part='tool_result']");
       expect(toolResult).toBeDefined();
+    });
+  });
+
+  describe("Task checklist transcript integration", () => {
+    it("should render the checklist panel from task_checklist parts", () => {
+      const checklistMessages: Message[] = [
+        {
+          id: "msg_checklist",
+          role: "assistant",
+          content: "",
+          parts: [
+            {
+              type: "task_checklist",
+              items: [
+                { id: "task_1", content: "Persist task state", status: "pending", priority: "high" },
+                { id: "task_2", content: "Render panel", status: "completed", priority: "medium" },
+              ],
+            },
+          ],
+          created_at: "2026-04-08T10:00:00Z",
+        },
+      ];
+
+      const { container } = renderSessionView(checklistMessages);
+      const panel = container.querySelector("[data-component='task-checklist-panel']");
+      expect(panel).toBeDefined();
+      expect(panel?.textContent).toContain("1 de 2 tareas completadas");
+      expect(panel?.textContent).toContain("Persist task state");
+      expect(panel?.textContent).toContain("Render panel");
+    });
+
+    it("should update checklist rendering when transcript messages change", async () => {
+      const initialMessages: Message[] = [
+        {
+          id: "msg_checklist_1",
+          role: "assistant",
+          content: "",
+          parts: [{ type: "task_checklist", items: [{ id: "task_1", content: "First step", status: "pending", priority: "high" }] }],
+          created_at: "2026-04-08T10:00:00Z",
+        },
+      ];
+
+      const updatedMessages: Message[] = [
+        ...initialMessages,
+        {
+          id: "msg_checklist_2",
+          role: "assistant",
+          content: "",
+          parts: [{ type: "task_checklist", items: [{ id: "task_1", content: "First step", status: "completed", priority: "high" }] }],
+          created_at: "2026-04-08T10:00:01Z",
+        },
+      ];
+
+      const container = document.createElement("div");
+
+      const [messages, setMessages] = createSignal<Message[]>(initialMessages);
+      render(() => (
+        <SessionView
+          session={mockSession}
+          messages={messages()}
+          isLoading={() => false}
+          sseStatus="disconnected"
+          onSubmit={mockSubmit}
+          onAbort={mockAbort}
+          onReloadMessages={mockReload}
+          onComplete={mockComplete}
+          onRetry={mockRetry}
+          sessions={[mockSession]}
+        />
+      ), container);
+
+      expect(container.textContent).toContain("0 de 1 tareas completadas");
+
+      setMessages(updatedMessages);
+      await flushUpdates();
+
+      expect(container.textContent).toContain("1 de 1 tareas completadas");
     });
   });
 

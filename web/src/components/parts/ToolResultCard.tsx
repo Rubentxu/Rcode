@@ -32,10 +32,10 @@ export const ToolResultCard: Component<ToolResultCardProps> = (props) => {
   return (
     <div
       data-part="tool_result"
-      class={`tool-result-card overflow-hidden rounded-lg border ${
+      class={`tool-result-card overflow-hidden rounded-lg ${
         props.is_error
-          ? "bg-error-container/10 border-error/20"
-          : "bg-surface-container-low border-outline-variant/10"
+          ? "bg-error-container/10"
+          : "bg-bg-tertiary"
       }`}
     >
       <div

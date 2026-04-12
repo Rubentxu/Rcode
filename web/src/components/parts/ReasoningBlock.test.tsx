@@ -21,12 +21,12 @@ describe("ReasoningBlock", () => {
     expect(block).toBeDefined();
   });
 
-  it("should have reasoning label in block", () => {
+  it("should have updated reasoning label in block", () => {
     render(() => ReasoningBlock({ content: "thinking..." }), container);
 
-    // Should contain "Agent Reasoning" label
+    // Should contain the simplified "Reasoning" label
     const block = container.querySelector("[data-part='reasoning']");
-    expect(block?.textContent).toContain("Agent Reasoning");
+    expect(block?.textContent).toContain("Reasoning");
   });
 });
 

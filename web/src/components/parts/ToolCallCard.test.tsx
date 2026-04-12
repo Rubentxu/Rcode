@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { render } from "solid-js/web";
-import { fireEvent, waitFor } from "@testing-library/dom";
 import { ToolCallCard } from "./ToolCallCard";
 
 // Container must be attached to document.body for SolidJS event delegation to work in jsdom
@@ -14,49 +13,42 @@ afterEach(() => {
 });
 
 describe("ToolCallCard", () => {
-  it("should display tool name as header", () => {
+  it("should display tool name in compact inline layout", () => {
     render(() => ToolCallCard({ id: "call_123", name: "bash", arguments: { cmd: "ls -la" } }), container);
 
-    // Should contain the tool name in a pill-style card
     const card = container.querySelector("[data-part='tool_call']");
     expect(card).toBeDefined();
+    expect(card?.className).toContain("inline-flex");
     expect(card?.textContent).toContain("bash");
   });
 
-  it("should display formatted JSON arguments when expanded", async () => {
-    render(() => ToolCallCard({ id: "call_123", name: "bash", arguments: { cmd: "ls", flags: ["-la"] } }), container);
+  it("should show running indicator inline", () => {
+    render(() => ToolCallCard({ id: "call_123", name: "bash", arguments: { cmd: "ls", flags: ["-la"] }, status: "running" }), container);
 
-    // Expand the args
-    const expandBtn = container.querySelector("button");
-    fireEvent.click(expandBtn!);
+    const statusIcon = Array.from(container.querySelectorAll(".material-symbols-outlined")).find(
+      (icon) => icon.textContent?.includes("progress_activity"),
+    );
 
-    // Wait for the expanded content to appear
-    await waitFor(() => {
-      const pre = container.querySelector("pre");
-      expect(pre).toBeDefined();
-      expect(pre?.textContent).toContain("cmd");
-    });
+    expect(statusIcon).toBeDefined();
   });
 
-  it("should handle arguments as string", async () => {
-    render(() => ToolCallCard({ id: "call_456", name: "echo", arguments: "hello world" }), container);
+  it("should show success indicator inline", () => {
+    render(() => ToolCallCard({ id: "call_456", name: "echo", arguments: "hello world", status: "success" }), container);
 
-    // Expand to see arguments
-    const expandBtn = container.querySelector("button");
-    fireEvent.click(expandBtn!);
+    const statusIcon = Array.from(container.querySelectorAll(".material-symbols-outlined")).find(
+      (icon) => icon.textContent?.includes("check_circle"),
+    );
 
-    await waitFor(() => {
-      const pre = container.querySelector("pre");
-      expect(pre?.textContent).toContain("hello world");
-    });
+    expect(statusIcon).toBeDefined();
   });
 
-  it("should show expand button for args preview", () => {
-    // Use long args to test truncation
+  it("should not render expandable arguments UI anymore", () => {
     render(() => ToolCallCard({ id: "call_789", name: "bash", arguments: { cmd: "this is a very long command that should be truncated in the preview" } }), container);
 
-    // Should have an expand button
     const expandBtn = container.querySelector("button");
-    expect(expandBtn).toBeDefined();
+    const pre = container.querySelector("pre");
+
+    expect(expandBtn).toBeNull();
+    expect(pre).toBeNull();
   });
 });

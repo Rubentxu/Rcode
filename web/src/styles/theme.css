@@ -1,0 +1,213 @@
+/* RCode - Reference Design System */
+/* Material Design 3 Dark Theme with backwards-compatible aliases */
+
+:root {
+  /* ========================================
+     Primary Colors
+     ======================================== */
+  --primary: #b8c3ff;
+  --primary-fixed: #dde1ff;
+  --primary-fixed-dim: #b8c3ff;
+  --on-primary: #002388;
+  --on-primary-fixed: #001356;
+  --on-primary-fixed-variant: #0035be;
+  --primary-container: #2e5bff;
+  --on-primary-container: #efefff;
+
+  /* ========================================
+     Secondary Colors
+     ======================================== */
+  --secondary: #4edea3;
+  --secondary-fixed: #6ffbbe;
+  --secondary-fixed-dim: #4edea3;
+  --on-secondary: #003824;
+  --on-secondary-fixed: #002113;
+  --on-secondary-fixed-variant: #005236;
+  --secondary-container: #00a572;
+  --on-secondary-container: #00311f;
+
+  /* ========================================
+     Tertiary Colors
+     ======================================== */
+  --tertiary: #ffb95f;
+  --tertiary-fixed: #ffddb8;
+  --tertiary-fixed-dim: #ffb95f;
+  --on-tertiary: #472a00;
+  --on-tertiary-fixed: #2a1700;
+  --on-tertiary-fixed-variant: #653e00;
+  --tertiary-container: #996100;
+  --on-tertiary-container: #ffeedd;
+
+  /* ========================================
+     Error Colors
+     ======================================== */
+  --error: #ffb4ab;
+  --on-error: #690005;
+  --error-container: #93000a;
+  --on-error-container: #ffdad6;
+
+  /* ========================================
+     Surface Colors
+     ======================================== */
+  --background: #10141a;
+  --surface-bright: #353940;
+  --surface: #10141a;
+  --surface-dim: #10141a;
+  --surface-variant: #31353c;
+  --surface-tint: #b8c3ff;
+  --on-background: #dfe2eb;
+  --on-surface: #dfe2eb;
+  --on-surface-variant: #c4c5d9;
+  --inverse-surface: #dfe2eb;
+  --inverse-on-surface: #2d3137;
+  --inverse-primary: #124af0;
+
+  /* ========================================
+     Surface Containers (Material Design 3)
+     ======================================== */
+  --surface-container-lowest: #0a0e14;
+  --surface-container-low: #181c22;
+  --surface-container: #1c2026;
+  --surface-container-high: #262a31;
+  --surface-container-highest: #31353c;
+
+  /* ========================================
+     Outline Colors
+     ======================================== */
+  --outline: #8e90a2;
+  --outline-variant: #434656;
+
+  /* ========================================
+     Backwards-Compatible Aliases
+     (映射到新的颜色系统)
+     ======================================== */
+
+  /* Core colors */
+  --bg-primary: #10141a;
+  --bg-secondary: #181c22;
+  --bg-tertiary: #1c2026;
+  --bg-elevated: #262a31;
+  --text-primary: #dfe2eb;
+  --text-secondary: #a3a3a3;
+  --text-muted: #7a7a8a;
+  --accent: #2e5bff;
+  --accent-hover: #4f46e5;
+  --accent-muted: rgba(46, 91, 255, 0.15);
+  --border: #434656;
+  --border-strong: #8e90a2;
+
+  /* Status colors */
+  --success: #4edea3;
+  --warning: #f59e0b;
+  --info: #3b82f6;
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Typography */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", Monaco, "Cascadia Code", monospace;
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 18px;
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-full: 9999px;
+
+  /* Transitions */
+  --transition-fast: 100ms ease;
+  --transition-normal: 200ms ease;
+
+  /* Avatar / conversational layout */
+  --avatar-size: 24px;
+  --avatar-font-size: 11px;
+  --avatar-user-bg: rgba(46, 91, 255, 0.15);
+  --avatar-user-color: #dfe2eb;
+  --avatar-assistant-bg: #262a31;
+  --avatar-assistant-color: #dfe2eb;
+  --avatar-system-bg: #181c22;
+  --avatar-system-color: #8e90a2;
+
+  /* Transcript / turn layout */
+  --transcript-max-width: clamp(600px, 100%, 1400px);
+  --turn-gap: 6px;
+  --turn-spacing: 16px;
+  --message-padding: 12px 16px;
+
+  /* Chat workspace (OpenCode-like) */
+  --chat-context-bar-height: 36px;
+  --chat-workspace-gap: 0px;
+  --assistant-document-padding: 0px;
+  --user-bubble-max-width: 75%;
+
+  /* Process details (collapsible) */
+  --process-details-bg: #181c22;
+  --process-details-border: #434656;
+  --process-details-summary-color: #8e90a2;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  background-color: var(--background);
+  color: var(--on-surface);
+  line-height: 1.5;
+}
+
+#app {
+  height: 100%;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+
+/* Custom scrollbar styles (narrow variant) */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #0a0e14;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #31353c;
+  border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #434656;
+}

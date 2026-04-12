@@ -17,6 +17,8 @@ import { StreamingToolCallCard } from "./parts/StreamingToolCallCard";
 import { ReasoningStreamPanel } from "./parts/ReasoningStreamPanel";
 import { TurnAvatar } from "./parts/TurnAvatar";
 import { QuickActions } from "./parts/QuickActions";
+import TaskChecklistPanel from "./chat-workspace/TaskChecklistPanel";
+import { deriveChecklistItems } from "./chat-workspace/checklist";
 import { createDraftStore, type DraftPart } from "../composables/useStreamingDraft";
 import type {
   SSEStreamReasoningDelta,
@@ -64,9 +66,9 @@ export default function SessionView(props: SessionViewProps) {
   const { draft, dispatch, clear: clearDraft, initOptimisticShell } = createDraftStore();
   
   // Phase 5: Scroll anchoring state
-  const NEAR_BOTTOM_THRESHOLD_PX = 50;
-  let isNearBottom = true;
+  const NEAR_BOTTOM_THRESHOLD_PX = 100;
   let rafScheduled = false;
+  let lastTurnCount = 0;
 
   // Create a derived message list that includes persisted messages
   const displayMessages = () => {
@@ -165,29 +167,70 @@ export default function SessionView(props: SessionViewProps) {
     props.onBranch?.(messageId, messagesUpTo);
   };
   
-  // Phase 5: Scroll handler to track user's scroll position
-  const handleScroll = () => {
-    if (!scrollContainerRef) return;
+  // Phase 5: isNearBottom as a function (not a mutable let)
+  const isNearBottom = () => {
+    if (!scrollContainerRef) return true;
     const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef;
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-    isNearBottom = distanceFromBottom <= NEAR_BOTTOM_THRESHOLD_PX;
+    return distanceFromBottom <= NEAR_BOTTOM_THRESHOLD_PX;
   };
   
-  // Phase 5: Scroll to bottom function
+  // Phase 5: Scroll handler to track user's scroll position
+  const handleScroll = () => {
+    // No-op: scroll tracking is handled by the scroll event listener added in onMount
+  };
+  
+  // Phase 5: Scroll to bottom function with RAF batching
   const scrollToBottom = () => {
-    if (!scrollContainerRef) return;
-    scrollContainerRef.scrollTop = scrollContainerRef.scrollHeight;
+    if (!scrollContainerRef || rafScheduled) return;
+    rafScheduled = true;
+    requestAnimationFrame(() => {
+      if (scrollContainerRef) {
+        // Use scrollTop instead of scrollTo for JSDOM compatibility
+        scrollContainerRef.scrollTop = scrollContainerRef.scrollHeight;
+      }
+      rafScheduled = false;
+    });
   };
   
-  // Phase 5: Auto-scroll when near bottom, using RAF to batch updates
+  // Phase 5: Scroll to bottom on mount
+  onMount(() => {
+    scrollToBottom();
+    
+    // Add scroll event listener to track manual scrolls
+    const container = scrollContainerRef;
+    if (container) {
+      const onScroll = () => {
+        // isNearBottom() is called here to check current scroll position
+        // We don't need to store it - just triggering the effect is enough
+      };
+      container.addEventListener('scroll', onScroll);
+      onCleanup(() => container.removeEventListener('scroll', onScroll));
+    }
+  });
+  
+  // Phase 5: Auto-scroll when turns increase from history load
   createEffect(() => {
-    // Trigger on draft changes during loading
-    if (props.isLoading() && draft() && isNearBottom && !rafScheduled) {
-      rafScheduled = true;
-      requestAnimationFrame(() => {
-        scrollToBottom();
-        rafScheduled = false;
-      });
+    const currentTurnCount = turns().length;
+    if (currentTurnCount > lastTurnCount && isNearBottom()) {
+      scrollToBottom();
+    }
+    lastTurnCount = currentTurnCount;
+  });
+  
+  // Phase 5: Auto-scroll on session change
+  createEffect(() => {
+    const sessionId = props.session.id;
+    if (sessionId) {
+      lastTurnCount = 0;
+      scrollToBottom();
+    }
+  });
+  
+  // Phase 5: Auto-scroll during loading when near bottom
+  createEffect(() => {
+    if (props.isLoading() && draft() && isNearBottom()) {
+      scrollToBottom();
     }
   });
 
@@ -317,57 +360,130 @@ export default function SessionView(props: SessionViewProps) {
     props.onCommandResult?.(result);
   };
 
+  const checklistItems = () => deriveChecklistItems(props.messages);
+
   return (
     <div class="flex flex-col h-full">
+      {/* Chat context bar — sticky top inside center pane */}
+      <div data-component="chat-context-bar">
+        <span data-context-chip>
+          <span class="material-symbols-outlined" style="font-size: 13px;">smart_toy</span>
+          {props.currentModel || "assistant"}
+        </span>
+        <Show when={props.session}>
+          <span data-context-chip>
+            <span class="material-symbols-outlined" style="font-size: 13px;">description</span>
+            {props.session.title || "Untitled"}
+          </span>
+        </Show>
+        <span style="margin-left: auto; display: inline-flex; align-items: center; gap: 4px;">
+          <span style={{
+            width: "6px",
+            height: "6px",
+            "border-radius": "50%",
+            background: props.sseStatus === "connected" ? "var(--secondary)" : props.sseStatus === "connecting" ? "var(--tertiary)" : "var(--outline)",
+          }} />
+          {props.sseStatus}
+        </span>
+      </div>
+
+      {/* Scrollable transcript area */}
       <div
         ref={scrollContainerRef}
-        class="flex-1 overflow-y-auto p-8 custom-scrollbar"
+        class="flex-1 overflow-y-auto px-4 md:px-8 py-6 custom-scrollbar"
         onScroll={handleScroll}
       >
-        {/* CT-3: Transcript uses max-width centering for readability */}
-        <div data-component="transcript" class="max-w-5xl mx-auto w-full">
+        <TaskChecklistPanel items={checklistItems()} />
+        {/* CT-3: Transcript uses fluid width from CSS variable */}
+        <div data-component="transcript" class="w-full">
           <Show when={turns().length === 0 && !draft()} fallback={
             <>
-              {/* Conversational turns with avatar slots */}
+              {/* Conversational turns with OpenCode-like role wrappers */}
               <For each={turns()}>
                 {(turn) => (
-                  <div 
-                    class={`turn turn--${turn.role}`}
-                    data-turn-role={turn.role}
-                  >
-                    {/* CT-2: Avatar slot — omitted for system role's inline rendering */}
-                    <Show when={turn.role !== "system"}>
-                      <TurnAvatar role={turn.role} />
+                  <Show when={turn.role === "system"} fallback={
+                    /* Assistant: document-style (full width, transparent) */
+                    <Show when={turn.role === "assistant"} fallback={
+                      /* User: bubble (right-aligned, contained) */
+                      <div
+                        class="turn turn--user"
+                        data-component="user-bubble-message"
+                        data-turn-role={turn.role}
+                      >
+                        <TurnAvatar role={turn.role} />
+                        <div class="turn-content">
+                          <For each={turn.messages}>
+                            {(message) => (
+                              <div data-component="message" data-role={message.role}>
+                                <div data-component="message-content">
+                                  <MessageContent message={message} />
+                                </div>
+                              </div>
+                            )}
+                          </For>
+                        </div>
+                      </div>
+                    }>
+                      <div
+                        class="turn turn--assistant"
+                        data-component="assistant-document-message"
+                        data-turn-role={turn.role}
+                      >
+                        <TurnAvatar role={turn.role} />
+                        <div class="turn-content">
+                          <For each={turn.messages}>
+                            {(message) => (
+                              <div data-component="message" data-role={message.role}>
+                                {/* CT-6: System messages render inline without avatar — show subtle role label */}
+                                <Show when={message.role === "system"}>
+                                  <div data-component="message-header">
+                                    <span style="font-size: var(--text-xs); font-weight: 600; color: var(--text-muted);">
+                                      system
+                                    </span>
+                                  </div>
+                                </Show>
+                                <div data-component="message-content">
+                                  <MessageContent message={message} />
+                                </div>
+                                {/* MQA-1, MQA-2, MQA-3: Quick actions for assistant messages only */}
+                                <Show when={message.role === "assistant"}>
+                                  <QuickActions
+                                    messageId={message.id}
+                                    textContent={extractTextContent(message)}
+                                    onRetry={handleRetry}
+                                    onBranch={handleBranch}
+                                  />
+                                </Show>
+                              </div>
+                            )}
+                          </For>
+                        </div>
+                      </div>
                     </Show>
-                    <div class="turn-content">
-                      <For each={turn.messages}>
-                        {(message) => (
-                          <div data-component="message" data-role={message.role}>
-                            {/* CT-6: System messages render inline without avatar — show subtle role label */}
-                            <Show when={message.role === "system"}>
+                  }>
+                    {/* System: minimal inline rendering */}
+                    <div
+                      class="turn turn--system"
+                      data-turn-role={turn.role}
+                    >
+                      <div class="turn-content">
+                        <For each={turn.messages}>
+                          {(message) => (
+                            <div data-component="message" data-role={message.role}>
                               <div data-component="message-header">
                                 <span style="font-size: var(--text-xs); font-weight: 600; color: var(--text-muted);">
                                   system
                                 </span>
                               </div>
-                            </Show>
-                            <div data-component="message-content">
-                              <MessageContent message={message} />
+                              <div data-component="message-content">
+                                <MessageContent message={message} />
+                              </div>
                             </div>
-                            {/* MQA-1, MQA-2, MQA-3: Quick actions for assistant messages only */}
-                            <Show when={message.role === "assistant"}>
-                              <QuickActions
-                                messageId={message.id}
-                                textContent={extractTextContent(message)}
-                                onRetry={handleRetry}
-                                onBranch={handleBranch}
-                              />
-                            </Show>
-                          </div>
-                        )}
-                      </For>
+                          )}
+                        </For>
+                      </div>
                     </div>
-                  </div>
+                  </Show>
                 )}
               </For>
               {/* Phase 3: Show draft message during streaming as an assistant turn */}
@@ -492,11 +608,19 @@ function PartRenderer(props: { part: MessagePart }) {
   }
   
   if (partType === "tool_call") {
-    return <ToolCallCard 
-      id={props.part.id} 
-      name={props.part.name} 
-      arguments={props.part.arguments} 
-    />;
+    return (
+      <div data-component="tool-event-row">
+        <div class="tool-event-icon">
+          <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">terminal</span>
+        </div>
+        <span class="tool-event-name">{props.part.name}</span>
+        <ToolCallCard 
+          id={props.part.id} 
+          name={props.part.name} 
+          arguments={props.part.arguments} 
+        />
+      </div>
+    );
   }
   
   if (partType === "tool_result") {
@@ -567,10 +691,9 @@ function DraftMessageContent(props: { parts: DraftPart[] }) {
 function SkeletonContent() {
   return (
     <div data-component="skeleton-content">
-      {/* Simulate 3 lines of varying width for natural skeleton appearance */}
+      {/* Simulate 2 lines of varying width for natural skeleton appearance */}
       <span data-component="skeleton-line" style="width: 65%;">.</span>
       <span data-component="skeleton-line" style="width: 45%;">.</span>
-      <span data-component="skeleton-line" style="width: 80%;">.</span>
     </div>
   );
 }
