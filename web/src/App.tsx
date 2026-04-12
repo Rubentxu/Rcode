@@ -1,4 +1,4 @@
-import { createSignal, onMount, Show } from "solid-js";
+import { createEffect, createSignal, on, onMount, Show } from "solid-js";
 import Workbench from "./components/Workbench";
 import SessionView from "./components/SessionView";
 import EmptySessionView from "./components/EmptySessionView";
@@ -7,6 +7,8 @@ import { Settings } from "./components/Settings";
 import { ToastContainer, showToast } from "./components/Toast";
 import { getApiBase } from "./api/config";
 import type { Message, MessagePart } from "./api/types";
+import { fetchProjectSessions } from "./api/projects";
+import { useProjectContext } from "./context/ProjectContext";
 
 export interface Session {
   id: string;
@@ -79,6 +81,7 @@ function pickPreferredModel(models: ModelCatalogEntry[]): string | null {
 }
 
 export default function App() {
+  const projectContext = useProjectContext();
   const [sessions, setSessions] = createSignal<Session[]>(MOCK_MODE ? mockSessions : []);
   const [currentSession, setCurrentSession] = createSignal<Session | null>(null);
   const [currentModel, setCurrentModel] = createSignal<string>("claude-sonnet-4-5");
@@ -101,6 +104,26 @@ export default function App() {
       }
     } catch (e) {
       console.error("Failed to load sessions:", e);
+    }
+  };
+
+  const loadProjectSessions = async (projectId: string) => {
+    if (MOCK_MODE) {
+      setSessions(mockSessions);
+      return;
+    }
+
+    try {
+      const data = await fetchProjectSessions(projectId);
+      setSessions(data.map((session) => ({
+        id: session.id,
+        title: session.title,
+        status: session.status as Session["status"],
+        updated_at: session.updated_at,
+        model_id: session.model_id,
+      })));
+    } catch (error) {
+      console.error("Failed to load project sessions:", error);
     }
   };
 
@@ -157,7 +180,22 @@ export default function App() {
             parts: m.parts as MessagePart[] | undefined,
           };
         });
-        setMessages(structuredMessages);
+        // Merge-safe: if loading (streaming in progress), only update messages
+        // that already exist in state. Don't remove local-only messages (e.g.,
+        // the just-added user message) or truncate the list before the backend
+        // has caught up. When NOT loading, do a full replace (session switch, etc.)
+        if (isLoading()) {
+          setMessages((prev) => {
+            // Build a map of backend messages by ID for fast lookup
+            const backendMap = new Map(structuredMessages.map((m) => [m.id, m]));
+            return prev.map((local) => {
+              const fromBackend = backendMap.get(local.id);
+              return fromBackend ?? local;
+            });
+          });
+        } else {
+          setMessages(structuredMessages);
+        }
       } else {
         console.error("Failed to load messages", { sessionId, status: response.status, statusText: response.statusText });
       }
@@ -177,14 +215,23 @@ export default function App() {
 
   const createSession = async () => {
     try {
+      const activeProject = projectContext.activeProject();
+      const payload = activeProject
+        ? {
+            project_id: activeProject.id,
+            agent_id: "build",
+            model_id: currentModel(),
+          }
+        : {
+            project_path: ".",
+            agent_id: "build",
+            model_id: currentModel(),
+          };
+
       const res = await fetch(`${await getApiBase()}/session`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          project_path: ".", // Default to current directory
-          agent_id: "build",
-          model_id: currentModel(),
-        }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error("Failed to create session");
       const session: Session = await res.json();
@@ -255,7 +302,10 @@ export default function App() {
           requestId: promptResponse.request_id,
           status: promptResponse.status,
         });
-        await loadMessages(session.id);
+        // Do NOT call loadMessages here — the user message is already in local state,
+        // and the backend hasn't processed the prompt yet. loadMessages would replace
+        // local messages with stale backend data, causing the user message to disappear.
+        // Messages will be refreshed when SSE onDone/onAssistantCommitted fires.
       } else {
         // Remove the user message we just added since the prompt failed
         setMessages((prev) => prev.slice(0, -1));
@@ -446,8 +496,26 @@ export default function App() {
 
   onMount(() => {
     loadPreferredModel();
-    loadSessions();
   });
+
+  // Only reset session/messages when the active project *changes* to a different value.
+  // Using on() with defer:false ensures the initial load runs immediately but we
+  // compare prev vs. next to avoid clearing an already-valid session on first hydration
+  // (e.g. Tauri auto-selects the first project on mount which would otherwise wipe
+  // a session that was just created or loaded before the effect fires).
+  createEffect(
+    on(
+      () => projectContext.activeProject()?.id,
+      (nextId, prevId) => {
+        if (nextId !== prevId) {
+          setCurrentSession(null);
+          setMessages([]);
+        }
+        const activeProject = projectContext.activeProject();
+        void (activeProject ? loadProjectSessions(activeProject.id) : loadSessions());
+      },
+    ),
+  );
 
   return (
     <>
