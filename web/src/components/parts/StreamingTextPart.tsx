@@ -23,8 +23,63 @@ function hasUnclosedCodeFence(content: string): boolean {
   return fenceRegex.test(content);
 }
 
+/**
+ * Escapes HTML entities and applies minimal formatting for streaming text.
+ * Handles:
+ * - HTML entity escaping
+ * - Inline code (backticks)
+ * - Line breaks
+ */
+function renderStreamingText(text: string): string {
+  if (!text) return "";
+
+  // Escape HTML entities first
+  let escaped = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+  // Handle inline code (single backticks, not triple)
+  // Process character by character to find backtick pairs
+  const result: string[] = [];
+  let i = 0;
+  while (i < escaped.length) {
+    // Check for triple backticks (code fence) - keep as-is for now
+    if (escaped.slice(i, i + 3) === "```") {
+      // Skip triple backticks - will be handled when block completes
+      result.push(escaped.slice(i, i + 3));
+      i += 3;
+      continue;
+    }
+    
+    // Check for inline code (single backtick)
+    if (escaped[i] === "`" && escaped[i + 1] !== "`") {
+      // Find closing backtick
+      const closeIndex = escaped.indexOf("`", i + 1);
+      if (closeIndex !== -1) {
+        result.push(`<code>${escaped.slice(i + 1, closeIndex)}</code>`);
+        i = closeIndex + 1;
+        continue;
+      }
+    }
+    
+    // Handle line breaks
+    if (escaped[i] === "\n") {
+      result.push("<br/>");
+    } else {
+      result.push(escaped[i]);
+    }
+    i++;
+  }
+
+  return result.join("");
+}
+
 export const StreamingTextPart: Component<StreamingTextPartProps> = (props) => {
-  const throttleMs = props.throttleMs ?? 100;
+  // Default to 16ms (one frame at 60fps) for smoother updates
+  const throttleMs = props.throttleMs ?? 16;
   
   // Track the last content for throttle
   const [throttledContent, setThrottledContent] = createSignal(props.content);
@@ -105,7 +160,13 @@ export const StreamingTextPart: Component<StreamingTextPartProps> = (props) => {
           when={!hasIncompleteFence()} 
           fallback={<pre class="incomplete-code">{activeBlock()}</pre>}
         >
-          <MarkdownRenderer content={activeBlock()} />
+          {/* Use plain text rendering for active block during streaming for instant updates */}
+          <span 
+            class="streaming-text"
+            innerHTML={renderStreamingText(activeBlock())}
+          />
+          {/* Blinking cursor to indicate "still typing" */}
+          <span class="streaming-cursor" aria-hidden="true" />
         </Show>
       </div>
     </div>

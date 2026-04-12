@@ -1225,6 +1225,36 @@
   opacity: 0.9;
 }
 
+/* Streaming text with inline code styling */
+[data-component="streaming-text-part"] .streaming-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+[data-component="streaming-text-part"] .streaming-text code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: var(--surface-container);
+  padding: 0.125em 0.375em;
+  border-radius: 0.25rem;
+}
+
+/* Blinking cursor for streaming text */
+[data-component="streaming-text-part"] .streaming-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: var(--accent);
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: streaming-cursor-blink 1s step-end infinite;
+}
+
+@keyframes streaming-cursor-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
 /* ==============================
    Draft Message Styling
    ============================== */
