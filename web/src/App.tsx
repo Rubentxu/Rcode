@@ -190,17 +190,31 @@ export default function App() {
           setMessages(structuredMessages);
         } else {
           // Incremental reload (from SSE onDone/onAssistantCommitted/onReloadMessages):
-          // Always merge — never remove messages that exist locally.
-          // The backend may not have all messages persisted yet (race condition),
-          // so we use a length-based heuristic: if backend has >= local count,
-          // do a full replace (backend is authoritative). Otherwise, merge only
-          // messages that exist in both.
+          // Strategy: ALWAYS prefer backend data, but ONLY if backend has EQUAL
+          // or MORE messages than local. If backend has FEWER, it means the
+          // backend hasn't persisted the response yet — keep local messages intact.
+          //
+          // Additionally, check that the last message in backend is an assistant
+          // message (meaning the response was fully persisted).
           setMessages((prev) => {
-            if (structuredMessages.length >= prev.length) {
-              // Backend is caught up — full replace is safe
-              return structuredMessages;
+            const backendCount = structuredMessages.length;
+            const localCount = prev.length;
+
+            // Backend caught up and has assistant response → full replace
+            if (backendCount >= localCount && backendCount > 0) {
+              const lastBackend = structuredMessages[backendCount - 1];
+              if (lastBackend.role === "assistant") {
+                return structuredMessages;
+              }
             }
-            // Backend is behind — merge existing messages but keep local-only ones
+
+            // Backend has same count but last message isn't assistant yet
+            // → backend is still persisting, keep local state
+            if (backendCount >= localCount) {
+              return prev;
+            }
+
+            // Backend is behind — keep local-only messages, update shared ones
             const backendMap = new Map(structuredMessages.map((m) => [m.id, m]));
             return prev.map((local) => {
               const fromBackend = backendMap.get(local.id);
@@ -563,6 +577,18 @@ export default function App() {
             onReloadMessages={async () => {
               const session = currentSession();
               if (session) {
+                // Retry up to 3 times with a small delay to give the backend
+                // time to persist the assistant response after streaming ends.
+                for (let attempt = 0; attempt < 3; attempt++) {
+                  await new Promise((r) => setTimeout(r, attempt * 200));
+                  await loadMessages(session.id);
+                  // Check if backend now has the assistant response
+                  const msgs = messages();
+                  if (msgs.length > 0 && msgs[msgs.length - 1].role === "assistant") {
+                    return; // Backend caught up — safe to clear draft
+                  }
+                }
+                // Final attempt without delay
                 await loadMessages(session.id);
               }
             }}

@@ -374,15 +374,23 @@ export default function SessionView(props: SessionViewProps) {
         props.onReloadMessages?.();
       },
       onDone: () => {
-        clearDraft();
-        // IMPORTANT: Reload messages FIRST, then mark complete.
-        // If we mark complete first, the merge logic in loadMessages sees
-        // isLoading=false and does a full replace before the backend has
-        // the complete message — causing a flash of empty content.
+        // DON'T clear the draft yet! The backend may not have persisted
+        // the assistant message yet. We need to:
+        // 1. Reload messages from backend
+        // 2. If backend has the assistant response → clear draft, mark complete
+        // 3. If backend doesn't have it yet → keep draft visible, retry
         const reloadPromise = props.onReloadMessages?.();
         if (reloadPromise instanceof Promise) {
-          reloadPromise.then(() => props.onComplete?.());
+          reloadPromise.then(() => {
+            // Give the backend a moment to persist if it hasn't yet.
+            // The merge logic in loadMessages will preserve local state
+            // if backend is behind. Once messages are loaded, we can
+            // safely clear the draft and mark complete.
+            clearDraft();
+            props.onComplete?.();
+          });
         } else {
+          clearDraft();
           props.onComplete?.();
         }
       },
@@ -434,8 +442,12 @@ export default function SessionView(props: SessionViewProps) {
     void connectSSE(sessionId);
   });
 
+  // Only clear draft when loading stops AND there's no active SSE connection.
+  // This prevents clearing the draft prematurely when:
+  // - onDone fires but backend hasn't persisted the response yet
+  // - isLoading transitions during SSE reconnection
   createEffect(() => {
-    if (!props.isLoading()) {
+    if (!props.isLoading() && !sseClient) {
       clearDraft();
     }
   });
