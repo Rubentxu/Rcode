@@ -1,4 +1,4 @@
-import { type Component, createSignal } from "solid-js";
+import { type Component, createSignal, Show } from "solid-js";
 import { MarkdownRenderer } from "../MarkdownRenderer";
 
 interface ReasoningBlockProps {
@@ -8,6 +8,9 @@ interface ReasoningBlockProps {
 /**
  * Renders a reasoning block with Material Design 3 styling.
  * Shows agent reasoning with monospace font and secondary color accents.
+ * 
+ * T1.1: Uses <Show when={isExpanded()}> instead of CSS hiding to prevent
+ * unified() pipeline from running on collapsed reasoning blocks.
  */
 export const ReasoningBlock: Component<ReasoningBlockProps> = (props) => {
   const [isExpanded, setIsExpanded] = createSignal(false);
@@ -25,13 +28,15 @@ export const ReasoningBlock: Component<ReasoningBlockProps> = (props) => {
         </span>
       </div>
 
-      <div
-        class={`font-mono text-sm text-on-surface-variant/80 space-y-1 overflow-hidden transition-all duration-300 ${
-          isExpanded() ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0"
-        }`}
-      >
-        <MarkdownRenderer content={props.content} />
-      </div>
+      {/*
+        T1.1: <Show> prevents the MarkdownRenderer from being in the DOM at all
+        when collapsed, so unified() pipeline never runs on hidden reasoning blocks.
+      */}
+      <Show when={isExpanded()}>
+        <div class="font-mono text-sm text-on-surface-variant/80 space-y-1">
+          <MarkdownRenderer content={props.content} />
+        </div>
+      </Show>
 
       {!isExpanded() && (
         <div class="text-xs text-outline font-mono truncate">

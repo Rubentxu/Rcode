@@ -1,35 +1,101 @@
 import { type Component, createEffect, createResource } from "solid-js";
-import { unified } from "unified";
-import remarkParse from "remark-parse";
-import remarkMath from "remark-math";
-import remarkGfm from "remark-gfm";
-import remarkRehype from "remark-rehype";
-import rehypeKatex from "rehype-katex";
-import rehypeSanitize from "rehype-sanitize";
-import rehypePrettyCode from "rehype-pretty-code";
-import rehypeStringify from "rehype-stringify";
 import "katex/dist/katex.min.css";
-import { sanitizeSchema } from "../lib/sanitizeSchema";
-import { remarkMermaidPlugin } from "../lib/remarkMermaidPlugin";
 
 interface MarkdownRendererProps {
   content: string;
 }
 
-function createMarkdownProcessor() {
-  return unified()
-    .use(remarkParse)
-    .use(remarkMath)
-    .use(remarkGfm)
-    .use(remarkRehype)
-    .use(rehypeKatex, { throwOnError: false, errorColor: "#cc0000" })
-    .use(remarkMermaidPlugin)
-    .use(rehypeSanitize, sanitizeSchema)
-    .use(rehypePrettyCode, {
-      theme: "github-dark",
-      keepBackground: false,
-    })
-    .use(rehypeStringify);
+/**
+ * T2.2: Markdown rendering via Web Worker to avoid blocking main thread
+ * 
+ * The worker handles the unified() pipeline, and the main thread
+ * handles code block enhancement and mermaid diagram rendering (which needs DOM).
+ */
+
+// Lazy-initialized worker singleton
+let markdownWorker: Worker | null = null;
+let workerResolveMap: Map<string, (html: string) => void> = new Map();
+let workerRejectMap: Map<string, (error: Error) => void> = new Map();
+let workerIdCounter = 0;
+
+function getMarkdownWorker(): Worker | null {
+  // Check if Worker is available (not available in JSDOM test environment)
+  if (typeof Worker === "undefined") {
+    return null;
+  }
+  
+  if (!markdownWorker) {
+    // Using import.meta.url directly without type: 'module' for better Vite compatibility
+    markdownWorker = new Worker(
+      new URL("../workers/markdown.worker.ts", import.meta.url)
+    );
+
+    markdownWorker.onmessage = (event) => {
+      const { id, html } = event.data;
+      const resolve = workerResolveMap.get(id);
+      if (resolve) {
+        resolve(html);
+        workerResolveMap.delete(id);
+        workerRejectMap.delete(id);
+      }
+    };
+
+    markdownWorker.onerror = (error) => {
+      console.error("Markdown worker error:", error);
+      // Reject all pending requests
+      workerRejectMap.forEach((reject) => {
+        reject(new Error("Worker error"));
+      });
+      workerResolveMap.clear();
+      workerRejectMap.clear();
+    };
+  }
+  return markdownWorker;
+}
+
+/**
+ * Fallback markdown processor for test environments where Worker is not available.
+ * Processes markdown synchronously without worker.
+ */
+async function processMarkdownFallback(content: string): Promise<string> {
+  if (!content?.trim()) {
+    return "";
+  }
+
+  try {
+    // Dynamically import unified and process synchronously
+    const { unified } = await import("unified");
+    const remarkParse = (await import("remark-parse")).default;
+    const remarkMath = (await import("remark-math")).default;
+    const remarkGfm = (await import("remark-gfm")).default;
+    const remarkRehype = (await import("remark-rehype")).default;
+    const rehypeKatex = (await import("rehype-katex")).default;
+    const rehypeSanitize = (await import("rehype-sanitize")).default;
+    const rehypePrettyCode = (await import("rehype-pretty-code")).default;
+    const rehypeStringify = (await import("rehype-stringify")).default;
+    const { sanitizeSchema } = await import("../lib/sanitizeSchema");
+    const { remarkMermaidPlugin } = await import("../lib/remarkMermaidPlugin");
+
+    const processor = unified()
+      .use(remarkParse)
+      .use(remarkMath)
+      .use(remarkGfm)
+      .use(remarkRehype)
+      .use(rehypeKatex, { throwOnError: false, errorColor: "#cc0000" })
+      .use(remarkMermaidPlugin)
+      .use(rehypeSanitize, sanitizeSchema)
+      .use(rehypePrettyCode, {
+        theme: "github-dark",
+        keepBackground: false,
+      })
+      .use(rehypeStringify);
+
+    const result = await processor.process(content);
+    return String(result);
+  } catch (error) {
+    console.error("Markdown rendering error:", error);
+    return `<pre>${content.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>`;
+  }
 }
 
 async function processMarkdown(content: string): Promise<string> {
@@ -37,14 +103,29 @@ async function processMarkdown(content: string): Promise<string> {
     return "";
   }
 
-  try {
-    const result = await createMarkdownProcessor().process(content);
-
-    return String(result);
-  } catch (error) {
-    console.error("Markdown rendering error:", error);
-    return `<pre>${content.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>`;
+  // Use fallback in test environments where Worker is not available
+  const worker = getMarkdownWorker();
+  if (!worker) {
+    return processMarkdownFallback(content);
   }
+
+  return new Promise((resolve, reject) => {
+    const id = `md-${++workerIdCounter}`;
+
+    workerResolveMap.set(id, resolve);
+    workerRejectMap.set(id, reject);
+
+    worker.postMessage({ id, content });
+
+    // Timeout after 30 seconds
+    setTimeout(() => {
+      if (workerResolveMap.has(id)) {
+        workerResolveMap.delete(id);
+        workerRejectMap.delete(id);
+        reject(new Error("Markdown processing timeout"));
+      }
+    }, 30000);
+  });
 }
 
 let mermaidInitialized = false;
@@ -199,12 +280,6 @@ export async function renderMarkdownToHtml(content: string): Promise<string> {
     return "";
   }
 
-  try {
-    const result = await createMarkdownProcessor().process(content);
-
-    return String(result);
-  } catch (error) {
-    console.error("Markdown rendering error:", error);
-    return `<pre>${content.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>`;
-  }
+  // Use the same worker-based processing as the renderer
+  return processMarkdown(content);
 }

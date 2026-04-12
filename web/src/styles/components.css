@@ -717,9 +717,13 @@
 /* Turn groups — wraps one or more messages from the same role */
 .turn {
   display: flex;
-  gap: var(--space-3);
+  gap: var(--turn-gap);
   margin-bottom: var(--turn-spacing);
   width: 100%;
+  /* T1.2: content-visibility improves rendering performance by allowing
+     the browser to skip rendering work for off-screen content */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 200px;
 }
 
 .turn--user {

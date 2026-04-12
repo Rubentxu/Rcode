@@ -20,6 +20,7 @@ import { QuickActions } from "./parts/QuickActions";
 import TaskChecklistPanel from "./chat-workspace/TaskChecklistPanel";
 import { deriveChecklistItems } from "./chat-workspace/checklist";
 import { createDraftStore, type DraftPart } from "../composables/useStreamingDraft";
+import { createVirtualizer } from "@tanstack/solid-virtual";
 import type {
   SSEStreamReasoningDelta,
   SSEStreamTextDelta,
@@ -62,15 +63,28 @@ export default function SessionView(props: SessionViewProps) {
   let connectedSessionId: string | null = null;
   let scrollContainerRef: HTMLDivElement | undefined;
   
+  // T3.3: Use a signal for scroll element to allow reactive updates
+  const [scrollElement, setScrollElement] = createSignal<HTMLDivElement | undefined>(undefined);
+  
+  // T3.3: Track whether virtualization is enabled (scroll element is available and virtualizer has items)
+  // Only enable virtualization when both the scroll element exists AND the virtualizer has computed virtual items
+  const isVirtualizationEnabled = () => {
+    // Only enable if scroll element is set AND we have turns to render
+    // This prevents virtualization from being enabled before the DOM is ready
+    const hasScrollElement = scrollElement() !== undefined;
+    const hasTurns = turns().length > 0;
+    const hasVirtualItems = virtualItems().length > 0;
+    
+    // Enable virtualization only when scroll element is ready and we have virtual items computed
+    // This ensures the virtualizer has had a chance to compute its state
+    return hasScrollElement && hasTurns && hasVirtualItems;
+  };
+  
   // Phase 3: Draft store for streaming parts
   const { draft, dispatch, clear: clearDraft, initOptimisticShell } = createDraftStore();
   
-  // Phase 5: Scroll anchoring state
-  const NEAR_BOTTOM_THRESHOLD_PX = 100;
-  let rafScheduled = false;
-  let lastTurnCount = 0;
-
   // Create a derived message list that includes persisted messages
+  // T3.3: Must be defined BEFORE virtualizer since it references turns in its getter
   const displayMessages = () => {
     return [...props.messages];
   };
@@ -98,6 +112,30 @@ export default function SessionView(props: SessionViewProps) {
     }
     return result;
   });
+  
+  // T3.3: Virtualizer for efficient rendering of long conversations
+  // The virtualizer uses the scroll container as its scroll element
+  // and only renders visible turns plus an overscan buffer
+  // Note: We create it with a getter that reactively accesses the scroll element signal
+  const virtualizer = createVirtualizer({
+    get count() { return turns().length; },
+    getScrollElement: () => scrollElement() ?? undefined,
+    estimateSize: () => 200, // Approximate height of a turn in pixels
+    overscan: 5, // Render 5 extra items above/below viewport for smooth scrolling
+    measureElement: (element: HTMLElement | null) => {
+      if (!element) return 0;
+      return element.getBoundingClientRect().height;
+    },
+  });
+  
+  // T3.3: Get virtual items reactively for rendering
+  const virtualItems = () => virtualizer.getVirtualItems();
+  const totalSize = () => virtualizer.getTotalSize();
+  
+  // Phase 5: Scroll anchoring state
+  const NEAR_BOTTOM_THRESHOLD_PX = 100;
+  let rafScheduled = false;
+  let lastTurnCount = 0;
 
   /**
    * Extracts the final text content from a message for copy action (MQA-1).
@@ -402,7 +440,10 @@ export default function SessionView(props: SessionViewProps) {
 
       {/* Scrollable transcript area */}
       <div
-        ref={scrollContainerRef}
+        ref={(el) => {
+          scrollContainerRef = el;
+          setScrollElement(el);
+        }}
         class="flex-1 overflow-y-auto px-4 md:px-8 py-6 custom-scrollbar"
         onScroll={handleScroll}
       >
@@ -411,94 +452,217 @@ export default function SessionView(props: SessionViewProps) {
         <div data-component="transcript" class="w-full">
           <Show when={turns().length === 0 && !draft()} fallback={
             <>
-              {/* Conversational turns with OpenCode-like role wrappers */}
-              <For each={turns()}>
-                {(turn) => (
-                  <Show when={turn.role === "system"} fallback={
-                    /* Assistant: document-style (full width, transparent) */
-                    <Show when={turn.role === "assistant"} fallback={
-                      /* User: bubble (right-aligned, contained) */
-                      <div
-                        class="turn turn--user"
-                        data-component="user-bubble-message"
-                        data-turn-role={turn.role}
-                      >
-                        <TurnAvatar role={turn.role} />
-                        <div class="turn-content">
-                          <For each={turn.messages}>
-                            {(message) => (
-                              <div data-component="message" data-role={message.role}>
-                                <div data-component="message-content">
-                                  <MessageContent message={message} />
-                                </div>
-                              </div>
-                            )}
-                          </For>
-                        </div>
-                      </div>
-                    }>
-                      <div
-                        class="turn turn--assistant"
-                        data-component="assistant-document-message"
-                        data-turn-role={turn.role}
-                      >
-                        <TurnAvatar role={turn.role} />
-                        <div class="turn-content">
-                          <For each={turn.messages}>
-                            {(message) => (
-                              <div data-component="message" data-role={message.role}>
-                                {/* CT-6: System messages render inline without avatar — show subtle role label */}
-                                <Show when={message.role === "system"}>
-                                  <div data-component="message-header">
-                                    <span style="font-size: var(--text-xs); font-weight: 600; color: var(--text-muted);">
-                                      system
-                                    </span>
+              {/* T3.3: Virtualized turns for efficient rendering when scroll element is available */}
+              {/* Falls back to non-virtualized rendering when scroll element is not available (e.g., in tests) */}
+              <Show when={isVirtualizationEnabled()} fallback={
+                /* Fallback: non-virtualized rendering for tests or when scroll element isn't available */
+                <For each={turns()}>
+                  {(turn) => (
+                    <Show when={turn.role === "system"} fallback={
+                      /* Assistant: document-style (full width, transparent) */
+                      <Show when={turn.role === "assistant"} fallback={
+                        /* User: bubble (right-aligned, contained) */
+                        <div
+                          class="turn turn--user"
+                          data-component="user-bubble-message"
+                          data-turn-role={turn.role}
+                        >
+                          <TurnAvatar role={turn.role} />
+                          <div class="turn-content">
+                            <For each={turn.messages}>
+                              {(message) => (
+                                <div data-component="message" data-role={message.role}>
+                                  <div data-component="message-content">
+                                    <MessageContent message={message} />
                                   </div>
-                                </Show>
+                                </div>
+                              )}
+                            </For>
+                          </div>
+                        </div>
+                      }>
+                        <div
+                          class="turn turn--assistant"
+                          data-component="assistant-document-message"
+                          data-turn-role={turn.role}
+                        >
+                          <TurnAvatar role={turn.role} />
+                          <div class="turn-content">
+                            <For each={turn.messages}>
+                              {(message) => (
+                                <div data-component="message" data-role={message.role}>
+                                  {/* CT-6: System messages render inline without avatar — show subtle role label */}
+                                  <Show when={message.role === "system"}>
+                                    <div data-component="message-header">
+                                      <span style="font-size: var(--text-xs); font-weight: 600; color: var(--text-muted);">
+                                        system
+                                      </span>
+                                    </div>
+                                  </Show>
+                                  <div data-component="message-content">
+                                    <MessageContent message={message} />
+                                  </div>
+                                  {/* MQA-1, MQA-2, MQA-3: Quick actions for assistant messages only */}
+                                  <Show when={message.role === "assistant"}>
+                                    <QuickActions
+                                      messageId={message.id}
+                                      textContent={extractTextContent(message)}
+                                      onRetry={handleRetry}
+                                      onBranch={handleBranch}
+                                    />
+                                  </Show>
+                                </div>
+                              )}
+                            </For>
+                          </div>
+                        </div>
+                      </Show>
+                    }>
+                      {/* System: minimal inline rendering */}
+                      <div
+                        class="turn turn--system"
+                        data-turn-role={turn.role}
+                      >
+                        <div class="turn-content">
+                          <For each={turn.messages}>
+                            {(message) => (
+                              <div data-component="message" data-role={message.role}>
+                                <div data-component="message-header">
+                                  <span style="font-size: var(--text-xs); font-weight: 600; color: var(--text-muted);">
+                                    system
+                                  </span>
+                                </div>
                                 <div data-component="message-content">
                                   <MessageContent message={message} />
                                 </div>
-                                {/* MQA-1, MQA-2, MQA-3: Quick actions for assistant messages only */}
-                                <Show when={message.role === "assistant"}>
-                                  <QuickActions
-                                    messageId={message.id}
-                                    textContent={extractTextContent(message)}
-                                    onRetry={handleRetry}
-                                    onBranch={handleBranch}
-                                  />
-                                </Show>
                               </div>
                             )}
                           </For>
                         </div>
                       </div>
                     </Show>
-                  }>
-                    {/* System: minimal inline rendering */}
-                    <div
-                      class="turn turn--system"
-                      data-turn-role={turn.role}
-                    >
-                      <div class="turn-content">
-                        <For each={turn.messages}>
-                          {(message) => (
-                            <div data-component="message" data-role={message.role}>
-                              <div data-component="message-header">
-                                <span style="font-size: var(--text-xs); font-weight: 600; color: var(--text-muted);">
-                                  system
-                                </span>
+                  )}
+                </For>
+              }>
+                {/* Virtualized rendering - uses absolute positioning */}
+                <div 
+                  style={{
+                    height: `${totalSize()}px`,
+                    position: "relative",
+                    width: "100%",
+                  }}
+                >
+                  <For each={virtualItems()}>
+                    {(virtualItem) => {
+                      const turn = () => turns()[virtualItem.index];
+                      return (
+                        <div
+                          style={{
+                            position: "absolute",
+                            top: 0,
+                            left: 0,
+                            width: "100%",
+                            height: `${virtualItem.size}px`,
+                            transform: `translateY(${virtualItem.start}px)`,
+                          }}
+                          ref={(el) => {
+                            // T3.3: Measure element after render for dynamic height
+                            requestAnimationFrame(() => {
+                              virtualizer.measureElement(el);
+                            });
+                          }}
+                        >
+                          {/* T3.3: Render turn content using the same structure as before */}
+                          <Show when={turn().role === "system"} fallback={
+                            /* Assistant: document-style (full width, transparent) */
+                            <Show when={turn().role === "assistant"} fallback={
+                              /* User: bubble (right-aligned, contained) */
+                              <div
+                                class="turn turn--user"
+                                data-component="user-bubble-message"
+                                data-turn-role={turn().role}
+                              >
+                                <TurnAvatar role={turn().role} />
+                                <div class="turn-content">
+                                  <For each={turn().messages}>
+                                    {(message) => (
+                                      <div data-component="message" data-role={message.role}>
+                                        <div data-component="message-content">
+                                          <MessageContent message={message} />
+                                        </div>
+                                      </div>
+                                    )}
+                                  </For>
+                                </div>
                               </div>
-                              <div data-component="message-content">
-                                <MessageContent message={message} />
+                            }>
+                              <div
+                                class="turn turn--assistant"
+                                data-component="assistant-document-message"
+                                data-turn-role={turn().role}
+                              >
+                                <TurnAvatar role={turn().role} />
+                                <div class="turn-content">
+                                  <For each={turn().messages}>
+                                    {(message) => (
+                                      <div data-component="message" data-role={message.role}>
+                                        {/* CT-6: System messages render inline without avatar — show subtle role label */}
+                                        <Show when={message.role === "system"}>
+                                          <div data-component="message-header">
+                                            <span style="font-size: var(--text-xs); font-weight: 600; color: var(--text-muted);">
+                                              system
+                                            </span>
+                                          </div>
+                                        </Show>
+                                        <div data-component="message-content">
+                                          <MessageContent message={message} />
+                                        </div>
+                                        {/* MQA-1, MQA-2, MQA-3: Quick actions for assistant messages only */}
+                                        <Show when={message.role === "assistant"}>
+                                          <QuickActions
+                                            messageId={message.id}
+                                            textContent={extractTextContent(message)}
+                                            onRetry={handleRetry}
+                                            onBranch={handleBranch}
+                                          />
+                                        </Show>
+                                      </div>
+                                    )}
+                                  </For>
+                                </div>
+                              </div>
+                            </Show>
+                          }>
+                            {/* System: minimal inline rendering */}
+                            <div
+                              class="turn turn--system"
+                              data-turn-role={turn().role}
+                            >
+                              <div class="turn-content">
+                                <For each={turn().messages}>
+                                  {(message) => (
+                                    <div data-component="message" data-role={message.role}>
+                                      <div data-component="message-header">
+                                        <span style="font-size: var(--text-xs); font-weight: 600; color: var(--text-muted);">
+                                          system
+                                        </span>
+                                      </div>
+                                      <div data-component="message-content">
+                                        <MessageContent message={message} />
+                                      </div>
+                                    </div>
+                                  )}
+                                </For>
                               </div>
                             </div>
-                          )}
-                        </For>
-                      </div>
-                    </div>
-                  </Show>
-                )}
-              </For>
+                          </Show>
+                        </div>
+                      );
+                    }}
+                  </For>
+                </div>
+              </Show>
+              {/* T3.3: Draft/streaming turn rendered OUTSIDE the virtualizer as real DOM */}
               {/* Phase 3: Show draft message during streaming as an assistant turn */}
               {/* SS-1: Optimistic shell appears immediately on submit BEFORE any SSE delta */}
               {/* SS-2: Abort button lives inside the shell, not in a separate bottom bar */}

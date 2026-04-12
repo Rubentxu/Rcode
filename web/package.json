@@ -20,6 +20,7 @@
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
     "@fontsource/material-symbols-outlined": "^5.2.40",
+    "@tanstack/solid-virtual": "^3.13.23",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.7.0",
     "katex": "^0.16.45",
