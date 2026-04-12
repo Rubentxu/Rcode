@@ -1,21 +1,30 @@
 /**
- * T3.2: Virtual scrolling composable using @tanstack/solid-virtual
- * 
- * Provides efficient rendering of large lists by only rendering visible items.
- * Configured with overscan=5 for smooth scrolling and estimateSize=200
- * as a reasonable default for chat message turns.
+ * Virtual scrolling composable with pretext height pre-computation.
+ *
+ * Uses @chenglou/pretext to estimate turn heights without DOM measurement,
+ * then @tanstack/solid-virtual to virtualize the list. Dynamic measurement
+ * via measureElement corrects any estimate drift.
  */
 
 import { createVirtualizer, type Virtualizer } from "@tanstack/solid-virtual";
-import { type Accessor, createEffect, onMount, onCleanup } from "solid-js";
+import { type Accessor } from "solid-js";
+import { prepare, layout, clearCache } from "@chenglou/pretext";
 
 export interface VirtualScrollOptions {
   /** Number of items to render beyond visible area */
   overscan?: number;
-  /** Estimated size of each item in pixels */
+  /** Estimated size of each item in pixels (fallback when pretext unavailable) */
   estimateSize?: number;
-  /** Gap between items */
+  /** Gap between items in pixels */
   gap?: number;
+  /** Container width in pixels (for pretext line calculation) */
+  containerWidth?: number;
+  /** Font string for pretext measurement (e.g., "14px system-ui") */
+  font?: string;
+  /** Line height in pixels for pretext */
+  lineHeight?: number;
+  /** Padding per turn (top + bottom) added to text height */
+  turnPadding?: number;
 }
 
 export interface VirtualScrollReturn<T> {
@@ -29,47 +38,113 @@ export interface VirtualScrollReturn<T> {
   scrollToIndex: (index: number, options?: { align?: "start" | "center" | "end" | "auto" }) => void;
   /** Scroll to a specific offset */
   scrollToOffset: (offset: number) => void;
-  /** Measure an element at the given index */
+  /** Measure an element at the given index (corrects estimate) */
   measureElement: (element: HTMLElement | null) => void;
   /** Re-measure all elements */
   measure: () => void;
+  /** Get the current estimate for an item's height (for debugging) */
+  getEstimate: (index: number) => number;
 }
 
 /**
- * Creates a virtualized scrolling setup for large lists.
- * 
+ * Estimates the rendered height of a text string using pretext.
+ * Returns height in pixels WITHOUT touching the DOM.
+ */
+function estimateTextHeight(
+  text: string,
+  font: string,
+  maxWidth: number,
+  lineHeight: number,
+  padding: number,
+): number {
+  if (!text?.trim()) return padding;
+  try {
+    const prepared = prepare(text, font);
+    const result = layout(prepared, maxWidth, lineHeight);
+    return result.height + padding;
+  } catch {
+    // Fallback: rough estimate based on character count
+    const charsPerLine = Math.max(1, Math.floor(maxWidth / 8));
+    const lines = Math.ceil(text.length / charsPerLine);
+    return lines * lineHeight + padding;
+  }
+}
+
+// Cache for turn height estimates to avoid re-computation
+const estimateCache = new Map<string, number>();
+const MAX_CACHE_SIZE = 500;
+
+function getCachedEstimate(key: string, computer: () => number): number {
+  const cached = estimateCache.get(key);
+  if (cached !== undefined) return cached;
+
+  const value = computer();
+  if (estimateCache.size >= MAX_CACHE_SIZE) {
+    // Evict oldest entries
+    const keys = estimateCache.keys();
+    for (let i = 0; i < 100; i++) {
+      const k = keys.next().value;
+      if (k) estimateCache.delete(k);
+    }
+  }
+  estimateCache.set(key, value);
+  return value;
+}
+
+/**
+ * Creates a virtualized scrolling setup with pretext height estimation.
+ *
  * @param getScrollElement - Function that returns the scroll container element
  * @param count - Accessor that returns the total number of items
+ * @param getTextForIndex - Function that returns the text content for a given index
  * @param options - Configuration options
  */
 export function useVirtualScroll<T>(
   getScrollElement: () => HTMLElement | undefined,
   count: Accessor<number>,
-  options: VirtualScrollOptions = {}
+  getTextForIndex: (index: number) => string = () => "",
+  options: VirtualScrollOptions = {},
 ): VirtualScrollReturn<T> {
-  const { overscan = 5, estimateSize = 200, gap = 0 } = options;
+  const {
+    overscan = 5,
+    estimateSize = 200,
+    gap = 0,
+    containerWidth = 700,
+    font = "14px system-ui",
+    lineHeight = 22,
+    turnPadding = 48,
+  } = options;
 
-  // The virtualizer is created once and kept as a stable reference
-  // It automatically tracks reactive dependencies in its getter functions
   let virtualizer: Virtualizer<HTMLElement, T> | undefined;
   let scrollElement: HTMLElement | undefined;
 
-  // Reactive accessors that will update when the virtualizer's internal state changes
   const totalSize = (): number => virtualizer?.getTotalSize() ?? 0;
-  const virtualItems = (): ReturnType<Virtualizer<HTMLElement, T>["getVirtualItems"]> => 
+  const virtualItems = (): ReturnType<Virtualizer<HTMLElement, T>["getVirtualItems"]> =>
     virtualizer?.getVirtualItems() ?? [];
 
-  // Initialize the virtualizer when scroll element is available
+  const getEstimate = (index: number): number => {
+    const text = getTextForIndex(index);
+    if (!text) return estimateSize;
+
+    return getCachedEstimate(
+      `turn-${index}-${text.length}-${text.slice(0, 50)}`,
+      () => estimateTextHeight(text, font, containerWidth, lineHeight, turnPadding),
+    );
+  };
+
   const initVirtualizer = () => {
     scrollElement = getScrollElement();
     if (!scrollElement) return;
+
+    // Update container width from actual element if available
+    const actualWidth = scrollElement.clientWidth || containerWidth;
 
     virtualizer = createVirtualizer({
       get count() {
         return count();
       },
       getScrollElement: () => scrollElement,
-      estimateSize: () => estimateSize,
+      estimateSize: (index: number) => getEstimate(index),
       overscan,
       gap,
       measureElement: (element: HTMLElement | null) => {
@@ -79,7 +154,6 @@ export function useVirtualScroll<T>(
     });
   };
 
-  // Initialize on first call
   if (!virtualizer) {
     initVirtualizer();
   }
@@ -110,5 +184,14 @@ export function useVirtualScroll<T>(
     scrollToOffset,
     measureElement,
     measure,
+    getEstimate,
   };
+}
+
+/**
+ * Clear the height estimation cache (call on session change).
+ */
+export function clearHeightCache(): void {
+  estimateCache.clear();
+  clearCache();
 }

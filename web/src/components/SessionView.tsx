@@ -3,6 +3,7 @@ import type { Session } from "../App";
 import type { Message, MessagePart } from "../api/types";
 import { createSSEClient, type SSEClient } from "../api/sse";
 import { getApiBase } from "../api/config";
+import { prepare, layout } from "@chenglou/pretext";
 import DiffViewer from "./DiffViewer";
 import { containsDiff, extractDiffBlocks } from "../api/diff";
 import PromptInput from "./PromptInput";
@@ -114,13 +115,69 @@ export default function SessionView(props: SessionViewProps) {
   });
   
   // T3.3: Virtualizer for efficient rendering of long conversations
+  // Pretext height estimation: pre-compute turn heights without DOM measurement.
+  // Uses Intl.Segmenter + canvas.measureText for accurate line-count prediction.
+  const PRETEXT_FONT = "14px system-ui";
+  const PRETEXT_LINE_HEIGHT = 22;
+  const PRETEXT_TURN_PADDING = 48; // avatar + gap + margin
+
+  // Cache estimates by content hash to avoid re-computation
+  const heightEstimateCache = new Map<string, number>();
+  const estimateTurnHeight = (index: number): number => {
+    const allTurns = turns();
+    const turn = allTurns[index];
+    if (!turn) return 200;
+
+    // Extract text content from turn messages for measurement
+    const text = turn.messages
+      .map((m) => {
+        if (m.parts) {
+          return m.parts
+            .filter((p) => p.type === "text")
+            .map((p) => (p as { type: "text"; content: string }).content)
+            .join(" ");
+        }
+        return m.content ?? "";
+      })
+      .join("\n");
+
+    if (!text?.trim()) return PRETEXT_TURN_PADDING;
+
+    // Cache key: text length + first 50 chars (avoids re-measuring same content)
+    const cacheKey = `${text.length}:${text.slice(0, 50)}`;
+    const cached = heightEstimateCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+
+    try {
+      // Get container width from scroll element, fallback to 700px
+      const width = scrollElement()?.clientWidth ?? 700;
+      const usableWidth = width - PRETEXT_TURN_PADDING;
+      const prepared = prepare(text, PRETEXT_FONT);
+      const result = layout(prepared, usableWidth, PRETEXT_LINE_HEIGHT);
+      const estimated = result.height + PRETEXT_TURN_PADDING;
+
+      // Cap the cache size
+      if (heightEstimateCache.size > 500) {
+        const keys = heightEstimateCache.keys();
+        for (let i = 0; i < 100; i++) {
+          heightEstimateCache.delete(keys.next().value);
+        }
+      }
+      heightEstimateCache.set(cacheKey, estimated);
+      return estimated;
+    } catch {
+      // Fallback: rough estimate
+      return 200;
+    }
+  };
+
   // The virtualizer uses the scroll container as its scroll element
   // and only renders visible turns plus an overscan buffer
-  // Note: We create it with a getter that reactively accesses the scroll element signal
+  // Pretext provides accurate height estimates without DOM measurement
   const virtualizer = createVirtualizer({
     get count() { return turns().length; },
     getScrollElement: () => scrollElement() ?? undefined,
-    estimateSize: () => 200, // Approximate height of a turn in pixels
+    estimateSize: (index: number) => estimateTurnHeight(index),
     overscan: 5, // Render 5 extra items above/below viewport for smooth scrolling
     measureElement: (element: HTMLElement | null) => {
       if (!element) return 0;
@@ -370,8 +427,10 @@ export default function SessionView(props: SessionViewProps) {
   };
   
   // Keep a session-scoped SSE subscription alive while the session is selected.
+  // Clear height cache on session change since turns change completely.
   createEffect(() => {
     const sessionId = props.session.id;
+    heightEstimateCache.clear();
     void connectSSE(sessionId);
   });
 
