@@ -8,8 +8,10 @@ use axum::{
     response::sse::{Event, Sse},
     Json,
 };
+use chrono::{DateTime, Utc};
+use rcode_session::ProjectService;
 use std::sync::Arc;
-use std::path::PathBuf;
+use std::path::{Path as FsPath, PathBuf};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -17,7 +19,7 @@ use crate::state::AppState;
 use crate::error::ServerError;
 use crate::explorer::{ExplorerBootstrap, TreeResponse, TreeFilter};
 use rcode_core::{
-    Session, SessionId, SessionStatus, Message, Part, MessageId, 
+    Project, ProjectId, Session, SessionId, SessionStatus, Message, Part, MessageId,
     PaginationParams, PaginatedMessages, AgentContext, save_config, ProviderConfig, AgentDefinition, DynamicAgent,
 };
 use rcode_agent::{AgentExecutor, DefaultAgent};
@@ -73,6 +75,129 @@ pub async fn list_sessions(
     Ok(Json(sessions.into_iter().map(|s| (*s).clone()).collect()))
 }
 
+fn project_service(state: &AppState) -> Result<Arc<ProjectService>, ServerError> {
+    state
+        .project_service
+        .clone()
+        .ok_or_else(|| ServerError::internal("project service unavailable"))
+}
+
+fn resolve_project(state: &AppState, project_id: &str) -> Result<Project, ServerError> {
+    project_service(state)?
+        .get(&ProjectId(project_id.to_string()))
+        .map_err(ServerError::internal)?
+        .ok_or_else(|| ServerError::bad_request(format!("Unknown project_id: {project_id}")))
+}
+
+fn maybe_resolve_project_by_path(
+    state: &AppState,
+    project_path: &FsPath,
+) -> Result<Option<Project>, ServerError> {
+    let Some(project_service) = state.project_service.clone() else {
+        return Ok(None);
+    };
+
+    if !project_path.exists() {
+        return Ok(None);
+    }
+
+    project_service
+        .resolve_by_path(project_path)
+        .map_err(ServerError::internal)
+}
+
+async fn resolve_workspace_root(
+    state: &AppState,
+    project_id: Option<&str>,
+    session_id: Option<&str>,
+) -> Result<PathBuf, ServerError> {
+    if let Some(project_id) = project_id {
+        return Ok(resolve_project(state, project_id)?.canonical_path);
+    }
+
+    let session_id = session_id
+        .ok_or_else(|| ServerError::bad_request("project_id or session_id is required"))?;
+
+    state
+        .session_service
+        .get(&SessionId(session_id.to_string()))
+        .map(|session| session.project_path.clone())
+        .ok_or_else(ServerError::not_found)
+}
+
+fn to_project_summary(state: &AppState, project: Project) -> ProjectSummary {
+    let session_count = state.session_service.list_by_project(&project.id).len();
+    ProjectSummary {
+        id: project.id.0,
+        name: project.name,
+        canonical_path: project.canonical_path.to_string_lossy().to_string(),
+        session_count,
+        created_at: project.created_at,
+        updated_at: project.updated_at,
+    }
+}
+
+pub async fn list_projects(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<ProjectSummary>>, ServerError> {
+    let projects = project_service(state.as_ref())?
+        .list()
+        .map_err(ServerError::internal)?;
+
+    Ok(Json(
+        projects
+            .into_iter()
+            .map(|project| to_project_summary(state.as_ref(), project))
+            .collect(),
+    ))
+}
+
+pub async fn create_project(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateProjectRequest>,
+) -> Result<Json<ProjectSummary>, ServerError> {
+    let project = project_service(state.as_ref())?
+        .create(FsPath::new(&req.path), req.name)
+        .map_err(|error| {
+            if error.contains("already exists") {
+                ServerError::conflict(error)
+            } else {
+                ServerError::bad_request(error)
+            }
+        })?;
+
+    Ok(Json(to_project_summary(state.as_ref(), project)))
+}
+
+pub async fn list_project_sessions(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+) -> Result<Json<Vec<Session>>, ServerError> {
+    let project = resolve_project(state.as_ref(), &project_id)?;
+    let sessions = state.session_service.list_by_project(&project.id);
+    Ok(Json(
+        sessions
+            .into_iter()
+            .map(|session| (*session).clone())
+            .collect(),
+    ))
+}
+
+pub async fn delete_project(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ServerError> {
+    let deleted = project_service(state.as_ref())?
+        .delete(&ProjectId(project_id))
+        .map_err(ServerError::internal)?;
+
+    if !deleted {
+        return Err(ServerError::not_found());
+    }
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 pub async fn create_session(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateSessionRequest>,
@@ -87,16 +212,31 @@ pub async fn create_session(
         state.session_service
             .create_child(parent_id, agent_id, model_id)
             .map_err(|_e| ServerError::not_found())?
+    } else if let Some(project_id) = req.project_id.as_deref() {
+        let project = resolve_project(state.as_ref(), project_id)?;
+        let mut session = Session::new(
+            project.canonical_path.clone(),
+            req.agent_id.unwrap_or_else(|| "build".to_string()),
+            req.model_id.unwrap_or_else(|| model),
+        );
+        session.project_id = Some(project.id);
+        state.session_service.create(session)
     } else {
         // Original behavior: create top-level session
         // project_path is required for top-level sessions
         let project_path = req.project_path
             .ok_or_else(|| ServerError::bad_request("project_path is required for top-level sessions"))?;
-        let session = Session::new(
-            project_path.into(),
+        let mut session = Session::new(
+            project_path.clone().into(),
             req.agent_id.unwrap_or_else(|| "build".to_string()),
             req.model_id.unwrap_or_else(|| model),
         );
+
+        if let Some(project) = maybe_resolve_project_by_path(state.as_ref(), FsPath::new(&project_path))? {
+            session.project_id = Some(project.id);
+            session.project_path = project.canonical_path;
+        }
+
         state.session_service.create(session)
     };
     
@@ -105,6 +245,8 @@ pub async fn create_session(
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionRequest {
+    #[serde(default)]
+    pub project_id: Option<String>,
     #[serde(default)]
     pub project_path: Option<String>,
     #[serde(default)]
@@ -115,10 +257,47 @@ pub struct CreateSessionRequest {
     pub parent_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreateProjectRequest {
+    pub path: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProjectSummary {
+    pub id: String,
+    pub name: String,
+    pub canonical_path: String,
+    pub session_count: usize,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 pub async fn get_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Session>, ServerError> {
+    let session = state.session_service.get(&SessionId(id))
+        .ok_or_else(|| ServerError::not_found())?;
+    Ok(Json(session.as_ref().clone()))
+}
+
+/// PATCH /session/:id - Rename a session (manual rename, bypasses auto-title idempotent guard)
+#[derive(Debug, Deserialize)]
+pub struct RenameSessionRequest {
+    pub title: String,
+}
+
+pub async fn rename_session(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<RenameSessionRequest>,
+) -> Result<Json<Session>, ServerError> {
+    state.session_service
+        .force_set_title(&id, req.title)
+        .map_err(|e| ServerError::internal(e.to_string()))?;
+
     let session = state.session_service.get(&SessionId(id))
         .ok_or_else(|| ServerError::not_found())?;
     Ok(Json(session.as_ref().clone()))
@@ -1283,13 +1462,19 @@ pub async fn permission_deny(
 /// Query parameters for explorer endpoints
 #[derive(Debug, Deserialize)]
 pub struct ExplorerQuery {
-    pub session_id: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 /// Query parameters for tree/children endpoint
 #[derive(Debug, Deserialize)]
 pub struct TreeQuery {
-    pub session_id: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
     /// Path to get children for (absolute or relative to workspace root)
     #[serde(default)]
     pub path: String,
@@ -1316,11 +1501,12 @@ pub async fn explorer_bootstrap(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ExplorerQuery>,
 ) -> Result<Json<ExplorerBootstrap>, ServerError> {
-    // Verify session exists and get project_path
-    let session = state.session_service.get(&SessionId(query.session_id.clone()))
-        .ok_or_else(|| ServerError::not_found())?;
-    
-    let workspace_root = session.project_path.clone();
+    let workspace_root = resolve_workspace_root(
+        state.as_ref(),
+        query.project_id.as_deref(),
+        query.session_id.as_deref(),
+    )
+    .await?;
     let bootstrap = state.explorer_service.get_bootstrap(&workspace_root)
         .await
         .map_err(|e| ServerError::internal(e.to_string()))?;
@@ -1334,11 +1520,12 @@ pub async fn explorer_tree(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TreeQuery>,
 ) -> Result<Json<TreeResponse>, ServerError> {
-    // Verify session exists and get project_path
-    let session = state.session_service.get(&SessionId(query.session_id.clone()))
-        .ok_or_else(|| ServerError::not_found())?;
-    
-    let workspace_root = session.project_path.clone();
+    let workspace_root = resolve_workspace_root(
+        state.as_ref(),
+        query.project_id.as_deref(),
+        query.session_id.as_deref(),
+    )
+    .await?;
     let path = if query.path.is_empty() || query.path == "." {
         PathBuf::from(".")
     } else {
@@ -1523,6 +1710,10 @@ pub async fn get_outline(
                 }
                 rcode_core::Part::ToolResult { content, .. } => content.len(),
                 rcode_core::Part::Attachment { .. } => 0,
+                rcode_core::Part::TaskChecklist { items } => items
+                    .iter()
+                    .map(|item| item.content.len() + item.status.len() + item.priority.len())
+                    .sum::<usize>(),
             }).sum::<usize>()
         })
         .sum::<usize>() / 4; // Rough: 4 chars per token
@@ -1632,8 +1823,54 @@ pub async fn get_outline(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_fast_path_shell_command, document_symbol_to_dto};
+    use super::{
+        create_project, create_session, delete_project, document_symbol_to_dto, explorer_bootstrap,
+        list_project_sessions, parse_fast_path_shell_command, rename_session, CreateProjectRequest,
+        CreateSessionRequest, ExplorerQuery, RenameSessionRequest,
+    };
+    use crate::{cancellation::CancellationRegistry, explorer::ExplorerService, state::AppState};
+    use axum::{extract::{Path as AxumPath, Query, State}, Json};
+    use rcode_core::{ProjectId, RcodeConfig, Session};
+    use rcode_event::EventBus;
     use rcode_lsp::{DocumentSymbol, Range, Position, SymbolKind};
+    use rcode_lsp::LanguageServerRegistry;
+    use rcode_providers::{catalog::ModelCatalogService, ProviderRegistry};
+    use rcode_session::{ProjectService, SessionService};
+    use rcode_storage::{schema, ProjectRepository};
+    use rcode_tools::ToolRegistryService;
+    use rusqlite::Connection;
+    use std::{collections::HashMap, sync::{Arc, Mutex}};
+    use tempfile::tempdir;
+    use tokio::sync::Mutex as TokioMutex;
+
+    fn create_test_state() -> (Arc<AppState>, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("projects.db");
+        let conn = Connection::open(&db_path).unwrap();
+        schema::init_schema(&conn).unwrap();
+
+        let event_bus = Arc::new(EventBus::new(32));
+        let session_service = Arc::new(SessionService::new(event_bus.clone()));
+        let tools = Arc::new(ToolRegistryService::with_session_service(session_service.clone()));
+        let project_service = Arc::new(ProjectService::new(Arc::new(ProjectRepository::new(conn))));
+
+        let state = Arc::new(AppState {
+            project_service: Some(project_service),
+            session_service,
+            event_bus,
+            providers: Arc::new(Mutex::new(ProviderRegistry::new())),
+            tools,
+            config: Arc::new(Mutex::new(RcodeConfig::default())),
+            catalog: Arc::new(ModelCatalogService::new()),
+            cancellation: Arc::new(CancellationRegistry::new()),
+            permission_services: Arc::new(TokioMutex::new(HashMap::new())),
+            lsp_registry: Arc::new(LanguageServerRegistry::new()),
+            mock_provider: Arc::new(Mutex::new(None)),
+            explorer_service: Arc::new(ExplorerService::new()),
+        });
+
+        (state, dir)
+    }
 
     #[test]
     fn fast_path_accepts_simple_allowed_command() {
@@ -1872,5 +2109,248 @@ mod tests {
         assert!(json.contains(r#""language":"rust""#));
         assert!(json.contains(r#""name":"main""#));
         assert!(json.contains(r#""kind":"Function""#));
+    }
+
+    #[tokio::test]
+    async fn create_session_with_project_id_uses_project_root() {
+        let (state, dir) = create_test_state();
+        let project_root = dir.path().join("project-root");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        let Json(project) = create_project(
+            State(state.clone()),
+            Json(CreateProjectRequest {
+                path: project_root.to_string_lossy().to_string(),
+                name: Some("demo".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let Json(session) = create_session(
+            State(state.clone()),
+            Json(CreateSessionRequest {
+                project_id: Some(project.id.clone()),
+                project_path: None,
+                agent_id: Some("build".to_string()),
+                model_id: Some("model-x".to_string()),
+                parent_id: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(session.project_id, Some(ProjectId(project.id)));
+        assert_eq!(session.project_path, project_root.canonicalize().unwrap());
+    }
+
+    #[tokio::test]
+    async fn create_session_legacy_project_path_still_works() {
+        let (state, dir) = create_test_state();
+        let project_root = dir.path().join("legacy-root");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        let Json(session) = create_session(
+            State(state),
+            Json(CreateSessionRequest {
+                project_id: None,
+                project_path: Some(project_root.to_string_lossy().to_string()),
+                agent_id: Some("build".to_string()),
+                model_id: Some("model-x".to_string()),
+                parent_id: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(session.project_path, project_root);
+    }
+
+    #[tokio::test]
+    async fn list_project_sessions_returns_only_matching_project() {
+        let (state, dir) = create_test_state();
+        let project_root = dir.path().join("project-a");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let other_root = dir.path().join("project-b");
+        std::fs::create_dir_all(&other_root).unwrap();
+
+        let Json(project) = create_project(
+            State(state.clone()),
+            Json(CreateProjectRequest {
+                path: project_root.to_string_lossy().to_string(),
+                name: Some("project-a".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+        let project_id = project.id.clone();
+
+        let mut session = Session::new(project_root.canonicalize().unwrap(), "build".into(), "model".into());
+        session.project_id = Some(ProjectId(project.id.clone()));
+        state.session_service.create(session);
+        state.session_service.create(Session::new(other_root, "build".into(), "model".into()));
+
+        let Json(sessions) = list_project_sessions(State(state), AxumPath(project_id.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].project_id.as_ref().map(|id| id.0.as_str()), Some(project_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn explorer_bootstrap_prefers_project_id_over_session_id() {
+        let (state, dir) = create_test_state();
+        let project_root = dir.path().join("project-root");
+        std::fs::create_dir_all(project_root.join("src")).unwrap();
+        let session_root = dir.path().join("session-root");
+        std::fs::create_dir_all(&session_root).unwrap();
+
+        let Json(project) = create_project(
+            State(state.clone()),
+            Json(CreateProjectRequest {
+                path: project_root.to_string_lossy().to_string(),
+                name: Some("project-root".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let session = state.session_service.create(Session::new(
+            session_root,
+            "build".into(),
+            "model".into(),
+        ));
+
+        let Json(bootstrap) = explorer_bootstrap(
+            State(state),
+            Query(ExplorerQuery {
+                project_id: Some(project.id),
+                session_id: Some(session.id.0.clone()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(bootstrap.workspace_root, project_root.canonicalize().unwrap().to_string_lossy());
+    }
+
+    #[tokio::test]
+    async fn delete_project_removes_existing_project() {
+        let (state, dir) = create_test_state();
+        let project_root = dir.path().join("delete-project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        let Json(project) = create_project(
+            State(state.clone()),
+            Json(CreateProjectRequest {
+                path: project_root.to_string_lossy().to_string(),
+                name: Some("delete-project".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let Json(response) = delete_project(State(state.clone()), AxumPath(project.id.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(response.get("ok").and_then(|value| value.as_bool()), Some(true));
+        assert!(state
+            .project_service
+            .as_ref()
+            .unwrap()
+            .get(&ProjectId(project.id))
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn rename_session_updates_title() {
+        let (state, _dir) = create_test_state();
+        let project_root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project_root.path()).unwrap();
+
+        let session = state.session_service.create(Session::new(
+            project_root.path().to_path_buf(),
+            "build".into(),
+            "model".into(),
+        ));
+        let session_id = session.id.0.clone();
+
+        // Verify initial title is None
+        let session_before = state.session_service.get(&rcode_core::SessionId(session_id.clone())).unwrap();
+        assert!(session_before.title.is_none(), "Initial title should be None");
+
+        // Rename the session
+        let Json(updated) = rename_session(
+            State(state.clone()),
+            AxumPath(session_id.clone()),
+            Json(RenameSessionRequest {
+                title: "My Custom Title".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(updated.title, Some("My Custom Title".to_string()));
+
+        // Verify persisted
+        let session_after = state.session_service.get(&rcode_core::SessionId(session_id.clone())).unwrap();
+        assert_eq!(session_after.title, Some("My Custom Title".to_string()));
+    }
+
+    #[tokio::test]
+    async fn rename_session_overwrites_existing_title() {
+        let (state, _dir) = create_test_state();
+        let project_root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project_root.path()).unwrap();
+
+        let session = state.session_service.create(Session::new(
+            project_root.path().to_path_buf(),
+            "build".into(),
+            "model".into(),
+        ));
+        let session_id = session.id.0.clone();
+
+        // First rename
+        let Json(first) = rename_session(
+            State(state.clone()),
+            AxumPath(session_id.clone()),
+            Json(RenameSessionRequest {
+                title: "First Title".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.title, Some("First Title".to_string()));
+
+        // Second rename (overwrite)
+        let Json(second) = rename_session(
+            State(state.clone()),
+            AxumPath(session_id.clone()),
+            Json(RenameSessionRequest {
+                title: "Second Title".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.title, Some("Second Title".to_string()));
+    }
+
+    #[tokio::test]
+    async fn rename_session_returns_404_for_nonexistent() {
+        let (state, _dir) = create_test_state();
+
+        let result = rename_session(
+            State(state.clone()),
+            AxumPath("nonexistent-id".to_string()),
+            Json(RenameSessionRequest {
+                title: "Test".to_string(),
+            }),
+        )
+        .await;
+
+        assert!(result.is_err(), "Should return error for nonexistent session");
     }
 }

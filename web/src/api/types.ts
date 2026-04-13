@@ -50,6 +50,7 @@ export type MessagePart =
   | { type: 'reasoning'; content: string }
   | { type: 'tool_call'; id: string; name: string; arguments?: unknown }
   | { type: 'tool_result'; tool_call_id: string; content: string; is_error: boolean }
+  | { type: 'task_checklist'; items: { id: string; content: string; status: string; priority: string }[] }
   | { type: 'attachment'; id: string; name: string; mime_type: string; content?: unknown };
 
 // =============================================================================

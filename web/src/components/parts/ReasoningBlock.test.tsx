@@ -88,19 +88,21 @@ describe("SPR-S1: Reasoning block collapsed by default and expands on click", ()
   it("should render markdown content when expanded", async () => {
     render(() => ReasoningBlock({ content: "**Bold** and *italic* thinking" }), container);
 
-    // Initially collapsed
     const block = container.querySelector("[data-part='reasoning']");
-    const collapsedContent = block?.querySelector(".max-h-0");
-    expect(collapsedContent).toBeDefined();
+    
+    // Initially collapsed - markdown content should NOT be in DOM (T1.1: uses <Show> instead of CSS hiding)
+    const initiallyHidden = block?.querySelector(".markdown-body");
+    expect(initiallyHidden).toBeNull();
 
     // Click to expand
     const clickable = block?.querySelector(".cursor-pointer");
     fireEvent.click(clickable!);
 
-    // Wait for markdown content to be rendered (async via createResource)
+    // Wait for markdown content to be rendered (async via createResource/worker)
     await waitFor(() => {
-      const content = block?.querySelector(".max-h-\\[500px\\]");
+      const content = block?.querySelector(".markdown-body");
       expect(content).toBeDefined();
+      // The markdown should be rendered with bold text
       expect(content?.innerHTML || "").toContain("strong");
     }, { timeout: 3000 });
   });

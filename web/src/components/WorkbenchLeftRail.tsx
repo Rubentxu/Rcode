@@ -1,7 +1,9 @@
-import { createSignal, createEffect, For, Show } from "solid-js";
-import type { Session } from "../App";
+import { createSignal, createEffect, For, Show, createMemo } from "solid-js";
+import type { Session } from "../stores";
 import { fetchExplorerBootstrap, fetchExplorerTree, type ExplorerBootstrap, type TreeNode, type ExplorerFilter } from "../api/explorer";
+import { renameSession } from "../api/session";
 import { useProjectContext } from "../context/ProjectContext";
+import { useWorkspace, type WorkspaceContextValue } from "../context/WorkspaceContext";
 
 interface WorkbenchLeftRailProps {
   sessions: Session[];
@@ -36,6 +38,40 @@ function formatTime(dateStr: string): string {
   if (minutes < 60) return `${minutes}m ago`;
   if (hours < 24) return `${hours}h ago`;
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function formatCompactDate(dateStr: string): string {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today.getTime() - 86400000);
+  const dateOnly = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+  if (dateOnly.getTime() === today.getTime()) return "Today";
+  if (dateOnly.getTime() === yesterday.getTime()) return "Yesterday";
+  if (dateOnly.getTime() > today.getTime() - 7 * 86400000) return date.toLocaleDateString("en-US", { weekday: "short" });
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+type SessionGroup = "Today" | "Yesterday" | "This Week" | "Older";
+
+function getSessionGroup(dateStr: string): SessionGroup {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today.getTime() - 86400000);
+  const weekAgo = new Date(today.getTime() - 7 * 86400000);
+  const dateOnly = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+  if (dateOnly.getTime() === today.getTime()) return "Today";
+  if (dateOnly.getTime() === yesterday.getTime()) return "Yesterday";
+  if (dateOnly.getTime() > weekAgo.getTime()) return "This Week";
+  return "Older";
+}
+
+interface SessionGrouped {
+  group: SessionGroup;
+  sessions: Session[];
 }
 
 // Filter bar component
@@ -242,6 +278,17 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
   const [activeTab, setActiveTab] = createSignal<RailTab>("sessions");
   const projectContext = useProjectContext();
   
+  // Try to use workspace context, fall back to no-op if not available (tests)
+  let workspaceCtx: WorkspaceContextValue | undefined;
+  try {
+    workspaceCtx = useWorkspace();
+  } catch {
+    workspaceCtx = undefined;
+  }
+  
+  // Create a safe workspace accessor that works with or without context
+  const safeWorkspace = (): WorkspaceContextValue | undefined => workspaceCtx;
+  
   // Explorer state
   const [bootstrap, setBootstrap] = createSignal<ExplorerBootstrap | null>(null);
   const [rootChildren, setRootChildren] = createSignal<TreeNode[]>([]);
@@ -254,6 +301,142 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
 
   // T4.3: Keyboard navigation state - track focused node id
   const [focusedNodeId, setFocusedNodeId] = createSignal<string | null>(null);
+
+  // Phase 2: Inline rename state
+  const [renamingSessionId, setRenamingSessionId] = createSignal<string | null>(null);
+  const [renameValue, setRenameValue] = createSignal("");
+  const [renameError, setRenameError] = createSignal<string | null>(null);
+
+  // Phase 2+3: Search state with debounce
+  const [searchInput, setSearchInput] = createSignal("");
+  const [debouncedSearch, setDebouncedSearch] = createSignal("");
+
+  let searchTimeout: ReturnType<typeof setTimeout> | undefined;
+  const handleSearchInput = (value: string) => {
+    setSearchInput(value);
+    if (searchTimeout) clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => {
+      setDebouncedSearch(value);
+      safeWorkspace()?.workspace.setSessionSearch?.(value);
+    }, 300);
+  };
+
+  // Phase 2+3: Computed grouped sessions
+  const groupedSessions = createMemo((): SessionGrouped[] => {
+    const query = debouncedSearch().toLowerCase().trim();
+    const sessions = props.sessions;
+    const activeId = props.currentSessionId;
+
+    // Filter sessions
+    const filtered = query
+      ? sessions.filter(s => s.title?.toLowerCase().includes(query))
+      : sessions;
+
+    // Always include active session even if filtered out
+    const activeSession = sessions.find(s => s.id === activeId);
+    if (activeSession && !filtered.find(s => s.id === activeId)) {
+      filtered.unshift(activeSession);
+    }
+
+    // Group by recency
+    const groups: Record<SessionGroup, Session[]> = {
+      "Today": [],
+      "Yesterday": [],
+      "This Week": [],
+      "Older": [],
+    };
+
+    for (const session of filtered) {
+      const group = getSessionGroup(session.updated_at);
+      groups[group].push(session);
+    }
+
+    const result: SessionGrouped[] = [];
+    for (const [group, sessions] of Object.entries(groups)) {
+      if (sessions.length > 0) {
+        result.push({ group: group as SessionGroup, sessions });
+      }
+    }
+    return result;
+  });
+
+  // Fetch ExplorerBootstrap when project changes to get git_branch
+  createEffect(() => {
+    const projectId = projectContext.activeProject()?.id;
+    if (!projectId) {
+      setBootstrap(null);
+      return;
+    }
+
+    // Fetch bootstrap for project (not session) to get git_branch
+    fetchExplorerBootstrap(undefined, projectId)
+      .then(boot => setBootstrap(boot))
+      .catch(() => setBootstrap(null));
+  });
+
+  // Phase 2: Inline rename handlers
+  const startRename = (session: Session, e: MouseEvent) => {
+    e.stopPropagation();
+    setRenamingSessionId(session.id);
+    setRenameValue(session.title || "");
+    setRenameError(null);
+  };
+
+  const cancelRename = () => {
+    setRenamingSessionId(null);
+    setRenameValue("");
+    setRenameError(null);
+  };
+
+  const submitRename = async () => {
+    const sessionId = renamingSessionId();
+    if (!sessionId) return;
+
+    const newTitle = renameValue().trim();
+    if (!newTitle) {
+      setRenameError("Title cannot be empty");
+      return;
+    }
+
+    try {
+      await renameSession(sessionId, newTitle);
+      // Update local session title
+      const updated = props.sessions.map(s =>
+        s.id === sessionId ? { ...s, title: newTitle } : s
+      );
+      // Propagate through workspace store
+      safeWorkspace()?.workspace.setSessions?.(updated);
+      cancelRename();
+    } catch (err) {
+      setRenameError(err instanceof Error ? err.message : "Failed to rename");
+    }
+  };
+
+  const handleRenameKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void submitRename();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancelRename();
+    }
+  };
+
+  // Phase 3: Compact mode toggle
+  const toggleCompactMode = () => {
+    const newValue = !(safeWorkspace()?.workspace.compactMode ?? false);
+    safeWorkspace()?.workspace.setCompactMode?.(newValue);
+  };
+
+  // Phase 3: Toggle group collapse
+  const toggleGroup = (group: SessionGroup) => {
+    safeWorkspace()?.workspace.toggleCollapsedGroup?.(group);
+  };
+
+  // Check if group is collapsed
+  const isGroupCollapsed = (group: SessionGroup) => {
+    return (safeWorkspace()?.workspace.collapsedGroups ?? new Set()).has(group);
+  };
 
   // Build a flat list of visible nodes for keyboard navigation
   function getVisibleNodes(): TreeNode[] {
@@ -550,8 +733,14 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
       <Show when={projectContext.activeProject()}>
         {(project) => (
           <div class="px-3 py-2 border-b border-outline-variant/20 bg-surface-container-low/50">
-            <div class="text-xs font-semibold text-on-surface truncate" title={project().name}>
-              {project().name}
+            <div class="text-xs font-semibold text-on-surface truncate flex items-center gap-1" title={project().name}>
+              <span>{project().name}</span>
+              <Show when={bootstrap()?.git_branch}>
+                <span class="text-[10px] text-secondary opacity-70">@</span>
+                <span class="text-[10px] text-secondary truncate" title={bootstrap()?.git_branch ?? ""}>
+                  {bootstrap()?.git_branch}
+                </span>
+              </Show>
             </div>
             <div class="text-[10px] text-outline truncate mt-0.5" title={project().canonical_path}>
               {project().canonical_path}
@@ -571,6 +760,33 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
           <span>New Session</span>
         </button>
       </div>
+
+      {/* Phase 2+3: Search and controls */}
+      <Show when={activeTab() === "sessions"}>
+        <div class="px-3 pb-2">
+          <div class="flex items-center gap-2">
+            <div class="relative flex-1">
+              <span class="material-symbols-outlined absolute left-2 top-1/2 -translate-y-1/2 text-outline text-xs">search</span>
+              <input
+                type="text"
+                placeholder="Filter sessions..."
+                value={searchInput()}
+                onInput={(e) => handleSearchInput(e.currentTarget.value)}
+                class="w-full bg-surface-container-low text-on-surface text-xs pl-7 pr-3 py-1.5 rounded-md border border-outline-variant/20 focus:border-primary focus:outline-none transition-colors placeholder:text-outline"
+              />
+            </div>
+            <button
+              onClick={toggleCompactMode}
+              class="p-1.5 rounded-md hover:bg-surface-container-high transition-colors"
+              title={safeWorkspace()?.workspace.compactMode ? "Normal mode" : "Compact mode"}
+            >
+              <span class="material-symbols-outlined text-sm text-outline">
+                {safeWorkspace()?.workspace.compactMode ? "density_small" : "density_medium"}
+              </span>
+            </button>
+          </div>
+        </div>
+      </Show>
 
       {/* Tab switcher */}
       <div 
@@ -622,31 +838,104 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
             data-component="sessions-list"
             class="h-full overflow-y-auto py-2 px-2 custom-scrollbar"
           >
-            <For each={props.sessions} fallback={
+            <Show when={groupedSessions().length === 0}>
               <div class="p-3 text-center">
-                <p class="text-outline text-xs">No sessions yet</p>
+                <p class="text-outline text-xs">
+                  {debouncedSearch() ? "No sessions match your search" : "No sessions yet"}
+                </p>
               </div>
-            }>
-              {(session) => (
-                <div
-                  onClick={() => props.onSelect(session)}
-                  data-session-id={session.id}
-                  class={`p-2.5 rounded-lg text-xs font-medium flex items-center gap-2 cursor-pointer transition-all mb-1 ${
-                    session.id === props.currentSessionId
-                      ? "bg-surface-container-high text-primary font-semibold border-l-2 border-secondary"
-                      : "text-outline hover:bg-surface-container-high hover:text-on-surface-variant"
-                  }`}
-                >
-                  <span class="material-symbols-outlined text-sm shrink-0">chat_bubble</span>
-                  <span class="truncate flex-1">
-                    {session.title || "Untitled"}
-                  </span>
-                  <span class="text-[10px] text-outline-variant shrink-0">
-                    {formatTime(session.updated_at)}
-                  </span>
-                </div>
-              )}
+            </Show>
+
+            <For each={groupedSessions()}>
+              {({ group, sessions }) => {
+                const isCollapsed = () => isGroupCollapsed(group);
+                const isCompact = () => safeWorkspace()?.workspace.compactMode ?? false;
+
+                return (
+                  <div class="mb-1">
+                    {/* Group header */}
+                    <button
+                      onClick={() => toggleGroup(group)}
+                      class="w-full flex items-center gap-2 px-2 py-1 text-[10px] font-semibold text-outline uppercase tracking-wider hover:bg-surface-container-low rounded transition-colors"
+                    >
+                      <span class={`material-symbols-outlined text-xs transition-transform ${isCollapsed() ? "" : "rotate-90"}`}>
+                        chevron_right
+                      </span>
+                      <span>{group}</span>
+                      <span class="ml-auto bg-surface-container-high px-1.5 py-0.5 rounded-full text-[9px]">
+                        {sessions.length}
+                      </span>
+                    </button>
+
+                    {/* Sessions in group */}
+                    <Show when={!isCollapsed()}>
+                      <For each={sessions}>
+                        {(session) => {
+                          const isActive = () => session.id === props.currentSessionId;
+                          const isRenaming = () => renamingSessionId() === session.id;
+
+                          return (
+                            <div
+                              onClick={() => !isRenaming() && props.onSelect(session)}
+                              onDblClick={(e) => !isRenaming() && startRename(session, e)}
+                              data-session-id={session.id}
+                              class={`rounded-lg text-xs font-medium flex items-center gap-2 cursor-pointer transition-all mb-0.5 ${
+                                isCompact() ? "px-2 py-1" : "p-2.5"
+                              } ${
+                                isActive()
+                                  ? "bg-surface-container-high text-primary font-semibold border-l-2 border-secondary"
+                                  : "text-outline hover:bg-surface-container-high hover:text-on-surface-variant"
+                              }`}
+                            >
+                              <span class="material-symbols-outlined text-sm shrink-0">chat_bubble</span>
+                              
+                              <Show when={isRenaming()} fallback={
+                                <>
+                                  <span class="truncate flex-1">
+                                    {session.title || "Untitled"}
+                                  </span>
+                                  <Show when={isActive()}>
+                                    <span class="shrink-0 px-1 py-0.5 bg-primary-container text-[9px] text-primary rounded font-bold">active</span>
+                                  </Show>
+                                  <Show when={!isCompact()}>
+                                    <span class="text-[10px] text-outline-variant shrink-0">
+                                      {formatTime(session.updated_at)}
+                                    </span>
+                                  </Show>
+                                  <Show when={isCompact()}>
+                                    <span class="text-[10px] text-outline-variant shrink-0">
+                                      {formatCompactDate(session.updated_at)}
+                                    </span>
+                                  </Show>
+                                </>
+                              }>
+                                <input
+                                  type="text"
+                                  value={renameValue()}
+                                  onInput={(e) => setRenameValue(e.currentTarget.value)}
+                                  onKeyDown={handleRenameKeyDown}
+                                  onBlur={() => submitRename()}
+                                  autofocus
+                                  class="flex-1 bg-surface-container-low text-on-surface text-xs px-1 py-0.5 rounded border border-primary/50 focus:outline-none"
+                                  onClick={(e) => e.stopPropagation()}
+                                />
+                              </Show>
+                            </div>
+                          );
+                        }}
+                      </For>
+                    </Show>
+                  </div>
+                );
+              }}
             </For>
+
+            {/* Rename error toast */}
+            <Show when={renameError()}>
+              <div class="fixed bottom-4 left-1/2 -translate-x-1/2 bg-error-container text-error px-3 py-1.5 rounded-lg text-xs shadow-lg">
+                {renameError()}
+              </div>
+            </Show>
           </div>
         </Show>
 

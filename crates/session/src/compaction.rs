@@ -247,6 +247,12 @@ fn estimate_message_token_count(message: &rcode_core::Message) -> usize {
                 // Content is binary, estimate fewer tokens
                 count += 10;
             }
+            rcode_core::Part::TaskChecklist { items } => {
+                count += items
+                    .iter()
+                    .map(|item| (item.content.len() + item.status.len() + item.priority.len()) / 4)
+                    .sum::<usize>();
+            }
         }
     }
 

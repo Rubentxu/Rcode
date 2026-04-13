@@ -8,6 +8,7 @@ import {
   useContext,
 } from "solid-js";
 import { deleteProject, fetchProjects, type ProjectSummary } from "../api/projects";
+import type { GlobalState } from "../stores/globalStore";
 
 interface ProjectContextValue {
   projects: Accessor<ProjectSummary[]>;
@@ -22,6 +23,7 @@ interface ProjectProviderProps {
   initialProjects?: ProjectSummary[];
   initialActiveProjectId?: string | null;
   skipAutoLoad?: boolean;
+  globalStore?: GlobalState;
 }
 
 const defaultContext: ProjectContextValue = {
@@ -99,7 +101,11 @@ export const ProjectProvider: ParentComponent<ProjectProviderProps> = (props) =>
         projects,
         activeProject,
         activeProjectId,
-        setActiveProject: (projectId) => setActiveProjectId(projectId),
+        setActiveProject: (projectId) => {
+          setActiveProjectId(projectId);
+          // Sync to globalStore so WorkspaceProvider sees the change
+          props.globalStore?.setActiveProject(projectId);
+        },
         refreshProjects,
         removeProject,
       }}

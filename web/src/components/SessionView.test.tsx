@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render } from "solid-js/web";
 import { fireEvent, screen, waitFor } from "@testing-library/dom";
-import { createSignal } from "solid-js";
+import { createSignal, createMemo } from "solid-js";
 import SessionView from "./SessionView";
 import type { Session, Message } from "../api/types";
+import { WorkspaceProvider } from "../context/WorkspaceContext";
+import { createGlobalStore, createWorkspaceStore } from "../stores";
 
 // Mock SSE client
 vi.mock("../api/sse", () => ({
@@ -16,6 +18,11 @@ vi.mock("../api/sse", () => ({
 // Mock API config
 vi.mock("../api/config", () => ({
   getApiBase: vi.fn(() => Promise.resolve("http://localhost:3000")),
+}));
+
+// Mock fetch for project sessions
+vi.mock("../api/projects", () => ({
+  fetchProjects: vi.fn(() => Promise.resolve([])),
 }));
 
 // Helper: flush SolidJS updates
@@ -102,24 +109,39 @@ const mockAbort = vi.fn();
 const mockReload = vi.fn();
 const mockComplete = vi.fn();
 const mockRetry = vi.fn();
+const mockCommandResult = vi.fn();
 
-function renderSessionView(messages: Message[], isLoading: () => boolean = () => false) {
+function renderSessionView(messages: Message[] = [], isLoading: () => boolean = () => false) {
+  // Create store instances for WorkspaceProvider
+  const globalStore = createGlobalStore();
+  const workspaceStore = createWorkspaceStore();
+
+  // Initialize workspace with mock data - must set globalStore's activeProjectId FIRST
+  // so that WorkspaceProvider's memo can find the workspace
+  globalStore.setActiveProject("test-project");
+  workspaceStore.switchProject("test-project");
+  const ws = workspaceStore.getWorkspace("test-project")!;
+  ws.setMessages(mockSession.id, messages);
+  ws.setLoading(mockSession.id, isLoading());
+  ws.setSseStatus("idle");
+  ws.setSessions([mockSession]);
+
   const container = document.createElement("div");
   const result = render(() => (
-    <SessionView
-      session={mockSession}
-      messages={messages}
-      isLoading={isLoading}
-      sseStatus="disconnected"
-      onSubmit={mockSubmit}
-      onAbort={mockAbort}
-      onReloadMessages={mockReload}
-      onComplete={mockComplete}
-      onRetry={mockRetry}
-      sessions={[mockSession]}
-    />
+    <WorkspaceProvider globalStore={globalStore} workspaceStore={workspaceStore}>
+      <SessionView
+        session={mockSession}
+        onSubmit={mockSubmit}
+        onAbort={mockAbort}
+        onReloadMessages={mockReload}
+        onComplete={mockComplete}
+        onRetry={mockRetry}
+        onCommandResult={mockCommandResult}
+        currentModel="claude-sonnet-4-5"
+      />
+    </WorkspaceProvider>
   ), container);
-  return { container, result };
+  return { container, result, globalStore, workspaceStore, ws };
 }
 
 describe("SessionView", () => {
@@ -343,27 +365,12 @@ describe("SessionView", () => {
         },
       ];
 
-      const container = document.createElement("div");
-
-      const [messages, setMessages] = createSignal<Message[]>(initialMessages);
-      render(() => (
-        <SessionView
-          session={mockSession}
-          messages={messages()}
-          isLoading={() => false}
-          sseStatus="disconnected"
-          onSubmit={mockSubmit}
-          onAbort={mockAbort}
-          onReloadMessages={mockReload}
-          onComplete={mockComplete}
-          onRetry={mockRetry}
-          sessions={[mockSession]}
-        />
-      ), container);
+      const { container, ws } = renderSessionView(initialMessages);
 
       expect(container.textContent).toContain("0 de 1 tareas completadas");
 
-      setMessages(updatedMessages);
+      // Update messages via workspace store
+      ws.setMessages(mockSession.id, updatedMessages);
       await flushUpdates();
 
       expect(container.textContent).toContain("1 de 1 tareas completadas");

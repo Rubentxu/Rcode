@@ -7,16 +7,9 @@ import { Settings } from "./components/Settings";
 import { ToastContainer, showToast } from "./components/Toast";
 import { getApiBase } from "./api/config";
 import type { Message, MessagePart } from "./api/types";
-import { fetchProjectSessions } from "./api/projects";
 import { useProjectContext } from "./context/ProjectContext";
-
-export interface Session {
-  id: string;
-  title: string | null;
-  status: "idle" | "running" | "completed";
-  updated_at: string;
-  model_id?: string;
-}
+import { useWorkspace } from "./context/WorkspaceContext";
+import type { Session, SSEStatus } from "./stores";
 
 interface PromptResponse {
   message_id: string;
@@ -29,7 +22,7 @@ interface ModelCatalogEntry {
   enabled: boolean;
 }
 
-const MOCK_MODE = import.meta.env.VITE_MOCK_MODE === "true"; // Set via env var for testing
+const MOCK_MODE = import.meta.env.VITE_MOCK_MODE === "true";
 
 // Mock data for testing without backend
 const mockSessions: Session[] = [
@@ -52,27 +45,10 @@ function getMockResponse(prompt: string): string {
   return mockResponses.default;
 }
 
-function normalizeMessageId(id: unknown): string {
-  if (typeof id === "string") {
-    return id;
-  }
-
-  if (id && typeof id === "object" && "0" in (id as Record<string, unknown>)) {
-    const tupleValue = (id as Record<string, unknown>)["0"];
-    if (typeof tupleValue === "string") {
-      return tupleValue;
-    }
-  }
-
-  return "";
-}
-
 function pickPreferredModel(models: ModelCatalogEntry[]): string | null {
   if (models.length === 0) {
     return null;
   }
-
-  // Use the first enabled model from the catalog; fallback to first model available
   return (
     models.find((model) => model.enabled)?.id
     ?? models[0]?.id
@@ -82,50 +58,14 @@ function pickPreferredModel(models: ModelCatalogEntry[]): string | null {
 
 export default function App() {
   const projectContext = useProjectContext();
-  const [sessions, setSessions] = createSignal<Session[]>(MOCK_MODE ? mockSessions : []);
-  const [currentSession, setCurrentSession] = createSignal<Session | null>(null);
-  const [currentModel, setCurrentModel] = createSignal<string>("claude-sonnet-4-5");
-  const [messages, setMessages] = createSignal<Message[]>([]);
-  const [isLoading, setIsLoading] = createSignal(false);
+  const workspace = useWorkspace();
+  const { globalStore } = workspace;
+
+  // Track whether we're doing an initial session load (full replace) vs an incremental reload
+  let isSessionLoad = false;
+
+  // Local SSE status (per App-level SSE connection if needed)
   const [sseStatus, setSseStatus] = createSignal<"connected" | "connecting" | "disconnected">("disconnected");
-  const [terminalOpen, setTerminalOpen] = createSignal(false);
-  const [showSettings, setShowSettings] = createSignal(false);
-
-  const loadSessions = async () => {
-    if (MOCK_MODE) {
-      setSessions(mockSessions);
-      return;
-    }
-    try {
-      const response = await fetch(`${await getApiBase()}/session`);
-      if (response.ok) {
-        const data = await response.json();
-        setSessions(data);
-      }
-    } catch (e) {
-      console.error("Failed to load sessions:", e);
-    }
-  };
-
-  const loadProjectSessions = async (projectId: string) => {
-    if (MOCK_MODE) {
-      setSessions(mockSessions);
-      return;
-    }
-
-    try {
-      const data = await fetchProjectSessions(projectId);
-      setSessions(data.map((session) => ({
-        id: session.id,
-        title: session.title,
-        status: session.status as Session["status"],
-        updated_at: session.updated_at,
-        model_id: session.model_id,
-      })));
-    } catch (error) {
-      console.error("Failed to load project sessions:", error);
-    }
-  };
 
   const loadPreferredModel = async () => {
     try {
@@ -138,19 +78,16 @@ export default function App() {
       const preferredModel = pickPreferredModel((data.models || []) as ModelCatalogEntry[]);
       if (preferredModel) {
         console.info("Resolved preferred model", { preferredModel });
-        setCurrentModel(preferredModel);
+        globalStore.setModel(preferredModel);
       }
     } catch (error) {
       console.warn("Failed to resolve preferred model", error);
     }
   };
 
-  // Track whether we're doing an initial session load (full replace) vs an incremental reload
-  let isSessionLoad = false;
-
+  // Load messages for a session with merge logic
   const loadMessages = async (sessionId: string) => {
     if (MOCK_MODE) {
-      // Messages are managed locally in mock mode
       return;
     }
     try {
@@ -165,7 +102,6 @@ export default function App() {
           total: data.total,
           count: Array.isArray(data.messages) ? data.messages.length : 0,
         });
-        // Preserve structured parts from backend; keep content for backward compat
         const structuredMessages: Message[] = (data.messages || []).map((m: any) => {
           console.debug("Loaded message", {
             sessionId,
@@ -185,42 +121,10 @@ export default function App() {
         });
 
         if (isSessionLoad) {
-          // Full replace only on initial session selection
           isSessionLoad = false;
-          setMessages(structuredMessages);
+          workspace.setMessages(sessionId, structuredMessages);
         } else {
-          // Incremental reload (from SSE onDone/onAssistantCommitted/onReloadMessages):
-          // Strategy: ALWAYS prefer backend data, but ONLY if backend has EQUAL
-          // or MORE messages than local. If backend has FEWER, it means the
-          // backend hasn't persisted the response yet — keep local messages intact.
-          //
-          // Additionally, check that the last message in backend is an assistant
-          // message (meaning the response was fully persisted).
-          setMessages((prev) => {
-            const backendCount = structuredMessages.length;
-            const localCount = prev.length;
-
-            // Backend caught up and has assistant response → full replace
-            if (backendCount >= localCount && backendCount > 0) {
-              const lastBackend = structuredMessages[backendCount - 1];
-              if (lastBackend.role === "assistant") {
-                return structuredMessages;
-              }
-            }
-
-            // Backend has same count but last message isn't assistant yet
-            // → backend is still persisting, keep local state
-            if (backendCount >= localCount) {
-              return prev;
-            }
-
-            // Backend is behind — keep local-only messages, update shared ones
-            const backendMap = new Map(structuredMessages.map((m) => [m.id, m]));
-            return prev.map((local) => {
-              const fromBackend = backendMap.get(local.id);
-              return fromBackend ?? local;
-            });
-          });
+          workspace.setMessages(sessionId, structuredMessages);
         }
       } else {
         console.error("Failed to load messages", { sessionId, status: response.status, statusText: response.statusText });
@@ -231,28 +135,36 @@ export default function App() {
   };
 
   const selectSession = (session: Session) => {
-    setCurrentSession(session);
+    workspace.switchSession(session.id);
     if (session.model_id) {
-      setCurrentModel(session.model_id);
+      globalStore.setModel(session.model_id);
     }
-    isSessionLoad = true;
-    loadMessages(session.id);
+    
+    // Cache-first: only fetch if messages not already cached
+    const cachedMessages = workspace.workspace.getMessages(session.id);
+    if (cachedMessages.length === 0) {
+      isSessionLoad = true;
+      void loadMessages(session.id);
+    } else {
+      isSessionLoad = false;
+    }
     setSseStatus("connected");
   };
 
   const createSession = async () => {
     try {
       const activeProject = projectContext.activeProject();
+      const model = globalStore.currentModel();
       const payload = activeProject
         ? {
             project_id: activeProject.id,
             agent_id: "build",
-            model_id: currentModel(),
+            model_id: model,
           }
         : {
             project_path: ".",
             agent_id: "build",
-            model_id: currentModel(),
+            model_id: model,
           };
 
       const res = await fetch(`${await getApiBase()}/session`, {
@@ -262,9 +174,9 @@ export default function App() {
       });
       if (!res.ok) throw new Error("Failed to create session");
       const session: Session = await res.json();
-      setSessions((prev) => [session, ...prev]);
-      setCurrentSession(session);
-      setMessages([]);
+      workspace.addSession(session);
+      workspace.switchSession(session.id);
+      workspace.setMessages(session.id, []);
       setSseStatus("connected");
       return session;
     } catch (err) {
@@ -272,24 +184,27 @@ export default function App() {
       // Fallback: create client-side only
       const newSession: Session = {
         id: crypto.randomUUID(),
-        title: `Session ${sessions().length + 1}`,
+        title: `Session ${workspace.sessions().length + 1}`,
         status: "idle",
         updated_at: new Date().toISOString(),
-        model_id: currentModel(),
+        model_id: globalStore.currentModel(),
       };
-      setSessions((prev) => [newSession, ...prev]);
-      setCurrentSession(newSession);
-      setMessages([]);
+      workspace.addSession(newSession);
+      workspace.switchSession(newSession.id);
+      workspace.setMessages(newSession.id, []);
       setSseStatus("connected");
       return newSession;
     }
   };
 
   const submitPrompt = async (prompt: string) => {
-    const session = currentSession();
-    if (!session || !prompt.trim()) return;
+    const sessionId = workspace.activeSessionId();
+    if (!sessionId || !prompt.trim()) return;
 
-    setIsLoading(true);
+    const session = workspace.sessions().find(s => s.id === sessionId);
+    if (!session) return;
+
+    workspace.setLoading(sessionId, true);
     
     // Add user message immediately
     const userMsg: Message = {
@@ -298,10 +213,11 @@ export default function App() {
       content: prompt,
       created_at: new Date().toISOString(),
     };
-    setMessages((prev) => [...prev, userMsg]);
+    
+    const currentMessages = workspace.workspace.getMessages(sessionId);
+    workspace.setMessages(sessionId, [...currentMessages, userMsg]);
 
     if (MOCK_MODE) {
-      // Simulate AI response delay
       await new Promise((resolve) => setTimeout(resolve, 1000));
       
       const assistantMsg: Message = {
@@ -310,13 +226,14 @@ export default function App() {
         content: getMockResponse(prompt),
         created_at: new Date().toISOString(),
       };
-      setMessages((prev) => [...prev, assistantMsg]);
-      setIsLoading(false);
+      const msgs = workspace.workspace.getMessages(sessionId);
+      workspace.setMessages(sessionId, [...msgs, assistantMsg]);
+      workspace.setLoading(sessionId, false);
       return;
     }
 
     try {
-      const response = await fetch(`${await getApiBase()}/session/${session.id}/prompt`, {
+      const response = await fetch(`${await getApiBase()}/session/${sessionId}/prompt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt }),
@@ -325,19 +242,14 @@ export default function App() {
       if (response.ok) {
         const promptResponse = (await response.json()) as PromptResponse;
         console.info("Prompt accepted", {
-          sessionId: session.id,
+          sessionId,
           requestId: promptResponse.request_id,
           status: promptResponse.status,
         });
-        // Do NOT call loadMessages here — the user message is already in local state,
-        // and the backend hasn't processed the prompt yet. loadMessages would replace
-        // local messages with stale backend data, causing the user message to disappear.
-        // Messages will be refreshed when SSE onDone/onAssistantCommitted fires.
       } else {
-        // Remove the user message we just added since the prompt failed
-        setMessages((prev) => prev.slice(0, -1));
+        const msgs = workspace.workspace.getMessages(sessionId);
+        workspace.setMessages(sessionId, msgs.slice(0, -1));
         
-        // Try to parse error response from backend
         let errorMsg = `Request failed: ${response.status}`;
         let errorCode = "";
         try {
@@ -345,13 +257,11 @@ export default function App() {
           errorMsg = errorData.message || errorMsg;
           errorCode = errorData.code || "";
         } catch {
-          // Use status text if JSON parsing fails
           errorMsg = `${response.status} ${response.statusText}`;
         }
         
         console.error(`Prompt failed: ${errorMsg}`);
         
-        // Show toast notification with helpful error message
         if (errorMsg.includes("API key") || errorMsg.includes("No API key")) {
           showToast({
             type: "error",
@@ -384,93 +294,83 @@ export default function App() {
           });
         }
         
-        // Reload sessions to get accurate status
-        loadSessions();
-        
-        // Also reload messages in case session state changed
-        loadMessages(session.id).catch(() => {});
-        
-        // HTTP errors - SSE won't provide completion, so reset loading state
-        setIsLoading(false);
+        await workspace.loadSessions();
+        await loadMessages(sessionId);
+        workspace.setLoading(sessionId, false);
       }
     } catch (e) {
       console.error("Failed to submit prompt:", e);
-      // Remove the user message since the request failed completely
-      setMessages((prev) => prev.slice(0, -1));
+      const msgs = workspace.workspace.getMessages(sessionId);
+      workspace.setMessages(sessionId, msgs.slice(0, -1));
       showToast({
         type: "error",
         message: `Network error: Could not connect to server. Make sure the backend is running.`,
         duration: 6000,
       });
-      // Network errors - SSE won't provide completion, so reset loading state
-      setIsLoading(false);
+      workspace.setLoading(sessionId, false);
     }
   };
 
   const abortSession = async () => {
-    const session = currentSession();
-    if (!session) return;
+    const sessionId = workspace.activeSessionId();
+    if (!sessionId) return;
 
     try {
-      await fetch(`${await getApiBase()}/session/${session.id}/abort`, { method: "POST" });
-      loadSessions();
+      await fetch(`${await getApiBase()}/session/${sessionId}/abort`, { method: "POST" });
+      await workspace.loadSessions();
     } catch (e) {
       console.error("Failed to abort session:", e);
     }
   };
 
   const handleCommandResult = (result: { success: boolean; message: string; data?: unknown }) => {
-    // Handle command results - for now just log them
-    // In the future, these could show toast notifications or update UI
     if (!result.success) {
       console.error("Command failed:", result.message);
     } else {
       console.log("Command succeeded:", result.message);
-      // Handle specific command actions
       if (result.data) {
         const action = (result.data as { action?: string }).action;
         switch (action) {
           case "new_session":
-            createSession();
+            void createSession();
             break;
           case "clear":
-            setMessages([]);
+            {
+              const sessionId = workspace.activeSessionId();
+              if (sessionId) {
+                workspace.setMessages(sessionId, []);
+              }
+            }
             break;
           case "set_model":
-            // Model change is handled via setCurrentModel in Header
-            const modelData = (result.data as { model?: string });
-            if (modelData.model) {
-              setCurrentModel(modelData.model);
+            {
+              const modelData = (result.data as { model?: string });
+              if (modelData.model) {
+                globalStore.setModel(modelData.model);
+              }
             }
             break;
           case "list_sessions":
-            // Sessions are already available in sidebar
             break;
           case "open_settings":
-            setShowSettings(true);
+            globalStore.toggleSettings(true);
             break;
         }
       }
     }
   };
 
-  /**
-   * MQA-2: Retry handler - replaces assistant response and re-submits user prompt.
-   * Truncates messages from the assistant turn onward, then calls the API directly
-   * WITHOUT adding a duplicate user message to local state.
-   */
   const handleRetry = async (assistantMessageId: string, userPrompt: string) => {
-    const session = currentSession();
-    if (!session) return;
+    const sessionId = workspace.activeSessionId();
+    if (!sessionId) return;
 
-    // Truncate messages from the assistant turn onward
-    setMessages((prev) => {
-      const assistantIndex = prev.findIndex((m) => m.id === assistantMessageId);
-      if (assistantIndex < 0) return prev;
-      return prev.slice(0, assistantIndex);
-    });
+    const msgs = workspace.workspace.getMessages(sessionId);
+    const assistantIndex = msgs.findIndex((m) => m.id === assistantMessageId);
+    if (assistantIndex >= 0) {
+      workspace.setMessages(sessionId, msgs.slice(0, assistantIndex));
+    }
 
-    setIsLoading(true);
+    workspace.setLoading(sessionId, true);
 
     if (MOCK_MODE) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -480,13 +380,14 @@ export default function App() {
         content: getMockResponse(userPrompt),
         created_at: new Date().toISOString(),
       };
-      setMessages((prev) => [...prev, assistantMsg]);
-      setIsLoading(false);
+      const currentMsgs = workspace.workspace.getMessages(sessionId);
+      workspace.setMessages(sessionId, [...currentMsgs, assistantMsg]);
+      workspace.setLoading(sessionId, false);
       return;
     }
 
     try {
-      const response = await fetch(`${await getApiBase()}/session/${session.id}/prompt`, {
+      const response = await fetch(`${await getApiBase()}/session/${sessionId}/prompt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: userPrompt }),
@@ -494,13 +395,13 @@ export default function App() {
       if (response.ok) {
         const promptResponse = (await response.json()) as PromptResponse;
         console.info("Retry prompt accepted", {
-          sessionId: session.id,
+          sessionId,
           requestId: promptResponse.request_id,
           status: promptResponse.status,
         });
-        await loadMessages(session.id);
+        await loadMessages(sessionId);
       } else {
-        setIsLoading(false);
+        workspace.setLoading(sessionId, false);
         let errorMsg = `Request failed: ${response.status}`;
         try {
           const errorData = await response.json();
@@ -508,11 +409,11 @@ export default function App() {
         } catch { /* use status text */ }
         console.error(`Retry prompt failed: ${errorMsg}`);
         showToast({ type: "error", message: errorMsg, duration: 5000 });
-        loadMessages(session.id).catch(() => {});
+        await loadMessages(sessionId);
       }
     } catch (e) {
       console.error("Retry failed:", e);
-      setIsLoading(false);
+      workspace.setLoading(sessionId, false);
       showToast({
         type: "error",
         message: `Network error: Could not connect to server.`,
@@ -522,42 +423,44 @@ export default function App() {
   };
 
   onMount(() => {
-    loadPreferredModel();
+    void loadPreferredModel();
+    // Load sessions for the current project on mount
+    void workspace.loadSessions();
   });
 
-  // Only reset session/messages when the active project *changes* to a different value.
-  // Using on() with defer:false ensures the initial load runs immediately but we
-  // compare prev vs. next to avoid clearing an already-valid session on first hydration
-  // (e.g. Tauri auto-selects the first project on mount which would otherwise wipe
-  // a session that was just created or loaded before the effect fires).
-  createEffect(
-    on(
-      () => projectContext.activeProject()?.id,
-      (nextId, prevId) => {
-        if (nextId !== prevId) {
-          setCurrentSession(null);
-          setMessages([]);
-        }
-        const activeProject = projectContext.activeProject();
-        void (activeProject ? loadProjectSessions(activeProject.id) : loadSessions());
-      },
-    ),
-  );
+  // Only reset session when the active project changes
+  createEffect(() => {
+    const projectId = globalStore.activeProjectId();
+    if (projectId) {
+      // workspaceStore.switchProject preserves old workspace in LRU cache
+      // and creates/restores the new one
+      workspace.switchProject(projectId);
+      // Load sessions for the new project
+      void workspace.loadSessions();
+    }
+  });
+
+  // Get current session from workspace
+  const currentSession = () => {
+    const sessionId = workspace.activeSessionId();
+    if (!sessionId) return null;
+    return workspace.sessions().find(s => s.id === sessionId) || null;
+  };
 
   return (
     <>
       <Workbench
-        sessions={sessions()}
+        sessions={workspace.sessions()}
         currentSession={currentSession()}
-        currentModel={currentModel()}
+        currentModel={globalStore.currentModel()}
         sseStatus={sseStatus()}
-        terminalOpen={terminalOpen()}
-        showSettings={showSettings()}
+        terminalOpen={globalStore.terminalOpen()}
+        showSettings={globalStore.showSettings()}
         onSelectSession={selectSession}
         onNewSession={createSession}
-        onModelChange={setCurrentModel}
-        onTerminalToggle={() => setTerminalOpen(!terminalOpen())}
-        onSettingsClick={() => setShowSettings(true)}
+        onModelChange={globalStore.setModel}
+        onTerminalToggle={() => globalStore.toggleTerminal()}
+        onSettingsClick={() => globalStore.toggleSettings(true)}
       >
         <Show
           when={currentSession()}
@@ -565,35 +468,17 @@ export default function App() {
         >
           <SessionView
             session={currentSession()!}
-            messages={messages()}
-            isLoading={isLoading}
-            sseStatus={sseStatus()}
             onSubmit={submitPrompt}
             onAbort={abortSession}
-            onSSEStatusChange={setSseStatus}
-            sessions={sessions()}
             onCommandResult={handleCommandResult}
-            onComplete={() => setIsLoading(false)}
+            onComplete={() => {}}
             onReloadMessages={async () => {
-              const session = currentSession();
-              if (session) {
-                // Retry up to 3 times with a small delay to give the backend
-                // time to persist the assistant response after streaming ends.
-                for (let attempt = 0; attempt < 3; attempt++) {
-                  await new Promise((r) => setTimeout(r, attempt * 200));
-                  await loadMessages(session.id);
-                  // Check if backend now has the assistant response
-                  const msgs = messages();
-                  if (msgs.length > 0 && msgs[msgs.length - 1].role === "assistant") {
-                    return; // Backend caught up — safe to clear draft
-                  }
-                }
-                // Final attempt without delay
-                await loadMessages(session.id);
+              const sessionId = workspace.activeSessionId();
+              if (sessionId) {
+                await loadMessages(sessionId);
               }
             }}
             onError={(errorMsg) => {
-              setIsLoading(false);
               showToast({
                 type: "error",
                 message: `Agent error: ${errorMsg}`,
@@ -601,15 +486,30 @@ export default function App() {
               });
             }}
             onRetry={handleRetry}
-            currentModel={currentModel()}
+            currentModel={globalStore.currentModel()}
           />
         </Show>
       </Workbench>
-      <Terminal isOpen={terminalOpen()} onClose={() => setTerminalOpen(false)} />
-      <Show when={showSettings()}>
-        <Settings onClose={() => setShowSettings(false)} />
+      <Terminal isOpen={globalStore.terminalOpen()} onClose={() => globalStore.toggleTerminal(false)} />
+      <Show when={globalStore.showSettings()}>
+        <Settings onClose={() => globalStore.toggleSettings(false)} />
       </Show>
       <ToastContainer />
     </>
   );
+}
+
+function normalizeMessageId(id: unknown): string {
+  if (typeof id === "string") {
+    return id;
+  }
+
+  if (id && typeof id === "object" && "0" in (id as Record<string, unknown>)) {
+    const tupleValue = (id as Record<string, unknown>)["0"];
+    if (typeof tupleValue === "string") {
+      return tupleValue;
+    }
+  }
+
+  return "";
 }

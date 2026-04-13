@@ -10,8 +10,8 @@ use rcode_lsp::LanguageServerRegistry;
 use rcode_providers::catalog::ModelCatalogService;
 use rcode_providers::CacheStore;
 use rcode_providers::{LlmProvider, ProviderRegistry};
-use rcode_session::SessionService;
-use rcode_storage::{schema, catalog_cache::CatalogCacheRepository, MessageRepository, SessionRepository};
+use rcode_session::{ProjectService, SessionService};
+use rcode_storage::{schema, catalog_cache::CatalogCacheRepository, MessageRepository, ProjectRepository, SessionRepository};
 use rcode_tools::ToolRegistryService;
 use rusqlite::Connection;
 use tokio::sync::Mutex as TokioMutex;
@@ -22,6 +22,7 @@ use crate::explorer::ExplorerService;
 use crate::subagent_runner_impl::ServerSubagentRunner;
 
 pub struct AppState {
+    pub project_service: Option<Arc<ProjectService>>,
     pub session_service: Arc<SessionService>,
     pub event_bus: Arc<EventBus>,
     pub providers: Arc<std::sync::Mutex<ProviderRegistry>>,
@@ -109,6 +110,7 @@ impl AppState {
                 let catalog = Arc::new(ModelCatalogService::new());
                 catalog.refresh_all_in_background(config.clone());
                 return Self {
+                    project_service: None,
                     session_service: session_service.clone(),
                     event_bus,
                     providers: Arc::new(std::sync::Mutex::new(ProviderRegistry::new())),
@@ -137,6 +139,7 @@ impl AppState {
             let catalog = Arc::new(ModelCatalogService::new());
             catalog.refresh_all_in_background(config.clone());
             return Self {
+                project_service: None,
                 session_service: session_service.clone(),
                 event_bus,
                 providers: Arc::new(std::sync::Mutex::new(ProviderRegistry::new())),
@@ -163,6 +166,7 @@ impl AppState {
                 let catalog = Arc::new(ModelCatalogService::new());
                 catalog.refresh_all_in_background(config.clone());
                 return Self {
+                    project_service: None,
                     session_service: session_service.clone(),
                     event_bus,
                     providers: Arc::new(std::sync::Mutex::new(ProviderRegistry::new())),
@@ -197,6 +201,7 @@ impl AppState {
                 let catalog = Arc::new(ModelCatalogService::new());
                 catalog.refresh_all_in_background(config.clone());
                 return Self {
+                    project_service: None,
                     session_service: session_service.clone(),
                     event_bus,
                     providers: Arc::new(std::sync::Mutex::new(ProviderRegistry::new())),
@@ -215,10 +220,12 @@ impl AppState {
         };
 
         // ---- Success path: All connections opened ----
+        let project_conn = Connection::open(&db_path).ok();
         let session_repo = SessionRepository::new(conn);
         let message_repo = MessageRepository::new(message_conn);
         let cache_repo = CatalogCacheRepository::new(cache_conn);
         let cache_store = Arc::new(ServerCacheStore::new(cache_repo));
+        let project_service = project_conn.map(|conn| Arc::new(ProjectService::new(Arc::new(ProjectRepository::new(conn)))));
 
         let session_service = Arc::new(SessionService::with_storage(
             event_bus.clone(),
@@ -255,6 +262,7 @@ impl AppState {
         catalog.refresh_all_in_background(config.clone());
 
         Self {
+            project_service,
             session_service: session_service.clone(),
             event_bus,
             providers: Arc::new(std::sync::Mutex::new(ProviderRegistry::new())),

@@ -27,13 +27,13 @@ export interface VirtualScrollOptions {
   turnPadding?: number;
 }
 
-export interface VirtualScrollReturn<T> {
+export interface VirtualScrollReturn<T extends Element = HTMLElement> {
   /** The virtualizer instance */
-  virtualizer: Virtualizer<HTMLElement, T>;
+  virtualizer: Virtualizer<Element, T>;
   /** Total size of all items (reactive) */
   totalSize: Accessor<number>;
   /** Array of virtual items to render (reactive) */
-  virtualItems: Accessor<ReturnType<Virtualizer<HTMLElement, T>["getVirtualItems"]>>;
+  virtualItems: Accessor<ReturnType<Virtualizer<Element, T>["getVirtualItems"]>>;
   /** Scroll to a specific index */
   scrollToIndex: (index: number, options?: { align?: "start" | "center" | "end" | "auto" }) => void;
   /** Scroll to a specific offset */
@@ -99,7 +99,7 @@ function getCachedEstimate(key: string, computer: () => number): number {
  * @param getTextForIndex - Function that returns the text content for a given index
  * @param options - Configuration options
  */
-export function useVirtualScroll<T>(
+export function useVirtualScroll<T extends Element = HTMLElement>(
   getScrollElement: () => HTMLElement | undefined,
   count: Accessor<number>,
   getTextForIndex: (index: number) => string = () => "",
@@ -115,11 +115,11 @@ export function useVirtualScroll<T>(
     turnPadding = 48,
   } = options;
 
-  let virtualizer: Virtualizer<HTMLElement, T> | undefined;
+  let virtualizer: Virtualizer<Element, T> | undefined;
   let scrollElement: HTMLElement | undefined;
 
   const totalSize = (): number => virtualizer?.getTotalSize() ?? 0;
-  const virtualItems = (): ReturnType<Virtualizer<HTMLElement, T>["getVirtualItems"]> =>
+  const virtualItems = (): ReturnType<Virtualizer<Element, T>["getVirtualItems"]> =>
     virtualizer?.getVirtualItems() ?? [];
 
   const getEstimate = (index: number): number => {
@@ -139,17 +139,17 @@ export function useVirtualScroll<T>(
     // Update container width from actual element if available
     const actualWidth = scrollElement.clientWidth || containerWidth;
 
-    virtualizer = createVirtualizer({
+    virtualizer = createVirtualizer<Element, T>({
       get count() {
         return count();
       },
-      getScrollElement: () => scrollElement,
+      getScrollElement: () => scrollElement as Element | null,
       estimateSize: (index: number) => getEstimate(index),
       overscan,
       gap,
-      measureElement: (element: HTMLElement | null) => {
+      measureElement: (element: Element | null) => {
         if (!element) return 0;
-        return element.getBoundingClientRect().height;
+        return (element as HTMLElement).getBoundingClientRect().height;
       },
     });
   };
@@ -167,7 +167,7 @@ export function useVirtualScroll<T>(
   };
 
   const measureElement = (element: HTMLElement | null) => {
-    virtualizer?.measureElement(element);
+    virtualizer?.measureElement(element as unknown as T);
   };
 
   const measure = () => {

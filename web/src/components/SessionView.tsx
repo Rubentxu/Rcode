@@ -1,5 +1,5 @@
 import { For, Show, Switch, Match, createSignal, onCleanup, createEffect, createMemo, onMount } from "solid-js";
-import type { Session } from "../App";
+import type { Session } from "../stores";
 import type { Message, MessagePart } from "../api/types";
 import { createSSEClient, type SSEClient } from "../api/sse";
 import { getApiBase } from "../api/config";
@@ -30,6 +30,7 @@ import type {
   SSEStreamToolCallStart,
   SSEStreamToolResult,
 } from "../api/types";
+import { useWorkspace } from "../context/WorkspaceContext";
 
 /** Represents a conversational turn: one or more consecutive messages from the same role */
 interface Turn {
@@ -39,27 +40,23 @@ interface Turn {
 
 interface SessionViewProps {
   session: Session;
-  messages: Message[];
-  isLoading: () => boolean;
-  sseStatus: "connected" | "connecting" | "disconnected";
   onSubmit: (prompt: string) => void;
   onAbort: () => void;
-  onSSEStatusChange?: (status: "connected" | "connecting" | "disconnected") => void;
-  sessions: Session[];
   onCommandResult?: (result: { success: boolean; message: string; data?: unknown }) => void;
   onComplete?: () => void;
-  onReloadMessages?: () => void;
+  onReloadMessages?: () => Promise<void>;
   onError?: (error: string) => void;
   // MQA-3: Branch callback - creates new session seeded with conversation up to messageId
   onBranch?: (messageId: string, messagesUpTo: Message[]) => void;
   // MQA-2: Retry callback - replaces assistant response, re-submits user prompt without duplicating user message
   onRetry: (assistantMessageId: string, userPrompt: string) => void;
-  // MQA-2: Initialize draft/optimistic shell explicitly (needed for retry to show draft immediately)
-  initDraft?: (sessionId: string) => void;
   currentModel?: string;
 }
 
 export default function SessionView(props: SessionViewProps) {
+  // Get workspace context for messages, loading state, SSE status, and sessions
+  const workspaceContext = useWorkspace();
+  
   let sseClient: SSEClient | null = null;
   let connectedSessionId: string | null = null;
   let scrollContainerRef: HTMLDivElement | undefined;
@@ -84,10 +81,10 @@ export default function SessionView(props: SessionViewProps) {
   // Phase 3: Draft store for streaming parts
   const { draft, dispatch, clear: clearDraft, initOptimisticShell } = createDraftStore();
   
-  // Create a derived message list that includes persisted messages
+  // Create a derived message list that includes persisted messages from workspace
   // T3.3: Must be defined BEFORE virtualizer since it references turns in its getter
   const displayMessages = () => {
-    return [...props.messages];
+    return workspaceContext.workspace.getMessages(props.session.id);
   };
 
   /**
@@ -160,7 +157,7 @@ export default function SessionView(props: SessionViewProps) {
       if (heightEstimateCache.size > 500) {
         const keys = heightEstimateCache.keys();
         for (let i = 0; i < 100; i++) {
-          heightEstimateCache.delete(keys.next().value);
+          heightEstimateCache.delete(keys.next().value as string);
         }
       }
       heightEstimateCache.set(cacheKey, estimated);
@@ -176,12 +173,12 @@ export default function SessionView(props: SessionViewProps) {
   // Pretext provides accurate height estimates without DOM measurement
   const virtualizer = createVirtualizer({
     get count() { return turns().length; },
-    getScrollElement: () => scrollElement() ?? undefined,
+    getScrollElement: () => scrollElement() ?? null,
     estimateSize: (index: number) => estimateTurnHeight(index),
     overscan: 5, // Render 5 extra items above/below viewport for smooth scrolling
-    measureElement: (element: HTMLElement | null) => {
+    measureElement: (element: Element | null) => {
       if (!element) return 0;
-      return element.getBoundingClientRect().height;
+      return (element as HTMLElement).getBoundingClientRect().height;
     },
   });
   
@@ -324,7 +321,7 @@ export default function SessionView(props: SessionViewProps) {
   
   // Phase 5: Auto-scroll during loading when near bottom
   createEffect(() => {
-    if (props.isLoading() && draft() && isNearBottom()) {
+    if (workspaceContext.workspace.isLoading(props.session.id) && draft() && isNearBottom()) {
       scrollToBottom();
     }
   });
@@ -359,7 +356,11 @@ export default function SessionView(props: SessionViewProps) {
       sessionId,
       apiBase,
       onStatusChange: (status) => {
-        props.onSSEStatusChange?.(status);
+        // Map API SSEStatus to workspace SSEStatus
+        // API: "connected" | "connecting" | "disconnected"
+        // Workspace: "idle" | "connecting" | "connected" | "error"
+        const mappedStatus = status === "disconnected" ? "idle" : status;
+        workspaceContext.setSseStatus(mappedStatus);
       },
       // Legacy: accumulated text from old streaming_progress events
       onDelta: (event) => {
@@ -447,18 +448,16 @@ export default function SessionView(props: SessionViewProps) {
   // - onDone fires but backend hasn't persisted the response yet
   // - isLoading transitions during SSE reconnection
   createEffect(() => {
-    if (!props.isLoading() && !sseClient) {
+    if (!workspaceContext.workspace.isLoading(props.session.id) && !sseClient) {
       clearDraft();
     }
   });
 
   // SS-1: Initialize optimistic shell immediately when loading starts (before SSE events arrive)
   createEffect(() => {
-    if (props.isLoading() && !draft()) {
+    if (workspaceContext.workspace.isLoading(props.session.id) && !draft()) {
       // Only init if we don't already have a draft (e.g., from a previous streaming session that was cleared)
       initOptimisticShell(props.session.id);
-      // Also call the prop callback if provided (allows App to explicitly initialize draft, e.g., for retry)
-      props.initDraft?.(props.session.id);
     }
   });
 
@@ -474,15 +473,15 @@ export default function SessionView(props: SessionViewProps) {
   // Build command context for slash commands
   const commandContext: CommandContext = {
     currentSessionId: props.session.id,
-    sessions: props.sessions.map((s) => ({ id: s.id, title: s.title || "" })),
-    messages: props.messages.map((m) => ({ id: m.id, role: m.role, content: m.content ?? "" })),
+    sessions: workspaceContext.sessions().map((s) => ({ id: s.id, title: s.title || "" })),
+    messages: workspaceContext.workspace.getMessages(props.session.id).map((m) => ({ id: m.id, role: m.role, content: m.content ?? "" })),
   };
 
   const handleCommandResult = (result: { success: boolean; message: string; data?: unknown }) => {
     props.onCommandResult?.(result);
   };
 
-  const checklistItems = () => deriveChecklistItems(props.messages);
+  const checklistItems = () => deriveChecklistItems(workspaceContext.workspace.getMessages(props.session.id));
 
   return (
     <div class="flex flex-col h-full">
@@ -503,9 +502,9 @@ export default function SessionView(props: SessionViewProps) {
             width: "6px",
             height: "6px",
             "border-radius": "50%",
-            background: props.sseStatus === "connected" ? "var(--secondary)" : props.sseStatus === "connecting" ? "var(--tertiary)" : "var(--outline)",
+            background: workspaceContext.sseStatus() === "connected" ? "var(--secondary)" : workspaceContext.sseStatus() === "connecting" ? "var(--tertiary)" : "var(--outline)",
           }} />
-          {props.sseStatus}
+          {workspaceContext.sseStatus()}
         </span>
       </div>
 
@@ -737,7 +736,7 @@ export default function SessionView(props: SessionViewProps) {
               {/* Phase 3: Show draft message during streaming as an assistant turn */}
               {/* SS-1: Optimistic shell appears immediately on submit BEFORE any SSE delta */}
               {/* SS-2: Abort button lives inside the shell, not in a separate bottom bar */}
-              <Show when={props.isLoading() && draft()}>
+              <Show when={workspaceContext.workspace.isLoading(props.session.id) && draft()}>
                 <div 
                   class="turn turn--assistant" 
                   data-turn-role="assistant"
@@ -806,7 +805,7 @@ export default function SessionView(props: SessionViewProps) {
       <PromptInput
         onSubmit={props.onSubmit}
         onCommand={handleCommandResult}
-        disabled={props.isLoading()}
+        disabled={workspaceContext.workspace.isLoading(props.session.id)}
         context={commandContext}
         currentModel={props.currentModel}
       />

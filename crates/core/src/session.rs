@@ -5,9 +5,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::ProjectId;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: SessionId,
+    pub project_id: Option<ProjectId>,
     pub project_path: std::path::PathBuf,
     pub agent_id: String,
     pub model_id: String,
@@ -75,6 +78,7 @@ impl Session {
         let now = Utc::now();
         Self {
             id: SessionId::new(),
+            project_id: None,
             project_path,
             agent_id,
             model_id,

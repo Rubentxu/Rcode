@@ -106,6 +106,13 @@ impl MessageRepository {
                         None,
                         false,
                     ),
+                    Part::TaskChecklist { items } => (
+                        "task_checklist".to_string(),
+                        Some(serde_json::to_string(items)?),
+                        None,
+                        None,
+                        false,
+                    ),
                 };
 
                 conn.execute(
@@ -245,6 +252,11 @@ impl MessageRepository {
                     })
                 }
                 "reasoning" => content.clone().map(|c| Part::Reasoning { content: c }),
+                "task_checklist" => content.as_ref().and_then(|c| {
+                    serde_json::from_str(c)
+                        .ok()
+                        .map(|items| Part::TaskChecklist { items })
+                }),
                 _ => None,
             };
 
@@ -451,6 +463,69 @@ mod tests {
 
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].parts.len(), 2);
+    }
+
+    #[test]
+    fn test_save_message_with_task_checklist() {
+        let (repo, _dir) = create_test_repo();
+
+        let message = Message::assistant(
+            "test-session".to_string(),
+            vec![Part::TaskChecklist {
+                items: vec![rcode_core::TaskChecklistItem {
+                    id: "task-1".to_string(),
+                    content: "Implement persistence".to_string(),
+                    status: "in_progress".to_string(),
+                    priority: "high".to_string(),
+                }],
+            }],
+        );
+
+        repo.save_message("test-session", &message).unwrap();
+        let messages = repo.load_messages("test-session").unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].parts.len(), 1);
+        match &messages[0].parts[0] {
+            Part::TaskChecklist { items } => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].id, "task-1");
+                assert_eq!(items[0].content, "Implement persistence");
+                assert_eq!(items[0].status, "in_progress");
+                assert_eq!(items[0].priority, "high");
+            }
+            other => panic!("expected task checklist part, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_load_messages_skips_unknown_part_type() {
+        let (repo, _dir) = create_test_repo();
+
+        let message = Message::assistant(
+            "test-session".to_string(),
+            vec![Part::Text {
+                content: "Known text".to_string(),
+            }],
+        );
+
+        repo.save_message("test-session", &message).unwrap();
+
+        let conn = repo.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO message_parts (message_id, part_type, content, tool_call_id, tool_call_name, is_error) VALUES (?1, ?2, ?3, NULL, NULL, 0)",
+            params![message.id.0.clone(), "future_part", "ignored"],
+        )
+        .unwrap();
+        drop(conn);
+
+        let messages = repo.load_messages("test-session").unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].parts.len(), 1);
+        match &messages[0].parts[0] {
+            Part::Text { content } => assert_eq!(content, "Known text"),
+            other => panic!("expected text part, got {other:?}"),
+        }
     }
 
     #[test]

@@ -391,6 +391,7 @@ fn into_gemini_content(msg: rcode_core::Message) -> GeminiContent {
             rcode_core::Part::Reasoning { content } => {
                 GeminiPart::Text { text: format!("[Reasoning]: {}", content) }
             }
+            rcode_core::Part::TaskChecklist { .. } => GeminiPart::Text { text: "[Task checklist updated]".to_string() },
             rcode_core::Part::Attachment { name, mime_type, .. } => {
                 GeminiPart::Text { text: format!("[Attachment: {} ({})]", name, mime_type) }
             }

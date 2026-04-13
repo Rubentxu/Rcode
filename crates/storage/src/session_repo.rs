@@ -5,7 +5,7 @@ use rusqlite::{params, Connection};
 use std::sync::Mutex;
 
 use crate::StorageError;
-use rcode_core::{Session, SessionId, SessionStatus};
+use rcode_core::{ProjectId, Session, SessionId, SessionStatus};
 
 pub struct SessionRepository {
     conn: Mutex<Connection>,
@@ -25,10 +25,11 @@ impl SessionRepository {
             .map_err(|e| StorageError::LockPoisoned(e.to_string()))?;
         conn.execute(
             r#"
-            INSERT INTO sessions (id, project_path, agent_id, model_id, parent_id, title, status, created_at, updated_at, prompt_tokens, completion_tokens, total_cost_usd, summary_message_id)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            INSERT INTO sessions (id, project_path, project_id, agent_id, model_id, parent_id, title, status, created_at, updated_at, prompt_tokens, completion_tokens, total_cost_usd, summary_message_id)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
             ON CONFLICT(id) DO UPDATE SET
                 project_path = excluded.project_path,
+                project_id = excluded.project_id,
                 agent_id = excluded.agent_id,
                 model_id = excluded.model_id,
                 parent_id = excluded.parent_id,
@@ -43,6 +44,7 @@ impl SessionRepository {
             params![
                 session.id.0,
                 session.project_path.to_string_lossy().to_string(),
+                session.project_id.as_ref().map(|id| id.0.clone()),
                 session.agent_id,
                 session.model_id,
                 session.parent_id,
@@ -68,7 +70,7 @@ impl SessionRepository {
         let mut stmt = conn
             .prepare(
                 r#"
-                SELECT id, project_path, agent_id, model_id, parent_id, title, status, created_at, updated_at, prompt_tokens, completion_tokens, total_cost_usd, summary_message_id
+                SELECT id, project_path, project_id, agent_id, model_id, parent_id, title, status, created_at, updated_at, prompt_tokens, completion_tokens, total_cost_usd, summary_message_id
                 FROM sessions WHERE id = ?1
                 "#,
             )
@@ -77,26 +79,27 @@ impl SessionRepository {
         let mut rows = stmt.query(params![id.0])?;
 
         if let Some(row) = rows.next()? {
-            let status_str: String = row.get(6)?;
+            let status_str: String = row.get(7)?;
             let session = Session {
                 id: SessionId(row.get(0)?),
                 project_path: std::path::PathBuf::from(row.get::<_, String>(1)?),
-                agent_id: row.get(2)?,
-                model_id: row.get(3)?,
-                parent_id: row.get(4)?,
-                title: row.get(5)?,
+                project_id: row.get::<_, Option<String>>(2)?.map(ProjectId),
+                agent_id: row.get(3)?,
+                model_id: row.get(4)?,
+                parent_id: row.get(5)?,
+                title: row.get(6)?,
                 status: serde_json::from_str(&status_str).unwrap_or(SessionStatus::Idle),
-                created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
+                created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(8)?)
                     .map_err(|e| StorageError::InvalidTimestamp(e.to_string()))?
                     .with_timezone(&chrono::Utc),
-                updated_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(8)?)
+                updated_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(9)?)
                     .map_err(|e| StorageError::InvalidTimestamp(e.to_string()))?
                     .with_timezone(&chrono::Utc),
                 // G3: Token usage fields
-                prompt_tokens: row.get::<_, i64>(9)? as u64,
-                completion_tokens: row.get::<_, i64>(10)? as u64,
-                total_cost_usd: row.get(11)?,
-                summary_message_id: row.get(12)?,
+                prompt_tokens: row.get::<_, i64>(10)? as u64,
+                completion_tokens: row.get::<_, i64>(11)? as u64,
+                total_cost_usd: row.get(12)?,
+                summary_message_id: row.get(13)?,
             };
             Ok(Some(session))
         } else {
@@ -112,7 +115,7 @@ impl SessionRepository {
         let mut stmt = conn
             .prepare(
                 r#"
-                SELECT id, project_path, agent_id, model_id, parent_id, title, status, created_at, updated_at, prompt_tokens, completion_tokens, total_cost_usd, summary_message_id
+                SELECT id, project_path, project_id, agent_id, model_id, parent_id, title, status, created_at, updated_at, prompt_tokens, completion_tokens, total_cost_usd, summary_message_id
                 FROM sessions
                 ORDER BY updated_at DESC
                 "#,
@@ -124,6 +127,7 @@ impl SessionRepository {
         let mut raw_rows: Vec<(
             String,
             String,
+            Option<String>,
             String,
             String,
             Option<String>,
@@ -141,17 +145,18 @@ impl SessionRepository {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(4)?,
                     row.get::<_, Option<String>>(5)?,
-                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(6)?,
                     row.get::<_, String>(7)?,
                     row.get::<_, String>(8)?,
-                    row.get::<_, i64>(9)?,
+                    row.get::<_, String>(9)?,
                     row.get::<_, i64>(10)?,
-                    row.get(11)?,
+                    row.get::<_, i64>(11)?,
                     row.get(12)?,
+                    row.get(13)?,
                 ))
             })
             .context("Failed to query sessions")?;
@@ -170,6 +175,7 @@ impl SessionRepository {
                 |(
                     id,
                     project_path,
+                    project_id,
                     agent_id,
                     model_id,
                     parent_id,
@@ -192,6 +198,7 @@ impl SessionRepository {
                     Ok(Session {
                         id: SessionId(id),
                         project_path: std::path::PathBuf::from(project_path),
+                        project_id: project_id.map(ProjectId),
                         agent_id,
                         model_id,
                         parent_id,
@@ -219,6 +226,63 @@ impl SessionRepository {
         conn.execute("DELETE FROM sessions WHERE id = ?1", params![id.0])
             .context("Failed to delete session")?;
         Ok(())
+    }
+
+    pub fn list_by_project(&self, project_id: &ProjectId) -> Result<Vec<Session>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| StorageError::LockPoisoned(e.to_string()))?;
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, project_path, project_id, agent_id, model_id, parent_id, title, status, created_at, updated_at, prompt_tokens, completion_tokens, total_cost_usd, summary_message_id
+            FROM sessions
+            WHERE project_id = ?1
+            ORDER BY updated_at DESC
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![project_id.0.clone()], |row| {
+            let status_str: String = row.get(7)?;
+            let created_at = chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(8)?)
+                .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        8,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?
+                .with_timezone(&chrono::Utc);
+            let updated_at = chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(9)?)
+                .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        9,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?
+                .with_timezone(&chrono::Utc);
+
+            Ok(Session {
+                id: SessionId(row.get(0)?),
+                project_path: std::path::PathBuf::from(row.get::<_, String>(1)?),
+                project_id: row.get::<_, Option<String>>(2)?.map(ProjectId),
+                agent_id: row.get(3)?,
+                model_id: row.get(4)?,
+                parent_id: row.get(5)?,
+                title: row.get(6)?,
+                status: serde_json::from_str(&status_str).unwrap_or(SessionStatus::Idle),
+                created_at,
+                updated_at,
+                prompt_tokens: row.get::<_, i64>(10)? as u64,
+                completion_tokens: row.get::<_, i64>(11)? as u64,
+                total_cost_usd: row.get(12)?,
+                summary_message_id: row.get(13)?,
+            })
+        })?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .context("Failed to list sessions by project")
     }
 
     /// Update the model_id for a session
@@ -274,11 +338,12 @@ mod tests {
     #[test]
     fn test_save_and_load_session() {
         let (repo, _dir) = create_test_repo();
-        let session = Session::new(
+        let mut session = Session::new(
             std::path::PathBuf::from("/test/path"),
             "test-agent".to_string(),
             "claude-3-5".to_string(),
         );
+        session.project_id = Some(ProjectId("project-1".to_string()));
 
         repo.save(&session).unwrap();
         let loaded = repo.load(&session.id).unwrap();
@@ -286,6 +351,7 @@ mod tests {
         assert!(loaded.is_some());
         let loaded = loaded.unwrap();
         assert_eq!(loaded.id, session.id);
+        assert_eq!(loaded.project_id.unwrap().0, "project-1");
         assert_eq!(loaded.agent_id, "test-agent");
         assert_eq!(loaded.model_id, "claude-3-5");
     }
@@ -332,5 +398,32 @@ mod tests {
 
         repo.delete(&session.id).unwrap();
         assert!(repo.load(&session.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_list_sessions_by_project() {
+        let (repo, _dir) = create_test_repo();
+        let mut session1 = Session::new(
+            std::path::PathBuf::from("/test/path1"),
+            "agent1".to_string(),
+            "model1".to_string(),
+        );
+        session1.project_id = Some(ProjectId("project-a".to_string()));
+
+        let mut session2 = Session::new(
+            std::path::PathBuf::from("/test/path2"),
+            "agent2".to_string(),
+            "model2".to_string(),
+        );
+        session2.project_id = Some(ProjectId("project-b".to_string()));
+
+        repo.save(&session1).unwrap();
+        repo.save(&session2).unwrap();
+
+        let sessions = repo
+            .list_by_project(&ProjectId("project-a".to_string()))
+            .unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, session1.id);
     }
 }

@@ -427,6 +427,7 @@ fn into_anthropic_message(msg: rcode_core::Message) -> AnthropicMessage {
             }
             // Never feed model-generated reasoning back as literal history text.
             rcode_core::Part::Reasoning { .. } => {}
+            rcode_core::Part::TaskChecklist { .. } => {}
             rcode_core::Part::Attachment { name, mime_type, .. } => {
                 let text = format!("[Attachment: {} ({})]", name, mime_type);
                 text_parts.push(text.clone());

@@ -252,6 +252,18 @@ impl ChatView {
                         Style::default().fg(Color::Yellow),
                     )));
                 }
+                Part::TaskChecklist { items } => {
+                    lines.push(Line::from(Span::styled(
+                        "  ☑ Checklist:".to_string(),
+                        Style::default().fg(Color::Green),
+                    )));
+                    for item in items {
+                        lines.push(Line::from(Span::raw(format!(
+                            "    - [{}] {} ({})",
+                            item.status, item.content, item.priority
+                        ))));
+                    }
+                }
             }
         }
 

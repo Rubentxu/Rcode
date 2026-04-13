@@ -6,7 +6,7 @@ use tokio::task::JoinSet;
 use tokio::time::interval;
 use tokio_stream::StreamExt;
 use rcode_core::{
-    Agent, AgentContext, AgentResult, Message, Part, ToolContext, error::Result,
+    Agent, AgentContext, AgentResult, Message, Part, TaskChecklistItem, ToolContext, error::Result,
     permission::{Permission, PermissionRequest},
 };
 use rcode_core::agent::StopReason;
@@ -774,6 +774,11 @@ impl AgentExecutor {
                         content: r.content.clone(),
                         is_error: false,
                     });
+                    if name == "todowrite" {
+                        if let Some(items) = extract_task_checklist_items(r.metadata.as_ref()) {
+                            tool_results.push(Part::TaskChecklist { items });
+                        }
+                    }
                     // Publish stream tool result event
                     self.publish_event(rcode_event::Event::StreamToolResult {
                         session_id: ctx.session_id.clone(),
@@ -821,17 +826,39 @@ impl AgentExecutor {
     }
 }
 
+fn extract_task_checklist_items(metadata: Option<&serde_json::Value>) -> Option<Vec<TaskChecklistItem>> {
+    let items = metadata?
+        .get("checklist")?
+        .get("items")?
+        .as_array()?;
+
+    Some(
+        items
+            .iter()
+            .filter_map(|item| {
+                Some(TaskChecklistItem {
+                    id: item.get("id")?.as_str()?.to_string(),
+                    content: item.get("content")?.as_str()?.to_string(),
+                    status: item.get("status")?.as_str()?.to_string(),
+                    priority: item.get("priority")?.as_str()?.to_string(),
+                })
+            })
+            .collect(),
+    )
+}
+
 struct ShouldContinue(bool, StopReason, Option<rcode_core::provider::TokenUsage>);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rcode_core::{
-        Message, Role, Part, AgentContext, AgentResult,
+        Message, Role, Part, AgentContext, AgentResult, ToolResult,
         provider::{StreamingEvent, StopReason as CoreStopReason, TokenUsage},
     };
     use rcode_core::agent::Agent;
     use rcode_providers::MockLlmProvider;
+    use rcode_tools::mock::MockTool;
     use rcode_tools::ToolRegistryService;
     use rcode_event::EventBus;
     use std::sync::Arc;
@@ -889,6 +916,124 @@ mod tests {
                 ]),
             ],
         }
+    }
+
+    #[test]
+    fn test_extract_task_checklist_items_parses_metadata() {
+        let metadata = serde_json::json!({
+            "checklist": {
+                "items": [
+                    {
+                        "id": "task-1",
+                        "content": "Do thing",
+                        "status": "pending",
+                        "priority": "high"
+                    }
+                ]
+            }
+        });
+
+        let items = extract_task_checklist_items(Some(&metadata)).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "task-1");
+        assert_eq!(items[0].content, "Do thing");
+    }
+
+    #[test]
+    fn test_extract_task_checklist_items_ignores_missing_metadata() {
+        let metadata = serde_json::json!({"foo": "bar"});
+        assert!(extract_task_checklist_items(Some(&metadata)).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_executor_appends_task_checklist_for_todowrite_results() {
+        let agent = Arc::new(MockTestAgent::new("test"));
+        let provider = Arc::new(MockLlmProvider::new());
+        let tools = Arc::new(ToolRegistryService::new());
+
+        provider.set_stream_events(vec![
+            StreamingEvent::ToolCallStart { id: "call_1".to_string(), name: "todowrite".to_string() },
+            StreamingEvent::ToolCallArg { id: "call_1".to_string(), name: "payload".to_string(), value: r#"{"action":"create","todos":[{"content":"Ship it","status":"pending","priority":"high"}]}"#.to_string() },
+            StreamingEvent::ToolCallEnd { id: "call_1".to_string() },
+            StreamingEvent::Finish {
+                stop_reason: CoreStopReason::EndTurn,
+                usage: TokenUsage { input_tokens: 1, output_tokens: 1, total_tokens: Some(2) },
+            },
+        ]);
+
+        let executor = AgentExecutor::new(agent, provider, tools);
+        let mut ctx = create_test_agent_context();
+
+        let _result = executor.run(&mut ctx).await.unwrap();
+
+        let tool_result_message = ctx
+            .messages
+            .iter()
+            .rev()
+            .find(|message| matches!(message.parts.first(), Some(Part::ToolResult { .. })))
+            .expect("expected tool result message");
+        assert!(matches!(tool_result_message.parts[0], Part::ToolResult { .. }));
+        let checklist_part = tool_result_message
+            .parts
+            .iter()
+            .find(|part| matches!(part, Part::TaskChecklist { .. }))
+            .expect("expected task checklist part");
+        match checklist_part {
+            Part::TaskChecklist { items } => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].content, "Ship it");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_executor_does_not_append_task_checklist_for_non_todowrite_tools() {
+        let agent = Arc::new(MockTestAgent::new("test"));
+        let provider = Arc::new(MockLlmProvider::new());
+        let tools = Arc::new(ToolRegistryService::new());
+
+        let custom_tool = Arc::new(MockTool::new("mock_tool", "Mock Tool", "Mock tool"));
+        custom_tool.then_return(ToolResult {
+            title: "Bash".to_string(),
+            content: "ok".to_string(),
+            metadata: Some(serde_json::json!({
+                "checklist": {
+                    "items": [{
+                        "id": "task-1",
+                        "content": "Should be ignored",
+                        "status": "pending",
+                        "priority": "high"
+                    }]
+                }
+            })),
+            attachments: vec![],
+        });
+        tools.register(custom_tool);
+
+        provider.set_stream_events(vec![
+            StreamingEvent::ToolCallStart { id: "call_1".to_string(), name: "mock_tool".to_string() },
+            StreamingEvent::ToolCallArg { id: "call_1".to_string(), name: "input".to_string(), value: r#"{"input":"pwd"}"#.to_string() },
+            StreamingEvent::ToolCallEnd { id: "call_1".to_string() },
+            StreamingEvent::Finish {
+                stop_reason: CoreStopReason::EndTurn,
+                usage: TokenUsage { input_tokens: 1, output_tokens: 1, total_tokens: Some(2) },
+            },
+        ]);
+
+        let executor = AgentExecutor::new(agent, provider, tools);
+        let mut ctx = create_test_agent_context();
+
+        let _result = executor.run(&mut ctx).await.unwrap();
+
+        let tool_result_message = ctx
+            .messages
+            .iter()
+            .rev()
+            .find(|message| matches!(message.parts.first(), Some(Part::ToolResult { .. })))
+            .expect("expected tool result message");
+        assert_eq!(tool_result_message.parts.len(), 1);
+        assert!(matches!(tool_result_message.parts[0], Part::ToolResult { .. }));
     }
 
     #[test]

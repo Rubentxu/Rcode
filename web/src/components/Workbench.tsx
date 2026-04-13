@@ -1,5 +1,5 @@
 import { createSignal, createEffect, Show } from "solid-js";
-import type { Session } from "../App";
+import type { Session } from "../stores";
 import WorkbenchTopNav from "./WorkbenchTopNav";
 import WorkbenchLeftRail from "./WorkbenchLeftRail";
 import WorkbenchOutline from "./WorkbenchOutline";

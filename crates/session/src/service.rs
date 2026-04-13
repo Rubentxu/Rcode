@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use rcode_core::{
-    Message, PaginatedMessages, PaginationParams, Role, Session, SessionId, SessionStatus,
+    Message, PaginatedMessages, PaginationParams, ProjectId, Role, Session, SessionId, SessionStatus,
     error::Result as CoreResult,
 };
 use rcode_event::EventBus;
@@ -140,6 +140,18 @@ impl SessionService {
 
     pub fn list_all(&self) -> Vec<Arc<Session>> {
         self.sessions.read().values().cloned().collect()
+    }
+
+    pub fn list_by_project(&self, project_id: &ProjectId) -> Vec<Arc<Session>> {
+        let mut sessions: Vec<_> = self
+            .sessions
+            .read()
+            .values()
+            .filter(|session| session.project_id.as_ref() == Some(project_id))
+            .cloned()
+            .collect();
+        sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        sessions
     }
 
     /// List sessions sorted by most recently updated
@@ -343,6 +355,21 @@ impl SessionService {
         // Idempotent guard: if session already has a title, skip
         if session.title.is_some() {
             return Ok(());
+        }
+
+        self.force_set_title(session_id, title)
+    }
+
+    /// Force-set the session title, bypassing the idempotent guard.
+    /// Used for manual rename via PATCH /sessions/:id.
+    ///
+    /// Always overwrites the existing title if present.
+    pub fn force_set_title(&self, session_id: &str, title: String) -> CoreResult<()> {
+        {
+            let sessions = self.sessions.read();
+            if !sessions.contains_key(session_id) {
+                return Err(rcode_core::RCodeError::Session(format!("Session not found: {}", session_id)));
+            }
         }
 
         let mut sessions = self.sessions.write();
@@ -746,13 +773,14 @@ impl SessionService {
         self.compaction_strategy
     }
 
-    /// Create a child session inheriting project_path from parent
+    /// Create a child session inheriting project_path and project_id from parent
     pub fn create_child(&self, parent_id: &str, agent_id: String, model_id: String) -> Result<Arc<Session>, String> {
-        // Get parent session to inherit project_path
+        // Get parent session to inherit project_path and project_id
         let parent = self.get(&SessionId(parent_id.to_string()))
             .ok_or_else(|| format!("Parent session not found: {}", parent_id))?;
         
         let mut session = Session::new(parent.project_path.clone(), agent_id, model_id);
+        session.project_id = parent.project_id.clone();
         session = session.with_parent(parent_id.to_string());
         Ok(self.create(session))
     }
@@ -1056,6 +1084,21 @@ mod tests {
     }
 
     #[test]
+    fn test_list_by_project_filters_sessions() {
+        let (service, _dir) = create_test_service();
+        let mut s1 = Session::new(std::path::PathBuf::from("/t1"), "a".into(), "m".into());
+        s1.project_id = Some(ProjectId("project-a".into()));
+        let mut s2 = Session::new(std::path::PathBuf::from("/t2"), "a".into(), "m".into());
+        s2.project_id = Some(ProjectId("project-b".into()));
+        service.create(s1);
+        service.create(s2);
+
+        let sessions = service.list_by_project(&ProjectId("project-a".into()));
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].project_id.as_ref().unwrap().0, "project-a");
+    }
+
+    #[test]
     fn test_list_sessions_sorted() {
         let event_bus = Arc::new(rcode_event::EventBus::new(10));
         let service = SessionService::new(event_bus);
@@ -1226,6 +1269,22 @@ mod tests {
         let service = SessionService::new(Arc::new(rcode_event::EventBus::new(10)));
         let strategy = service.get_compaction_strategy();
         assert!(matches!(strategy, CompactionStrategy::Hybrid { .. }));
+    }
+
+    #[test]
+    fn test_create_child_inherits_project_id() {
+        let (service, _dir) = create_test_service();
+        let mut parent = Session::new(std::path::PathBuf::from("/parent"), "a".into(), "m".into());
+        parent.project_id = Some(ProjectId("project-parent".into()));
+        let parent_id = parent.id.0.clone();
+        service.create(parent);
+
+        let child = service
+            .create_child(&parent_id, "child-agent".into(), "child-model".into())
+            .unwrap();
+
+        assert_eq!(child.parent_id.as_deref(), Some(parent_id.as_str()));
+        assert_eq!(child.project_id.as_ref().unwrap().0, "project-parent");
     }
 
     #[test]

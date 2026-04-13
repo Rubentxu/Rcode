@@ -1,5 +1,5 @@
 import { createSignal, onMount, Show, For } from "solid-js";
-import type { Session } from "../App";
+import type { Session } from "../stores";
 import { getApiBase } from "../api/config";
 import { useProjectContext } from "../context/ProjectContext";
 

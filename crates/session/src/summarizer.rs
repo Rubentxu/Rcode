@@ -106,6 +106,14 @@ SUMMARY:"#,
                 Part::Attachment { name, mime_type, .. } => {
                     Some(format!("[Attachment: {} ({})]", name, mime_type))
                 }
+                Part::TaskChecklist { items } => Some(format!(
+                    "[Checklist: {}]",
+                    items
+                        .iter()
+                        .map(|item| format!("{} ({}, {})", item.content, item.status, item.priority))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
             })
             .collect::<Vec<_>>()
             .join(" | ")
@@ -212,6 +220,12 @@ Guidelines:
                     count += name.len() / 4;
                     count += mime_type.len() / 4;
                     count += 10;
+                }
+                Part::TaskChecklist { items } => {
+                    count += items
+                        .iter()
+                        .map(|item| (item.content.len() + item.status.len() + item.priority.len()) / 4)
+                        .sum::<usize>();
                 }
             }
         }

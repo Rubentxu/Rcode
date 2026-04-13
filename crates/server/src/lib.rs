@@ -27,7 +27,7 @@ pub use error::ServerError;
 use axum::{
     Router,
     http::HeaderValue,
-    routing::{get, post, delete, put},
+    routing::{get, post, delete, put, patch},
 };
 use std::sync::Arc;
 use tokio::signal;
@@ -95,9 +95,14 @@ pub async fn create_app(state: Arc<AppState>) -> Router {
     
     Router::new()
         .route("/health", get(routes::health))
+        .route("/projects", get(routes::list_projects))
+        .route("/projects", post(routes::create_project))
+        .route("/projects/:id/sessions", get(routes::list_project_sessions))
+        .route("/projects/:id", delete(routes::delete_project))
         .route("/session", get(routes::list_sessions))
         .route("/session", post(routes::create_session))
         .route("/session/:id", get(routes::get_session))
+        .route("/session/:id", patch(routes::rename_session))
         .route("/session/:id", delete(routes::delete_session))
         .route("/session/:id/messages", get(routes::get_messages))
         .route("/session/:id/prompt", post(routes::submit_prompt))

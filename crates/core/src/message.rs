@@ -41,6 +41,15 @@ pub enum Role {
     System,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export, rename_all = "snake_case")]
+pub struct TaskChecklistItem {
+    pub id: String,
+    pub content: String,
+    pub status: String,
+    pub priority: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export, rename_all = "snake_case")]
@@ -68,6 +77,9 @@ pub enum Part {
         mime_type: String,
         #[ts(skip)]
         content: Vec<u8>,
+    },
+    TaskChecklist {
+        items: Vec<TaskChecklistItem>,
     },
 }
 
@@ -338,6 +350,22 @@ mod tests {
         let json = serde_json::to_string(&part).unwrap();
         assert!(json.contains("reasoning"));
         assert!(json.contains("thinking"));
+    }
+
+    #[test]
+    fn test_part_task_checklist_serialization() {
+        let part = Part::TaskChecklist {
+            items: vec![TaskChecklistItem {
+                id: "task-1".into(),
+                content: "Implement checklist".into(),
+                status: "pending".into(),
+                priority: "high".into(),
+            }],
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        assert!(json.contains("task_checklist"));
+        assert!(json.contains("Implement checklist"));
+        assert!(json.contains("task-1"));
     }
 
     #[test]

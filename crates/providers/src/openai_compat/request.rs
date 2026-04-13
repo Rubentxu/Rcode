@@ -156,6 +156,7 @@ pub fn into_openai_message(msg: Message) -> OpenAIMessage {
                 name, arguments, ..
             } => format!("Tool call: {}({})", name, arguments),
             Part::ToolResult { content, .. } => content.clone(),
+            Part::TaskChecklist { .. } => "[Task checklist updated]".to_string(),
         })
         .collect::<Vec<_>>()
         .join("\n");
