@@ -36,10 +36,10 @@ export function clearAllToasts() {
 export function ToastContainer() {
   const getIcon = (type: Toast["type"]) => {
     switch (type) {
-      case "error": return "✕";
-      case "success": return "✓";
-      case "warning": return "⚠";
-      case "info": return "ℹ";
+      case "error": return "close";
+      case "success": return "check_circle";
+      case "warning": return "warning";
+      case "info": return "info";
     }
   };
 
@@ -99,8 +99,10 @@ export function ToastContainer() {
             }}
           >
             <span
+              aria-hidden="true"
+              class="material-symbols-outlined"
               style={{
-                "font-size": "14px",
+                "font-size": "16px",
                 "font-weight": "600",
                 color: getTextColor(toast.type),
                 "flex-shrink": "0",
@@ -125,6 +127,7 @@ export function ToastContainer() {
             </div>
             <button
               onClick={() => dismissToast(toast.id)}
+              aria-label="Dismiss notification"
               style={{
                 background: "none",
                 border: "none",
@@ -138,7 +141,7 @@ export function ToastContainer() {
               onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
               onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.7")}
             >
-              ✕
+              <span aria-hidden="true" class="material-symbols-outlined" style="font-size: 14px;">close</span>
             </button>
           </div>
         )}

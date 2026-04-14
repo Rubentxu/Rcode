@@ -22,10 +22,10 @@ interface ModelInfo {
 type SettingsSection = "general" | "shortcuts" | "providers" | "models";
 
 const SETTINGS_NAV: Array<{ id: SettingsSection; title: string; group: string; icon: string }> = [
-  { id: "general", title: "General", group: "Desktop", icon: "⚙" },
-  { id: "shortcuts", title: "Shortcuts", group: "Desktop", icon: "⌨" },
-  { id: "providers", title: "Providers", group: "Server", icon: "◉" },
-  { id: "models", title: "Models", group: "Server", icon: "✦" },
+  { id: "general", title: "General", group: "Desktop", icon: "settings" },
+  { id: "shortcuts", title: "Shortcuts", group: "Desktop", icon: "keyboard" },
+  { id: "providers", title: "Providers", group: "Server", icon: "model_training" },
+  { id: "models", title: "Models", group: "Server", icon: "auto_awesome" },
 ];
 
 const POPULAR_PROVIDER_IDS = ["opencode-zen", "opencode-go", "anthropic", "openai", "google", "openrouter", "minimax", "zai"];
@@ -603,7 +603,7 @@ export function Settings(props: { onClose: () => void }) {
                         onClick={() => setActiveSection(item.id)}
                         style={`width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: none; border-radius: 10px; cursor: pointer; background: ${activeSection() === item.id ? "var(--bg-tertiary)" : "transparent"}; color: var(--text-primary); text-align: left; font-size: 15px;`}
                       >
-                        <span style="width: 18px; text-align: center; opacity: 0.75;">{item.icon}</span>
+                        <span aria-hidden="true" class="material-symbols-outlined" style="width: 18px; text-align: center; opacity: 0.75; font-size: 18px;">{item.icon}</span>
                         <span>{item.title}</span>
                       </button>
                     )}

@@ -1,5 +1,18 @@
 /* RCode Component Styles - Data Attribute System */
 
+/* ===========================================
+   FOC-5 / FOC-6 / FOC-7: Motion Preferences
+   Respect user motion preferences (WCAG 2.3.3)
+   =========================================== */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* Buttons */
 [data-component="button"] {
   display: inline-flex;
@@ -46,6 +59,12 @@
   color: var(--text-primary);
 }
 
+/* FOC-4: Ghost button 44px touch target minimum (Terminal header buttons) */
+[data-component="button"][data-variant="ghost"] {
+  min-height: 44px;
+  min-width: 44px;
+}
+
 [data-component="button"][data-variant="abort"] {
   background: transparent;
   color: var(--error);
@@ -54,6 +73,38 @@
 
 [data-component="button"][data-variant="abort"]:hover {
   background: rgba(239, 68, 68, 0.1);
+}
+
+/* ===========================================
+   FOC-1 / FOC-2 / FOC-3: Global :focus-visible baseline
+   Provides consistent focus ring across all interactive elements.
+   Individual components that already have custom focus styles
+   (like .quick-action-btn) will override this via specificity.
+   =========================================== */
+button:focus-visible,
+[role="button"]:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible,
+[role="option"]:focus-visible,
+[role="menuitem"]:focus-visible {
+  outline: 2px solid var(--accent, var(--primary));
+  outline-offset: 2px;
+}
+
+/* Suppress outline on mouse/pointer focus - only show on keyboard focus */
+button:focus:not(:focus-visible),
+[role="button"]:focus:not(:focus-visible),
+a:focus:not(:focus-visible),
+input:focus:not(:focus-visible),
+select:focus:not(:focus-visible),
+textarea:focus:not(:focus-visible),
+[tabindex]:focus:not(:focus-visible),
+[role="option"]:focus:not(:focus-visible),
+[role="menuitem"]:focus:not(:focus-visible) {
+  outline: none;
 }
 
 /* Textarea */
@@ -274,14 +325,16 @@
   max-width: 300px;
 }
 
-/* New session button */
+/* New session button - TCH-3: 44px minimum tap target for touch compliance */
 [data-component="new-session-button"] {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 24px;
   height: 24px;
-  padding: 0;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 10px;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -967,6 +1020,14 @@
   pointer-events: auto;
 }
 
+/* TCH-2: QuickActions always visible on touch devices (hover: none) */
+@media (hover: none) {
+  [data-component="message-actions"] {
+    opacity: 1 !important;
+    pointer-events: auto !important;
+  }
+}
+
 /* Quick action button styling */
 .quick-action-btn {
   display: inline-flex;
@@ -1439,4 +1500,22 @@
   border-left-width: 1px;
   padding: 8px 12px;
   background: transparent;
+}
+
+/* ===========================================
+   FOC-4: Touch target 44px minimums (WCAG 2.5.8)
+   ProjectRail avatar buttons and add button are 40×40px (w-10 h-10 Tailwind).
+   Override with min-height/min-width to meet WCAG 2.5.8 requirement.
+   =========================================== */
+
+/* ProjectAvatar buttons - 40×40 Tailwind → 44×44 CSS minimum */
+button[aria-label^="Switch to project:"] {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/* Add project button in ProjectRail - 40×40 Tailwind → 44×44 CSS minimum */
+button[title="Add Project"] {
+  min-height: 44px;
+  min-width: 44px;
 }

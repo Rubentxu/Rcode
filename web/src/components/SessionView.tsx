@@ -497,7 +497,7 @@ export default function SessionView(props: SessionViewProps) {
             {props.session.title || "Untitled"}
           </span>
         </Show>
-        <span style="margin-left: auto; display: inline-flex; align-items: center; gap: 4px;">
+        <span style="margin-left: auto; display: inline-flex; align-items: center; gap: 4px;" aria-label={`SSE status: ${workspaceContext.sseStatus()}`}>
           <span style={{
             width: "6px",
             height: "6px",
@@ -516,6 +516,8 @@ export default function SessionView(props: SessionViewProps) {
         }}
         class="flex-1 overflow-y-auto px-4 md:px-8 py-6 custom-scrollbar"
         onScroll={handleScroll}
+        role="log"
+        aria-label="Chat transcript"
       >
         <TaskChecklistPanel items={checklistItems()} />
         {/* CT-3: Transcript uses fluid width from CSS variable */}
@@ -787,7 +789,7 @@ export default function SessionView(props: SessionViewProps) {
             </>
           }>
             <Show when={turns().length === 0 && !draft()}>
-              <div data-component="empty-state" style="height: 200px;">
+              <div data-component="empty-state" role="status" aria-live="polite" style="height: 200px;">
                 <p data-component="empty-state-description">
                   Start a conversation by typing a message below
                 </p>
@@ -834,7 +836,7 @@ function MessageContent(props: MessageContentProps) {
 // Renders structured message parts
 function StructuredParts(props: { parts: MessagePart[] }) {
   return (
-    <div data-component="structured-parts">
+    <div data-component="structured-parts" role="group" aria-label="Message parts">
       <For each={props.parts}>
         {(part) => <PartRenderer part={part} />}
       </For>
@@ -856,7 +858,7 @@ function PartRenderer(props: { part: MessagePart }) {
   
   if (partType === "tool_call") {
     return (
-      <div data-component="tool-event-row">
+      <div data-component="tool-event-row" aria-label={`tool: ${props.part.name}`}>
         <div class="tool-event-icon">
           <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">terminal</span>
         </div>

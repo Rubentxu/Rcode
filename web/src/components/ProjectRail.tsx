@@ -46,6 +46,7 @@ function ProjectAvatar(props: ProjectAvatarProps) {
   return (
     <button
       ref={props.ref}
+      aria-label={`Switch to project: ${props.project.name}`}
       onClick={props.onClick}
       onContextMenu={(e) => props.onContextMenu(e, props.project)}
       onMouseEnter={() => props.onMouseEnter(props.project)}
@@ -187,10 +188,12 @@ function ContextMenu(props: ContextMenuProps) {
   return (
     <div
       data-context-menu="true"
+      role="menu"
       class="fixed z-[300] bg-surface-container border border-outline-variant/30 rounded-lg shadow-xl py-1 min-w-[150px]"
       style={{ left: `${adjustedPos().x}px`, top: `${adjustedPos().y}px` }}
     >
       <button
+        role="menuitem"
         onClick={handleOpen}
         class="w-full px-3 py-2 text-sm text-left text-on-surface hover:bg-surface-container-high flex items-center gap-2"
       >
@@ -198,6 +201,7 @@ function ContextMenu(props: ContextMenuProps) {
         Open
       </button>
       <button
+        role="menuitem"
         onClick={handleCopyPath}
         class="w-full px-3 py-2 text-sm text-left text-on-surface hover:bg-surface-container-high flex items-center gap-2"
       >
@@ -205,6 +209,7 @@ function ContextMenu(props: ContextMenuProps) {
         Copy Path
       </button>
       <button
+        role="menuitem"
         onClick={handleDelete}
         class="w-full px-3 py-2 text-sm text-left text-error hover:bg-surface-container-high flex items-center gap-2"
       >
@@ -247,10 +252,10 @@ function DeleteDialog(props: DeleteDialogProps) {
         />
         
         {/* Dialog */}
-        <div class="relative bg-surface-container border border-outline-variant/30 rounded-xl shadow-2xl w-full max-w-sm mx-4 p-6">
+        <div role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title" class="relative bg-surface-container border border-outline-variant/30 rounded-xl shadow-2xl w-full max-w-sm mx-4 p-6">
           <div class="flex items-center gap-3 mb-4">
             <span class="material-symbols-outlined text-2xl text-error">warning</span>
-            <h2 class="text-lg font-semibold text-on-surface">Delete Project</h2>
+            <h2 id="delete-dialog-title" class="text-lg font-semibold text-on-surface">Delete Project</h2>
           </div>
           
           <p class="text-sm text-on-surface-variant mb-1">
@@ -354,12 +359,13 @@ function AddProjectDialog(props: AddProjectDialogProps) {
         />
         
         {/* Dialog */}
-        <div class="relative bg-surface-container border border-outline-variant/30 rounded-xl shadow-2xl w-full max-w-md mx-4 p-6">
+        <div role="dialog" aria-modal="true" aria-labelledby="add-project-dialog-title" class="relative bg-surface-container border border-outline-variant/30 rounded-xl shadow-2xl w-full max-w-md mx-4 p-6">
           <div class="flex items-center justify-between mb-4">
-            <h2 class="text-lg font-semibold text-on-surface">Add Project</h2>
+            <h2 id="add-project-dialog-title" class="text-lg font-semibold text-on-surface">Add Project</h2>
             <button
               onClick={props.onClose}
               class="p-1 hover:bg-surface-container-high rounded-md transition-colors"
+              aria-label="Close dialog"
             >
               <span class="material-symbols-outlined text-xl text-on-surface-variant">close</span>
             </button>
@@ -367,11 +373,12 @@ function AddProjectDialog(props: AddProjectDialogProps) {
           
           <div class="space-y-4">
             <div>
-              <label class="block text-sm font-medium text-on-surface-variant mb-1.5">
+              <label for="project-path-input" class="block text-sm font-medium text-on-surface-variant mb-1.5">
                 Workspace Path
               </label>
               <div class="flex gap-2">
                 <input
+                  id="project-path-input"
                   type="text"
                   value={path()}
                   onInput={(e) => setPath(e.currentTarget.value)}
@@ -382,7 +389,7 @@ function AddProjectDialog(props: AddProjectDialogProps) {
                   <button
                     onClick={handleOpenNativePicker}
                     class="px-3 py-2 bg-surface-container-high hover:bg-surface-container-highest rounded-lg border border-outline-variant/30 transition-colors"
-                    title="Pick folder (Tauri)"
+                    aria-label="Pick folder (Tauri)"
                   >
                     <span class="material-symbols-outlined text-base text-outline">folder_open</span>
                   </button>
@@ -392,10 +399,11 @@ function AddProjectDialog(props: AddProjectDialogProps) {
             </div>
             
             <div>
-              <label class="block text-sm font-medium text-on-surface-variant mb-1.5">
+              <label for="project-name-input" class="block text-sm font-medium text-on-surface-variant mb-1.5">
                 Name (optional)
               </label>
               <input
+                id="project-name-input"
                 type="text"
                 value={name()}
                 onInput={(e) => setName(e.currentTarget.value)}
@@ -599,6 +607,8 @@ export default function ProjectRail() {
     <>
       <div 
         data-component="project-rail"
+        role="navigation"
+        aria-label="Project list"
         class="bg-[#13161b] flex flex-col h-full shrink-0 border-r border-outline-variant/20 w-14 items-center py-2 gap-1"
         onKeyDown={handleKeyDown}
         tabIndex={0}
