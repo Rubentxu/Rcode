@@ -3,39 +3,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-
-const API_BASE = 'http://127.0.0.1:4098';
+import {
+  API_BASE,
+  E2E_MODEL,
+  waitForBackend,
+  waitFor,
+  fetchJson,
+} from '../helpers/e2e-helpers.mjs';
 
 async function sleep(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitFor(condition, timeoutMs = 30000, intervalMs = 250) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await condition()) return;
-    await sleep(intervalMs);
-  }
-  throw new Error(`Timed out after ${timeoutMs}ms`);
-}
-
-async function fetchJson(url, options = {}) {
-  const response = await fetch(url, options);
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status} for ${url}: ${await response.text()}`);
-  }
-  return response.json();
-}
-
-async function waitForBackend(timeoutMs = 30000) {
-  await waitFor(async () => {
-    try {
-      const response = await fetch(`${API_BASE}/session`, { method: 'GET' });
-      return response.ok;
-    } catch {
-      return false;
-    }
-  }, timeoutMs, 500);
 }
 
 function setupTempGitProject(projectName) {
@@ -61,7 +38,7 @@ async function createSession(projectId, title = null) {
   const session = await fetchJson(`${API_BASE}/session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ project_id: projectId, agent_id: 'build' }),
+    body: JSON.stringify({ project_id: projectId, agent_id: 'build', model_id: E2E_MODEL }),
   });
 
   if (title) {

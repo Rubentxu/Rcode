@@ -39,7 +39,7 @@ export const ToolResultCard: Component<ToolResultCardProps> = (props) => {
       }`}
     >
       <div
-        class="flex items-center gap-3 p-3 cursor-pointer hover:bg-surface-container-high/50 transition-colors"
+        class="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-surface-container-high/50 transition-colors"
         onClick={() => setIsExpanded(!isExpanded())}
       >
         <span
@@ -62,7 +62,7 @@ export const ToolResultCard: Component<ToolResultCardProps> = (props) => {
 
       <Show when={isExpanded()}>
         <div
-          class={`p-4 border-t ${
+          class={`p-3 border-t ${
             props.is_error ? "border-error/20" : "border-outline-variant/10"
           }`}
         >

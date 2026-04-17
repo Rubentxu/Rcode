@@ -186,6 +186,7 @@ export interface ProviderInfo {
   base_url: string | null;
   enabled: boolean;
   models_count: number;
+  configured?: boolean; // true when provider is set up and ready to use
 }
 
 // Model info from GET /models (extends backend model with protocol info)

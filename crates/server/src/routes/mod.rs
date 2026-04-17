@@ -99,7 +99,7 @@ fn resolve_project(state: &AppState, project_id: &str) -> Result<Project, Server
     project_service(state)?
         .get(&ProjectId(project_id.to_string()))
         .map_err(ServerError::internal)?
-        .ok_or_else(|| ServerError::bad_request(format!("Unknown project_id: {project_id}")))
+        .ok_or_else(|| ServerError::not_found())
 }
 
 fn maybe_resolve_project_by_path(
@@ -145,6 +145,8 @@ fn to_project_summary(state: &AppState, project: Project) -> ProjectSummary {
         name: project.name,
         canonical_path: project.canonical_path.to_string_lossy().to_string(),
         session_count,
+        pinned: project.pinned,
+        icon: project.icon,
         created_at: project.created_at,
         updated_at: project.updated_at,
     }
@@ -209,6 +211,79 @@ pub async fn delete_project(
     }
 
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Project health
+// ─────────────────────────────────────────────────────────────────────────────
+
+use crate::project_health::{ProjectHealthEntry, ProjectHealthResponse, run_cargo_check};
+use axum::http::StatusCode;
+
+/// GET /projects/:id/health
+pub async fn get_project_health(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+) -> Result<Json<ProjectHealthResponse>, ServerError> {
+    // Verify project exists (returns 404 if not found)
+    resolve_project(state.as_ref(), &project_id)?;
+
+    let entry = state
+        .project_health
+        .get(&project_id)
+        .unwrap_or_else(|| ProjectHealthEntry {
+            project_id: project_id.clone(),
+            status: crate::project_health::HealthStatus::Idle,
+        });
+
+    Ok(Json(ProjectHealthResponse::from(&entry)))
+}
+
+/// POST /projects/:id/health/refresh
+pub async fn refresh_project_health(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+) -> Result<(StatusCode, Json<ProjectHealthResponse>), ServerError> {
+    // Verify project exists (returns 404 if not found)
+    let project = resolve_project(state.as_ref(), &project_id)?;
+
+    // Attempt to transition to Checking (idempotent — returns false if already checking)
+    let started = state.project_health.set_checking(&project_id);
+
+    if started {
+        let canonical_path = project.canonical_path.clone();
+        let registry = Arc::clone(&state.project_health);
+        tokio::spawn(run_cargo_check(project_id.clone(), canonical_path, registry));
+    }
+
+    let entry = state
+        .project_health
+        .get(&project_id)
+        .unwrap_or_else(|| ProjectHealthEntry {
+            project_id: project_id.clone(),
+            status: crate::project_health::HealthStatus::Checking,
+        });
+
+    Ok((StatusCode::ACCEPTED, Json(ProjectHealthResponse::from(&entry))))
+}
+
+pub async fn update_project(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+    Json(req): Json<UpdateProjectRequest>,
+) -> Result<Json<ProjectSummary>, ServerError> {
+    if req.name.trim().is_empty() {
+        return Err(ServerError::unprocessable_entity("name must not be empty"));
+    }
+
+    let result = project_service(state.as_ref())?
+        .update_metadata(&project_id, &req.name, req.pinned, req.icon.as_deref())
+        .map_err(ServerError::internal)?;
+
+    match result {
+        None => Err(ServerError::not_found()),
+        Some(project) => Ok(Json(to_project_summary(state.as_ref(), project))),
+    }
 }
 
 pub async fn create_session(
@@ -280,12 +355,21 @@ pub struct CreateProjectRequest {
     pub name: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateProjectRequest {
+    pub name: String,
+    pub pinned: bool,
+    pub icon: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ProjectSummary {
     pub id: String,
     pub name: String,
     pub canonical_path: String,
     pub session_count: usize,
+    pub pinned: bool,
+    pub icon: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -1098,12 +1182,23 @@ fn protocol_to_string(protocol: rcode_core::ProviderProtocol) -> &'static str {
     }
 }
 
+/// Query parameters for GET /models
+#[derive(Debug, Deserialize)]
+pub struct ListModelsQuery {
+    /// If true, only include providers with credentials configured (default: true)
+    #[serde(default = "default_configured_only")]
+    pub configured_only: bool,
+}
+
+fn default_configured_only() -> bool { true }
+
 /// GET /models - List all available models
 pub async fn list_models(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<ListModelsQuery>,
 ) -> axum::Json<ListModelsResponse> {
     let config = (*state.config.lock().unwrap()).clone();
-    let models = state.catalog.list_models(&config).await;
+    let models = state.catalog.list_models(&config, query.configured_only).await;
     
     // Native (non-compatible) providers: these use their own native protocol
     const NATIVE_PROVIDERS: &[&str] = &["openai", "anthropic", "google"];
@@ -1130,6 +1225,15 @@ pub async fn list_models(
     }).collect();
     
     axum::Json(ListModelsResponse { models: dto_models })
+}
+
+/// POST /models/refresh - Trigger background refresh of all provider model catalogs
+pub async fn refresh_models(
+    State(state): State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let config = (*state.config.lock().unwrap()).clone();
+    state.catalog.refresh_all_in_background(config);
+    axum::Json(serde_json::json!({ "status": "refresh_started" }))
 }
 
 /// POST /connect - Switch the active model for a session
@@ -1386,6 +1490,8 @@ pub async fn get_providers(
 pub struct UpdateProviderRequest {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
+    /// Display name for this provider (stored in providers.{id}.display_name)
+    pub display_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1423,7 +1529,12 @@ pub async fn update_provider(
         provider_config.base_url = Some(base_url);
     }
 
-    // Persist config changes (base_url only, not api_key) to disk.
+    // display_name stays in config file
+    if let Some(display_name) = req.display_name {
+        provider_config.display_name = Some(display_name);
+    }
+
+    // Persist config changes (base_url and display_name only, not api_key) to disk.
     // Use strip_secrets_from_config to ensure api_key is never written to config.
     let config_to_save = rcode_core::auth::strip_secrets_from_config(&config);
     save_config(&config_to_save).map_err(|e| ServerError::internal(e))?;
@@ -1927,7 +2038,7 @@ mod tests {
         list_project_sessions, parse_fast_path_shell_command, rename_session, CreateProjectRequest,
         CreateSessionRequest, ExplorerQuery, RenameSessionRequest,
     };
-    use crate::{cancellation::CancellationRegistry, explorer::ExplorerService, state::AppState};
+    use crate::{cancellation::CancellationRegistry, explorer::ExplorerService, project_health::ProjectHealthRegistry, state::AppState};
     use axum::{extract::{Path as AxumPath, Query, State}, Json};
     use rcode_core::{ProjectId, RcodeConfig, Session};
     use rcode_event::EventBus;
@@ -1969,6 +2080,7 @@ mod tests {
             privacy: rcode_privacy::service::PrivacyService::new(
                 rcode_privacy::service::PrivacyConfig::default()
             ),
+            project_health: Arc::new(ProjectHealthRegistry::new()),
         });
 
         (state, dir)

@@ -606,22 +606,22 @@ async fn test_get_session_children_empty() {
 async fn test_list_models_returns_fallback_models() {
     // Verify GET /models returns models via the shared catalog service
     let app = TestApp::new().await;
-    
+
     let client = reqwest::Client::new();
     let response = client
-        .get(format!("{}/models", app.base_url()))
+        .get(format!("{}/models?configured_only=false", app.base_url()))
         .send()
         .await
         .unwrap();
 
     assert_eq!(response.status(), 200);
-    
+
     let body: serde_json::Value = response.json().await.unwrap();
     let models = body["models"].as_array().expect("models should be an array");
-    
+
     // Should have fallback models for all known providers
     assert!(!models.is_empty(), "Should return fallback models");
-    
+
     // Verify provider diversity
     let providers: std::collections::HashSet<String> = models
         .iter()
@@ -637,25 +637,25 @@ async fn test_list_models_reuses_shared_cache() {
     // Verify that two sequential GET /models calls return consistent data
     // (proving shared catalog service is used, not per-request instantiation)
     let app = TestApp::new().await;
-    
+
     let client = reqwest::Client::new();
-    
+
     let response1 = client
-        .get(format!("{}/models", app.base_url()))
+        .get(format!("{}/models?configured_only=false", app.base_url()))
         .send()
         .await
         .unwrap();
     let body1: serde_json::Value = response1.json().await.unwrap();
     let models1 = body1["models"].as_array().unwrap().len();
-    
+
     let response2 = client
-        .get(format!("{}/models", app.base_url()))
+        .get(format!("{}/models?configured_only=false", app.base_url()))
         .send()
         .await
         .unwrap();
     let body2: serde_json::Value = response2.json().await.unwrap();
     let models2 = body2["models"].as_array().unwrap().len();
-    
+
     // Both calls should return the same number of models (shared cache)
     assert_eq!(models1, models2, "Shared catalog should return consistent model count");
 }

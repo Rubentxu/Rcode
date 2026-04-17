@@ -50,10 +50,16 @@ impl OpenAiCompatTransport {
         self
     }
 
-    /// Build the chat completions URL with proper base_url normalization
+    /// Build the chat completions URL with proper base_url normalization.
+    ///
+    /// Standard providers (OpenAI, etc.) use `/v1/chat/completions`.
+    /// Providers that set `no_v1_prefix = true` (e.g. GitHub Copilot) use
+    /// `/chat/completions` directly — no `/v1/` segment.
     pub fn chat_completions_url(&self) -> String {
         let trimmed = self.config.base_url.trim_end_matches('/');
-        if trimmed.ends_with("/v1") {
+        if self.config.no_v1_prefix {
+            format!("{trimmed}/chat/completions")
+        } else if trimmed.ends_with("/v1") {
             format!("{trimmed}/chat/completions")
         } else {
             format!("{trimmed}/v1/chat/completions")
@@ -340,6 +346,22 @@ mod tests {
         );
         let transport = OpenAiCompatTransport::new(config);
         assert_eq!(transport.chat_completions_url(), "https://openrouter.ai/v1/chat/completions");
+    }
+
+    #[test]
+    fn test_chat_completions_url_no_v1_prefix_flag() {
+        // GitHub Copilot: base URL has no /v1, and no_v1_prefix is set → no /v1/ inserted
+        let config = OpenAiCompatConfig::new(
+            "test-key".to_string(),
+            "https://api.githubcopilot.com".to_string(),
+            "github-copilot".to_string(),
+        )
+        .with_no_v1_prefix();
+        let transport = OpenAiCompatTransport::new(config);
+        assert_eq!(
+            transport.chat_completions_url(),
+            "https://api.githubcopilot.com/chat/completions"
+        );
     }
 
     #[test]

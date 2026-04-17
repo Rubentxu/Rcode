@@ -89,6 +89,60 @@ const KNOWN_PROVIDERS: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// Check if a provider has credentials configured (api_key in config or env var).
+/// Returns true if the provider can be used.
+fn provider_has_credentials(provider_id: &str, config: Option<&RcodeConfig>) -> bool {
+    // Check env var
+    let env_key = format!("{}_API_KEY", provider_id.to_uppercase().replace('-', "_"));
+    if std::env::var(&env_key).is_ok() {
+        return true;
+    }
+    let auth_key = format!("{}_AUTH_TOKEN", provider_id.to_uppercase().replace('-', "_"));
+    if std::env::var(&auth_key).is_ok() {
+        return true;
+    }
+    // Check auth.json
+    if rcode_core::auth::has_credential(provider_id) {
+        return true;
+    }
+    // Check config api_key
+    config
+        .and_then(|c| c.providers.get(provider_id))
+        .and_then(|p| p.api_key.as_deref())
+        .map(|k| !k.is_empty())
+        .unwrap_or(false)
+}
+
+/// Find the single configured provider when model ID has no provider prefix.
+/// If exactly one provider has credentials, returns that provider_id.
+/// Otherwise returns None.
+fn find_single_configured_provider(config: Option<&RcodeConfig>) -> Option<String> {
+    let mut configured_providers: Vec<&str> = Vec::new();
+    
+    for def in registry::registry().values() {
+        if provider_has_credentials(def.id, config) {
+            configured_providers.push(def.id);
+        }
+    }
+    
+    // Also check providers in config that are not in registry
+    if let Some(cfg) = config {
+        for provider_id in cfg.providers.keys() {
+            if !configured_providers.contains(&provider_id.as_str()) {
+                if provider_has_credentials(provider_id, config) {
+                    configured_providers.push(provider_id);
+                }
+            }
+        }
+    }
+    
+    if configured_providers.len() == 1 {
+        Some(configured_providers[0].to_string())
+    } else {
+        None
+    }
+}
+
 /// Factory for creating LLM providers from model identifiers
 pub struct ProviderFactory;
 
@@ -152,7 +206,18 @@ impl ProviderFactory {
         model: &str,
         config: Option<&RcodeConfig>,
     ) -> Result<(Arc<dyn LlmProvider>, String)> {
-        let (provider_id, model_name) = parse_model_id(model);
+        let (mut provider_id, model_name) = parse_model_id(model);
+
+        // Handle "unknown" provider - try to find a single configured provider
+        if provider_id == "unknown" {
+            if let Some(single_provider) = find_single_configured_provider(config) {
+                provider_id = single_provider;
+            } else {
+                return Err(RCodeError::Config(
+                    "Ambiguous model ID '{}': no provider prefix. Use 'provider/model' format.".to_string()
+                ));
+            }
+        }
 
         // Check if provider is disabled
         if let Some(cfg) = config {
@@ -284,9 +349,10 @@ impl ProviderFactory {
                 }
             }
             "github-copilot" => {
-                // GitHub Copilot uses OpenAI-compatible API with custom base URL
+                // GitHub Copilot uses an OpenAI-compatible API but its endpoint is
+                // /chat/completions (no /v1/ segment). Use the dedicated constructor.
                 let base_url = base_url.unwrap_or_else(|| "https://api.githubcopilot.com".to_string());
-                Ok((Arc::new(OpenAIProvider::new_with_base_url(api_key, base_url)), model))
+                Ok((Arc::new(OpenAIProvider::new_with_base_url_no_v1(api_key, base_url)), model))
             }
             other => {
                 // Generic OpenAI-compatible provider (custom providers)
@@ -419,6 +485,7 @@ mod tests {
                     protocol,
                     enabled: true,
                     disabled: false,
+                    display_name: None,
                 },
             );
         }

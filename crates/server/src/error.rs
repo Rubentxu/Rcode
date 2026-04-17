@@ -35,6 +35,7 @@ impl ErrorResponse {
 pub enum ServerError {
     NotFound,
     BadRequest(String),
+    UnprocessableEntity(String),
     Conflict(String),
     ConflictWithDetails {
         message: String,
@@ -53,6 +54,10 @@ impl ServerError {
 
     pub fn bad_request(msg: impl Into<String>) -> Self {
         ServerError::BadRequest(msg.into())
+    }
+
+    pub fn unprocessable_entity(msg: impl Into<String>) -> Self {
+        ServerError::UnprocessableEntity(msg.into())
     }
 
     pub fn conflict(msg: impl Into<String>) -> Self {
@@ -94,6 +99,11 @@ impl IntoResponse for ServerError {
                 "Session not found",
             ),
             ServerError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.as_str()),
+            ServerError::UnprocessableEntity(msg) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "UNPROCESSABLE_ENTITY",
+                msg.as_str(),
+            ),
             ServerError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.as_str()),
             ServerError::ConflictWithDetails { message, details } => {
                 let error_response =

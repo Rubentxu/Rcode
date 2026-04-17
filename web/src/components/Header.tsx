@@ -1,6 +1,7 @@
 import { createSignal, onMount, Show, For } from "solid-js";
 import { getApiBase } from "../api/config";
 import type { ModelInfo, ProviderProtocol } from "../api/types";
+import { useProviderModels } from "../hooks/useProviderModels";
 
 interface HeaderProps {
   title: string;
@@ -11,6 +12,7 @@ interface HeaderProps {
   onModelChange?: (model: string) => void;
   activeSessionId?: string;
   onSettingsClick?: () => void;
+  activeProjectName?: string;
 }
 
 interface ModelGroup {
@@ -20,17 +22,16 @@ interface ModelGroup {
 }
 
 export default function Header(props: HeaderProps) {
-  const [models, setModels] = createSignal<ModelInfo[]>([]);
+  const pm = useProviderModels();
   const [showModelDropdown, setShowModelDropdown] = createSignal(false);
   const [currentModel, setCurrentModel] = createSignal(props.currentModel || "Loading...");
 
   onMount(async () => {
-    try {
-      const res = await fetch(`${await getApiBase()}/models`);
-      if (res.ok) {
-        const data = await res.json();
-        const availableModels: ModelInfo[] = data.models || [];
-        setModels(availableModels);
+    // Wait for models to load and select a default
+    const checkModels = setInterval(() => {
+      if (!pm.loading) {
+        clearInterval(checkModels);
+        const availableModels = pm.allModels;
         if (availableModels.length > 0 && !props.currentModel) {
           const preferredModel =
             // 1. Backend-configured model (highest priority)
@@ -47,11 +48,13 @@ export default function Header(props: HeaderProps) {
 
           setCurrentModel(preferredModel.id);
           props.onModelChange?.(preferredModel.id);
+        } else if (availableModels.length === 0 && !props.currentModel) {
+          setCurrentModel("No models available");
         }
       }
-    } catch {
-      setCurrentModel("Error loading models");
-    }
+    }, 50);
+    // Timeout after 5s to avoid infinite loop
+    setTimeout(() => clearInterval(checkModels), 5000);
   });
 
   // Update local state when prop changes
@@ -59,14 +62,18 @@ export default function Header(props: HeaderProps) {
     setCurrentModel(props.currentModel);
   }
 
-  // Group models by provider
+  // Group models by provider display_name, only for configured providers
   const grouped = (): ModelGroup[] => {
     const groups: Record<string, ModelGroup> = {};
-    for (const m of models()) {
-      if (!groups[m.provider]) {
-        groups[m.provider] = { name: m.provider, hasCreds: m.has_credentials, models: [] };
+    for (const m of pm.allModels) {
+      const provider = pm.modelsByProvider.get(m.provider);
+      // Only show models from configured providers
+      if (!provider || !provider.configured && !provider.has_key) continue;
+      const providerName = provider.display_name || m.provider;
+      if (!groups[providerName]) {
+        groups[providerName] = { name: providerName, hasCreds: provider.has_key, models: [] };
       }
-      groups[m.provider].models.push(m);
+      groups[providerName].models.push(m);
     }
     return Object.values(groups).map((group) => ({
       ...group,
@@ -82,7 +89,7 @@ export default function Header(props: HeaderProps) {
     }));
   };
 
-  const currentModelMeta = () => models().find((model) => model.id === currentModel());
+  const currentModelMeta = () => pm.allModels.find((model) => model.id === currentModel());
 
   const sourceBadgeLabel = (source: ModelInfo["source"]) => {
     switch (source) {
@@ -98,11 +105,11 @@ export default function Header(props: HeaderProps) {
   const sourceBadgeStyle = (source: ModelInfo["source"]) => {
     switch (source) {
       case "configured":
-        return "background: rgba(34,197,94,0.14); color: var(--secondary);";
+        return "background: var(--success-bg-subtle); color: var(--secondary);";
       case "api":
-        return "background: rgba(59,130,246,0.14); color: #60a5fa;";
+        return "background: var(--info-bg-subtle); color: var(--info-color);";
       default:
-        return "background: rgba(148,163,184,0.14); color: var(--on-surface-variant);";
+        return "background: var(--surface-container); color: var(--on-surface-variant);";
     }
   };
 
@@ -122,11 +129,11 @@ export default function Header(props: HeaderProps) {
   const protocolBadgeStyle = (protocol?: ProviderProtocol) => {
     switch (protocol) {
       case "openai_compat":
-        return "background: rgba(99,102,241,0.14); color: #818cf8;";
+        return "background: var(--info-bg-subtle); color: var(--info-color);";
       case "anthropic_compat":
-        return "background: rgba(245,158,11,0.14); color: #fbbf24;";
+        return "background: var(--warning-bg-subtle); color: var(--warning-color);";
       case "google":
-        return "background: rgba(34,197,94,0.14); color: var(--secondary);";
+        return "background: var(--success-bg-subtle); color: var(--secondary);";
       default:
         return null;
     }
@@ -152,20 +159,17 @@ export default function Header(props: HeaderProps) {
   };
 
   return (
-    <header class="flex justify-between items-center w-full px-6 py-3 h-14 bg-[#181c22]">
-      {/* Left section - Session info */}
-      <div class="flex items-center gap-6">
-        <div class="flex items-center gap-2">
-          <span class="text-xs font-medium text-outline">Session:</span>
-          <span class="text-sm font-bold text-on-surface">{props.title || "RCode"}</span>
-        </div>
-        <div class="h-4 w-[1px] bg-outline-variant/30"></div>
-        <div class="flex items-center gap-2">
-          <span class="text-xs font-medium text-outline">Model:</span>
-          <span class="text-sm font-semibold text-primary">
-            {currentModelMeta()?.display_name || currentModel().split('/')[1] || currentModel()}
-          </span>
-        </div>
+    <header class="flex justify-between items-center w-full px-6 py-3 h-14 bg-surface-container-low">
+      {/* Left section - Project breadcrumb + session */}
+      <div class="flex items-center gap-2 min-w-0">
+        <Show when={props.activeProjectName}>
+          <>
+            <span class="material-symbols-outlined text-[14px] text-outline" style={{"font-variation-settings": "'FILL' 0"}}>folder</span>
+            <span class="text-xs font-semibold text-on-surface-variant truncate max-w-[120px]">{props.activeProjectName}</span>
+            <span class="text-outline-variant/40 text-xs select-none">/</span>
+          </>
+        </Show>
+        <span class="text-sm font-semibold text-on-surface truncate max-w-[200px]">{props.title || "RCode"}</span>
       </div>
 
       {/* Right section - Status and controls */}

@@ -1,7 +1,35 @@
 /* RCode - Reference Design System */
-/* Material Design 3 Dark Theme with backwards-compatible aliases */
+/* Material Design 3 — Dark (default) + Light theme */
 
 :root {
+  /* ========================================
+     RGB channel variables (for Tailwind opacity utilities)
+     Usage in Tailwind: bg-primary/50 → rgba(var(--primary-rgb), 0.5)
+     ======================================== */
+  --primary-rgb: 184 195 255;
+  --primary-container-rgb: 46 91 255;
+  --on-primary-container-rgb: 239 239 255;
+  --secondary-rgb: 78 222 163;
+  --secondary-container-rgb: 0 165 114;
+  --on-secondary-container-rgb: 0 49 31;
+  --tertiary-rgb: 255 185 95;
+  --tertiary-container-rgb: 153 97 0;
+  --error-rgb: 255 180 171;
+  --error-container-rgb: 147 0 10;
+  --on-error-container-rgb: 255 218 214;
+  --surface-rgb: 16 20 26;
+  --surface-container-low-rgb: 24 28 34;
+  --surface-container-rgb: 28 32 38;
+  --surface-container-high-rgb: 38 42 49;
+  --surface-container-highest-rgb: 49 53 60;
+  --surface-variant-rgb: 49 53 60;
+  --on-surface-rgb: 223 226 235;
+  --on-surface-variant-rgb: 196 197 217;
+  --outline-rgb: 142 144 162;
+  --outline-variant-rgb: 67 70 86;
+  --inverse-surface-rgb: 223 226 235;
+  --background-rgb: 16 20 26;
+
   /* ========================================
      Primary Colors
      ======================================== */
@@ -118,15 +146,17 @@
   --text-lg: 16px;
   --text-xl: 18px;
 
-  /* Radii */
+  /* Radii - unified to 8px base */
   --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
   --radius-full: 9999px;
 
   /* Transitions */
   --transition-fast: 100ms ease;
   --transition-normal: 200ms ease;
+  --transition-slow: 300ms ease;
 
   /* Avatar / conversational layout */
   --avatar-size: 24px;
@@ -140,20 +170,72 @@
 
   /* Transcript / turn layout */
   --transcript-max-width: clamp(600px, 100%, 1400px);
-  --turn-gap: 6px;
-  --turn-spacing: 16px;
+  --turn-gap: 4px;
+  --turn-spacing: 10px;
   --message-padding: 12px 16px;
 
   /* Chat workspace (OpenCode-like) */
   --chat-context-bar-height: 36px;
   --chat-workspace-gap: 0px;
   --assistant-document-padding: 0px;
-  --user-bubble-max-width: 75%;
+  --user-bubble-max-width: 70%;
+  --user-bubble-min-width: 40%;
 
   /* Process details (collapsible) */
   --process-details-bg: #181c22;
   --process-details-border: #434656;
   --process-details-summary-color: #8e90a2;
+
+  /* ========================================
+     Semantic color tokens (component-level)
+     ======================================== */
+
+  /* Accent / brand tint backgrounds */
+  --accent-bg-subtle: rgba(46, 91, 255, 0.15);
+  --accent-bg-hover: rgba(46, 91, 255, 0.25);
+  --accent-border-subtle: rgba(46, 91, 255, 0.2);
+  --accent-border-hover: rgba(46, 91, 255, 0.4);
+
+  /* Status backgrounds */
+  --success-bg-subtle: rgba(34, 197, 94, 0.12);
+  --success-border-subtle: rgba(34, 197, 94, 0.3);
+  --error-bg-subtle: rgba(239, 68, 68, 0.10);
+  --error-border-subtle: rgba(239, 68, 68, 0.25);
+  --warning-bg-subtle: rgba(249, 115, 22, 0.15);
+  --warning-color: #fdba74;
+  --info-bg-subtle: rgba(59, 130, 246, 0.12);
+  --info-color: #60a5fa;
+
+  /* Overlay backdrop */
+  --overlay-bg: rgba(0, 0, 0, 0.5);
+
+  /* Separator */
+  --separator: rgba(255, 255, 255, 0.06);
+
+  /* Toggle control */
+  --toggle-track-on: rgba(255, 255, 255, 0.85);
+  --toggle-track-off: rgba(255, 255, 255, 0.08);
+  --toggle-thumb-on: #111111;
+  --toggle-thumb-off: rgba(255, 255, 255, 0.35);
+
+  /* Brand gradient text (dark mode) */
+  --brand-gradient: linear-gradient(135deg, #b8c3ff 0%, #a78bfa 50%, #60a5fa 100%);
+
+  /* ========================================
+     Glassmorphism Tokens
+     ======================================== */
+  --glass-bg: rgba(24, 28, 34, 0.75);
+  --glass-border: rgba(255, 255, 255, 0.06);
+  --glass-blur: 12px;
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+
+  /* ========================================
+     Elevation shadows
+     ======================================== */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6);
 }
 
 *, *::before, *::after {
@@ -188,10 +270,190 @@ html, body {
 ::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: var(--radius-full);
+  transition: background var(--transition-fast);
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--border-strong);
+}
+
+/* ========================================
+   Light Theme Override
+   Apply via data-theme="light" on <html>
+   ======================================== */
+[data-theme="light"] {
+  /* RGB channel variables (light overrides) */
+  --primary-rgb: 26 63 168;
+  --primary-container-rgb: 221 228 255;
+  --on-primary-container-rgb: 0 19 86;
+  --secondary-rgb: 0 107 78;
+  --secondary-container-rgb: 200 245 224;
+  --on-secondary-container-rgb: 0 33 19;
+  --tertiary-rgb: 125 78 0;
+  --tertiary-container-rgb: 255 221 184;
+  --error-rgb: 186 26 26;
+  --error-container-rgb: 255 218 214;
+  --on-error-container-rgb: 65 0 2;
+  --surface-rgb: 248 249 252;
+  --surface-container-low-rgb: 240 242 248;
+  --surface-container-rgb: 234 237 243;
+  --surface-container-high-rgb: 228 231 237;
+  --surface-container-highest-rgb: 222 225 232;
+  --surface-variant-rgb: 227 229 245;
+  --on-surface-rgb: 26 28 33;
+  --on-surface-variant-rgb: 67 70 90;
+  --outline-rgb: 116 118 136;
+  --outline-variant-rgb: 196 198 214;
+  --inverse-surface-rgb: 47 49 54;
+  --background-rgb: 248 249 252;
+
+  /* Primary Colors */
+  --primary: #1a3fa8;
+  --primary-fixed: #dde1ff;
+  --primary-fixed-dim: #6e88e8;
+  --on-primary: #ffffff;
+  --on-primary-fixed: #001356;
+  --on-primary-fixed-variant: #0035be;
+  --primary-container: #dde4ff;
+  --on-primary-container: #001356;
+
+  /* Secondary Colors */
+  --secondary: #006b4e;
+  --secondary-fixed: #b2f0d5;
+  --secondary-fixed-dim: #4edea3;
+  --on-secondary: #ffffff;
+  --on-secondary-fixed: #002113;
+  --on-secondary-fixed-variant: #005236;
+  --secondary-container: #c8f5e0;
+  --on-secondary-container: #002113;
+
+  /* Tertiary Colors */
+  --tertiary: #7d4e00;
+  --tertiary-fixed: #ffddb8;
+  --tertiary-fixed-dim: #ffb95f;
+  --on-tertiary: #ffffff;
+  --on-tertiary-fixed: #2a1700;
+  --on-tertiary-fixed-variant: #653e00;
+  --tertiary-container: #ffddb8;
+  --on-tertiary-container: #2a1700;
+
+  /* Error Colors */
+  --error: #ba1a1a;
+  --on-error: #ffffff;
+  --error-container: #ffdad6;
+  --on-error-container: #410002;
+
+  /* Surface Colors */
+  --background: #f8f9fc;
+  --surface-bright: #ffffff;
+  --surface: #f8f9fc;
+  --surface-dim: #e8eaf0;
+  --surface-variant: #e3e5f5;
+  --surface-tint: #1a3fa8;
+  --on-background: #1a1c21;
+  --on-surface: #1a1c21;
+  --on-surface-variant: #44475a;
+  --inverse-surface: #2d3137;
+  --inverse-on-surface: #f0f1fa;
+  --inverse-primary: #b8c3ff;
+
+  /* Surface Containers */
+  --surface-container-lowest: #ffffff;
+  --surface-container-low: #f1f3fa;
+  --surface-container: #e8eaf0;
+  --surface-container-high: #dfe1e9;
+  --surface-container-highest: #d5d7e0;
+
+  /* Outline Colors */
+  --outline: #6b6e82;
+  --outline-variant: #c4c6d8;
+
+  /* Backwards-Compatible Aliases */
+  --bg-primary: #f8f9fc;
+  --bg-secondary: #f1f3fa;
+  --bg-tertiary: #e8eaf0;
+  --bg-elevated: #ffffff;
+  --text-primary: #1a1c21;
+  --text-secondary: #44475a;
+  --text-muted: #6b6e82;
+  --accent: #1a3fa8;
+  --accent-hover: #2e5bff;
+  --accent-muted: rgba(26, 63, 168, 0.12);
+  --border: #c4c6d8;
+  --border-strong: #6b6e82;
+
+  /* Status colors */
+  --success: #006b4e;
+  --warning: #7d4e00;
+  --info: #1a3fa8;
+
+  /* Avatar */
+  --avatar-user-bg: rgba(26, 63, 168, 0.1);
+  --avatar-user-color: #1a1c21;
+  --avatar-assistant-bg: #e8eaf0;
+  --avatar-assistant-color: #1a1c21;
+  --avatar-system-bg: #f1f3fa;
+  --avatar-system-color: #44475a;
+
+  /* Process details */
+  --process-details-bg: #f1f3fa;
+  --process-details-border: #c4c6d8;
+  --process-details-summary-color: #44475a;
+
+  /* Glassmorphism Tokens (light variant) */
+  --glass-bg: rgba(248, 249, 252, 0.85);
+  --glass-border: rgba(0, 0, 0, 0.08);
+  --glass-blur: 12px;
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+
+  /* Elevation shadows */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.12);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.15);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.2);
+
+  /* Semantic color tokens (light overrides) */
+  --accent-bg-subtle: rgba(26, 63, 168, 0.08);
+  --accent-bg-hover: rgba(26, 63, 168, 0.16);
+  --accent-border-subtle: rgba(26, 63, 168, 0.2);
+  --accent-border-hover: rgba(26, 63, 168, 0.4);
+
+  --success-bg-subtle: rgba(0, 107, 78, 0.10);
+  --success-border-subtle: rgba(0, 107, 78, 0.25);
+  --error-bg-subtle: rgba(186, 26, 26, 0.08);
+  --error-border-subtle: rgba(186, 26, 26, 0.25);
+  --warning-bg-subtle: rgba(125, 78, 0, 0.10);
+  --warning-color: #7d4e00;
+  --info-bg-subtle: rgba(26, 63, 168, 0.10);
+  --info-color: #1a3fa8;
+
+  --overlay-bg: rgba(0, 0, 0, 0.35);
+  --separator: rgba(0, 0, 0, 0.08);
+
+  --toggle-track-on: var(--secondary-container);
+  --toggle-track-off: rgba(0, 0, 0, 0.08);
+  --toggle-thumb-on: var(--secondary);
+  --toggle-thumb-off: rgba(0, 0, 0, 0.35);
+
+  --brand-gradient: linear-gradient(135deg, #1a3fa8 0%, #6d28d9 50%, #1d4ed8 100%);
+}
+
+/* Light theme scrollbar */
+[data-theme="light"] .custom-scrollbar::-webkit-scrollbar-track {
+  background: #f1f3fa;
+}
+
+[data-theme="light"] .custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #c4c6d8;
+}
+
+[data-theme="light"] .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #6b6e82;
+}
+
+/* Light theme: hardcoded dark bg in TopNav override */
+[data-theme="light"] [data-component="workbench-topnav"] {
+  background-color: var(--surface-container-low) !important;
 }
 
 /* Custom scrollbar styles (narrow variant) */
@@ -210,4 +472,22 @@ html, body {
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: #434656;
+}
+
+/* Glassmorphism utility */
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+}
+
+/* Smooth focus ring utility */
+.focus-ring {
+  outline: none;
+  transition: box-shadow var(--transition-normal);
+}
+.focus-ring:focus-visible {
+  box-shadow: 0 0 0 2px var(--background), 0 0 0 4px var(--primary);
 }

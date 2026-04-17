@@ -69,7 +69,7 @@ Central registry of all available agent skills for the rust-code project.
 - Rust Skills: 4
 - Browser Skills: 3
 - General Tools: 6
-- Last Updated: 2026-04-14
+- Last Updated: 2026-04-17
 
 ## Project Conventions
 - AGENTS.md: Engram persistent memory protocol + RCode agent contract

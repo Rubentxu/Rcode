@@ -28,6 +28,10 @@ pub struct OpenAiCompatConfig {
     pub model_info_fn: Option<fn(&str) -> Option<rcode_core::ModelInfo>>,
     /// Provider capabilities
     pub capabilities: ProviderCapabilities,
+    /// When true, skip the automatic `/v1` prefix insertion in the chat completions URL.
+    /// Required for providers like GitHub Copilot whose endpoint is `/chat/completions`
+    /// (no `/v1/` segment) rather than the standard `/v1/chat/completions`.
+    pub no_v1_prefix: bool,
 }
 
 impl OpenAiCompatConfig {
@@ -40,6 +44,7 @@ impl OpenAiCompatConfig {
             custom_headers: Vec::new(),
             model_info_fn: None,
             capabilities: ProviderCapabilities::all(),
+            no_v1_prefix: false,
         }
     }
 
@@ -58,6 +63,13 @@ impl OpenAiCompatConfig {
     /// Set provider capabilities
     pub fn with_capabilities(mut self, capabilities: ProviderCapabilities) -> Self {
         self.capabilities = capabilities;
+        self
+    }
+
+    /// Skip the automatic `/v1` prefix when building the chat completions URL.
+    /// Use this for providers like GitHub Copilot whose endpoint does not include `/v1/`.
+    pub fn with_no_v1_prefix(mut self) -> Self {
+        self.no_v1_prefix = true;
         self
     }
 }

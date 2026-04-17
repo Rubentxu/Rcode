@@ -20,6 +20,7 @@ pub mod cancellation;
 pub mod subagent_runner_impl;
 pub mod cache_store_impl;
 pub mod explorer;
+pub mod project_health;
 
 pub use state::AppState;
 pub use error::ServerError;
@@ -98,7 +99,10 @@ pub async fn create_app(state: Arc<AppState>) -> Router {
         .route("/projects", get(routes::list_projects))
         .route("/projects", post(routes::create_project))
         .route("/projects/:id/sessions", get(routes::list_project_sessions))
+        .route("/projects/:id", put(routes::update_project))
         .route("/projects/:id", delete(routes::delete_project))
+        .route("/projects/:id/health", get(routes::get_project_health))
+        .route("/projects/:id/health/refresh", post(routes::refresh_project_health))
         .route("/session", get(routes::list_sessions))
         .route("/session", post(routes::create_session))
         .route("/session/:id", get(routes::get_session))
@@ -111,6 +115,7 @@ pub async fn create_app(state: Arc<AppState>) -> Router {
         .route("/session/:id/children", get(routes::get_session_children))
         .route("/event", get(routes::sse_events))
         .route("/models", get(routes::list_models))
+        .route("/models/refresh", post(routes::refresh_models))
         .route("/connect", post(routes::connect_session))
         .route("/config", get(routes::get_config))
         .route("/config", put(routes::update_config))

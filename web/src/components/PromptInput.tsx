@@ -311,11 +311,22 @@ export default function PromptInput(props: PromptInputProps) {
       class="px-4 md:px-8 py-4 bg-surface-container-lowest"
     >
       <div class="w-full max-w-[var(--transcript-max-width)] mx-auto relative">
-        <div class="bg-surface-container rounded-xl p-4 focus-within:ring-1 focus-within:ring-primary/40 transition-all duration-300">
+        <div class="bg-surface-container rounded-xl p-4 focus-within:ring-2 focus-within:ring-primary/60 focus-within:shadow-[0_0_0_2px_rgba(46,91,255,0.15)] transition-all duration-200" style="border: 1px solid var(--outline-variant);"
+          onFocusIn={(e) => {
+            const el = e.currentTarget as HTMLElement;
+            el.style.borderColor = "var(--primary)";
+          }}
+          onFocusOut={(e) => {
+            const el = e.currentTarget as HTMLElement;
+            el.style.borderColor = "var(--outline-variant)";
+          }}
+        >
           <div class="relative">
             <textarea
               ref={textareaRef}
               data-component="textarea"
+              aria-label="Message input"
+              aria-multiline="true"
               class="w-full bg-transparent border-none text-on-surface placeholder:text-on-surface-variant/40 resize-none focus:ring-0 text-sm leading-relaxed min-h-[80px]"
               placeholder="Type a message, / for commands, @ to mention files..."
               disabled={props.disabled}
@@ -345,32 +356,41 @@ export default function PromptInput(props: PromptInputProps) {
             </Show>
           </div>
 
-          <div class="flex items-center justify-between mt-4 border-t border-outline-variant/10 pt-3">
+          <div class="flex items-center justify-between mt-3 pt-3 border-t border-outline-variant/10">
             <div class="flex items-center gap-1">
-              <button class="p-2 hover:bg-surface-variant rounded-lg transition-colors group">
-                <span class="material-symbols-outlined text-outline group-hover:text-primary transition-colors text-[20px]">attach_file</span>
+              <button aria-label="Attach file" class="p-1.5 hover:bg-surface-variant rounded-lg transition-colors duration-200 group" title="Attach file">
+                <span class="material-symbols-outlined text-outline group-hover:text-primary transition-colors text-[18px]">attach_file</span>
               </button>
-              <button class="p-2 hover:bg-surface-variant rounded-lg transition-colors group">
-                <span class="material-symbols-outlined text-outline group-hover:text-primary transition-colors text-[20px]">terminal</span>
+              <button aria-label="Open terminal" class="p-1.5 hover:bg-surface-variant rounded-lg transition-colors duration-200 group" title="Terminal">
+                <span class="material-symbols-outlined text-outline group-hover:text-primary transition-colors text-[18px]">terminal</span>
               </button>
-              <button class="p-2 hover:bg-surface-variant rounded-lg transition-colors group">
-                <span class="material-symbols-outlined text-outline group-hover:text-primary transition-colors text-[20px]">settings_ethernet</span>
+              <button aria-label="Context settings" class="p-1.5 hover:bg-surface-variant rounded-lg transition-colors duration-200 group" title="Context settings">
+                <span class="material-symbols-outlined text-outline group-hover:text-primary transition-colors text-[18px]">settings_ethernet</span>
               </button>
-              <div class="h-4 w-[1px] bg-outline-variant/20 mx-2"></div>
-              <span class="text-[10px] font-bold text-outline uppercase tracking-widest">
-                {props.currentModel ? props.currentModel.split('/')[1] || props.currentModel : "Claude"}
+              <span class="text-[10px] text-outline-variant/50 pl-1 hidden sm:flex items-center gap-1">
+                <kbd class="px-1 py-0.5 rounded text-[9px] font-mono bg-surface-container border border-outline-variant/20">/</kbd>
+                <span>commands</span>
+                <span class="opacity-40 mx-1">·</span>
+                <kbd class="px-1 py-0.5 rounded text-[9px] font-mono bg-surface-container border border-outline-variant/20">@</kbd>
+                <span>files</span>
               </span>
             </div>
 
+            <div class="flex items-center gap-3">
+              <span class="text-[10px] text-outline-variant/60">
+                <kbd class="px-1 py-0.5 rounded text-[9px] font-mono bg-surface-container-high border border-outline-variant/20">Shift+Enter</kbd> new line
+              </span>
             <button
+              aria-label="Send message"
               data-component="prompt-submit"
               disabled={props.disabled || !inputValue().trim()}
               onClick={handleSubmit}
-              class="bg-primary-container text-on-primary-container px-6 py-2 rounded-lg font-bold text-sm flex items-center gap-2 hover:opacity-90 active:scale-95 transition-all"
+              class="bg-primary-container text-on-primary-container px-5 py-1.5 rounded-lg font-bold text-sm flex items-center gap-1.5 hover:opacity-90 active:scale-95 transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <span>Send</span>
-              <span class="material-symbols-outlined text-sm">send</span>
-            </button>
+                <span>Send</span>
+                <span class="material-symbols-outlined text-sm">send</span>
+              </button>
+            </div>
           </div>
 
           <ChatContextFooter

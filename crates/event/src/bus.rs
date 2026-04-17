@@ -205,15 +205,22 @@ pub struct EventSubscriber {
 impl EventSubscriber {
     pub async fn recv(&mut self) -> Result<Event, RecvError> {
         loop {
-            let event = self.receiver.recv().await?;
-            
-            if let Some(ref filter) = self.session_filter
-                && event.session_id() != Some(filter.as_str())
-            {
-                continue;
+            match self.receiver.recv().await {
+                Ok(event) => {
+                    if let Some(ref filter) = self.session_filter
+                        && event.session_id() != Some(filter.as_str())
+                    {
+                        continue;
+                    }
+                    return Ok(event);
+                }
+                Err(RecvError::Lagged(skipped)) => {
+                    // Buffer overflow — skip missed events and keep the connection alive
+                    tracing::warn!(skipped, "event bus subscriber lagged, skipping events");
+                    continue;
+                }
+                Err(e) => return Err(e),
             }
-            
-            return Ok(event);
         }
     }
     

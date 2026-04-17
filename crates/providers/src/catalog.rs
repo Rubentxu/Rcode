@@ -360,9 +360,14 @@ impl ModelCatalogService {
 
     /// List all models. Returns immediately with cached/fallback data.
     /// Spawns background discovery for providers with credentials.
+    ///
+    /// # Arguments
+    /// * `config` - The RcodeConfig to use for credential and provider resolution
+    /// * `configured_only` - If true, only include providers that have credentials configured
     pub async fn list_models(
         &self,
         config: &rcode_core::RcodeConfig,
+        configured_only: bool,
     ) -> Vec<CatalogModel> {
         let mut all = Vec::new();
         let disabled_models = config
@@ -375,20 +380,6 @@ impl ModelCatalogService {
                     .collect::<std::collections::HashSet<_>>()
             })
             .unwrap_or_default();
-
-        if let Ok(model_id) = std::env::var("ANTHROPIC_MODEL") {
-            let configured_id = format!("anthropic/{model_id}");
-            all.push(CatalogModel {
-                id: configured_id.clone(),
-                provider: "anthropic".to_string(),
-                display_name: model_id.clone(),
-                has_credentials: std::env::var("ANTHROPIC_API_KEY").is_ok() || std::env::var("ANTHROPIC_AUTH_TOKEN").is_ok(),
-                source: ModelSource::Configured,
-                enabled: (std::env::var("ANTHROPIC_API_KEY").is_ok() || std::env::var("ANTHROPIC_AUTH_TOKEN").is_ok())
-                    && !disabled_models.contains(&configured_id),
-                protocol: ProviderProtocol::AnthropicCompat,
-            });
-        }
 
         // 1. Check if provider has credentials (auth.json → registry aliases → env var → config)
         // Uses registry credential_aliases instead of model_ids for credential lookup.
@@ -424,12 +415,47 @@ impl ModelCatalogService {
             true
         };
 
-        // 3. For each provider in registry, check cache → fallback
+        // 3. Inject configured models from {PROVIDER}_MODEL env vars
+        // Generic loop: for each provider in registry, check if {PROVIDER}_MODEL is set
+        for def in crate::registry::registry().values() {
+            let provider_id = def.id;
+            if !is_enabled(provider_id) { continue; }
+
+            let env_var = format!("{}_MODEL", provider_id.to_uppercase().replace('-', "_"));
+            if let Ok(model_id) = std::env::var(&env_var) {
+                if !model_id.is_empty() {
+                    let configured_id = format!("{}/{}", provider_id, model_id);
+                    let creds = has_creds(provider_id);
+
+                    // When configured_only=true, skip providers without credentials
+                    if configured_only && !creds {
+                        continue;
+                    }
+
+                    all.push(CatalogModel {
+                        id: configured_id.clone(),
+                        provider: provider_id.to_string(),
+                        display_name: model_id.clone(),
+                        has_credentials: creds,
+                        source: ModelSource::Configured,
+                        enabled: creds && !disabled_models.contains(&configured_id),
+                        protocol: def.protocol,
+                    });
+                }
+            }
+        }
+
+        // 4. For each provider in registry, check cache → fallback
         let cache = self.cache.lock().unwrap();
         for def in crate::registry::registry().values() {
             let provider_id = def.id;
             if !is_enabled(provider_id) { continue; }
             let creds = has_creds(provider_id);
+
+            // When configured_only=true, skip providers without credentials
+            if configured_only && !creds {
+                continue;
+            }
 
             if let Some((cached_models, ts)) = cache.get(provider_id) {
                 if ts.elapsed() < self.ttl {
@@ -783,8 +809,8 @@ mod tests {
         let service = ModelCatalogService::new();
         let config = rcode_core::RcodeConfig::default();
 
-        let models1 = service.list_models(&config).await;
-        let models2 = service.list_models(&config).await;
+        let models1 = service.list_models(&config, false).await;
+        let models2 = service.list_models(&config, false).await;
 
         // Both calls should return identical fallback models
         assert_eq!(models1.len(), models2.len());
@@ -818,7 +844,7 @@ mod tests {
 
         let service = ModelCatalogService::new();
         let config = rcode_core::RcodeConfig::default();
-        let models = service.list_models(&config).await;
+        let models = service.list_models(&config, false).await;
 
         // Should have fallback models for all enabled providers
         assert!(!models.is_empty(), "Should return fallback models");
@@ -996,7 +1022,7 @@ mod tests {
         }
         
         // Verify we can still list models (fallback works)
-        let models = service.list_models(&config).await;
+        let models = service.list_models(&config, false).await;
         assert!(!models.is_empty(), "Fallback models should still be available");
         
         // Verify anthropic fallback models are present
@@ -1114,7 +1140,7 @@ mod tests {
 
         // list_models should return the cached data immediately (stale-on-start)
         let config = rcode_core::RcodeConfig::default();
-        let models = service.list_models(&config).await;
+        let models = service.list_models(&config, false).await;
 
         // The cached model should appear in the results
         let cached_model = models.iter().find(|m| m.id == "openai/gpt-cached");
@@ -1164,7 +1190,7 @@ mod tests {
 
         let service = ModelCatalogService::new(); // No cache store
         let config = rcode_core::RcodeConfig::default();
-        let models = service.list_models(&config).await;
+        let models = service.list_models(&config, false).await;
 
         // Should still return fallback models
         assert!(!models.is_empty(), "Should return fallback models even without cache");
@@ -1201,8 +1227,8 @@ mod tests {
         let service = ModelCatalogService::new();
         let config = rcode_core::RcodeConfig::default();
 
-        let first = service.list_models(&config).await;
-        let second = service.list_models(&config).await;
+        let first = service.list_models(&config, false).await;
+        let second = service.list_models(&config, false).await;
 
         let first_providers: Vec<_> = first.iter().map(|m| m.provider.as_str()).collect();
         let second_providers: Vec<_> = second.iter().map(|m| m.provider.as_str()).collect();
@@ -1323,7 +1349,7 @@ mod tests {
 
         unsafe { std::env::remove_var("ANTHROPIC_MODEL"); }
         let config = rcode_core::RcodeConfig::default();
-        let models = service.list_models(&config).await;
+        let models = service.list_models(&config, false).await;
 
         // Should return fallback manifests despite schema mismatch
         assert!(!models.is_empty(), "Should return fallback models on schema mismatch");
@@ -1362,7 +1388,7 @@ mod tests {
             Some(Arc::clone(&mock_store) as Arc<dyn CacheStore>)
         );
         let config = rcode_core::RcodeConfig::default();
-        let models = service2.list_models(&config).await;
+        let models = service2.list_models(&config, false).await;
 
         let persisted = models.iter().find(|m| m.id == "openai/gpt-survives");
         assert!(persisted.is_some(),
@@ -1499,7 +1525,7 @@ mod tests {
         // Verify that minimax models from registry have OpenAiCompat protocol
         let service = ModelCatalogService::new();
         let config = rcode_core::RcodeConfig::default();
-        let models = service.list_models(&config).await;
+        let models = service.list_models(&config, false).await;
 
         let minimax_models: Vec<_> = models.iter()
             .filter(|m| m.provider == "minimax")
@@ -1522,7 +1548,7 @@ mod tests {
         // Verify that all fallback models have a protocol from registry
         let service = ModelCatalogService::new();
         let config = rcode_core::RcodeConfig::default();
-        let models = service.list_models(&config).await;
+        let models = service.list_models(&config, false).await;
 
         // Filter to fallback models only
         let fallback_models: Vec<_> = models.iter()
@@ -1548,7 +1574,7 @@ mod tests {
         // Verify that anthropic models have AnthropicCompat protocol
         let service = ModelCatalogService::new();
         let config = rcode_core::RcodeConfig::default();
-        let models = service.list_models(&config).await;
+        let models = service.list_models(&config, false).await;
 
         let anthropic_models: Vec<_> = models.iter()
             .filter(|m| m.provider == "anthropic")
@@ -1571,7 +1597,7 @@ mod tests {
         // Verify that google models have Google protocol
         let service = ModelCatalogService::new();
         let config = rcode_core::RcodeConfig::default();
-        let models = service.list_models(&config).await;
+        let models = service.list_models(&config, false).await;
 
         let google_models: Vec<_> = models.iter()
             .filter(|m| m.provider == "google")

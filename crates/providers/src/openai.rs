@@ -63,6 +63,16 @@ impl OpenAIProvider {
         Self { config, transport }
     }
 
+    /// Create a new OpenAI provider with a custom base URL and no `/v1/` prefix.
+    /// Required for providers like GitHub Copilot whose endpoint is `/chat/completions`
+    /// (without the `/v1/` segment).
+    pub fn new_with_base_url_no_v1(api_key: String, base_url: String) -> Self {
+        let config = OpenAiCompatConfig::new(api_key, base_url, "github-copilot".to_string())
+            .with_no_v1_prefix();
+        let transport = OpenAiCompatTransport::new(config.clone());
+        Self { config, transport }
+    }
+
     /// Attach rate limiting to this provider
     pub fn with_rate_limit(self, capacity: u64, refill_rate: f64) -> Self {
         let transport = OpenAiCompatTransport::new(self.config.clone())

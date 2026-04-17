@@ -162,6 +162,29 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         [],
     )?;
 
+    // Migration: Add pinned column if it doesn't exist
+    let has_pinned: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name='pinned'",
+        [],
+        |row| row.get::<_, i64>(0).map(|c| c > 0),
+    )?;
+    if !has_pinned {
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+
+    // Migration: Add icon column if it doesn't exist
+    let has_icon: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name='icon'",
+        [],
+        |row| row.get::<_, i64>(0).map(|c| c > 0),
+    )?;
+    if !has_icon {
+        conn.execute("ALTER TABLE projects ADD COLUMN icon TEXT", [])?;
+    }
+
     backfill_projects(conn)?;
 
     Ok(())

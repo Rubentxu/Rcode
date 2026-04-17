@@ -20,6 +20,7 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::cache_store_impl::ServerCacheStore;
 use crate::cancellation::CancellationRegistry;
 use crate::explorer::ExplorerService;
+use crate::project_health::ProjectHealthRegistry;
 use crate::subagent_runner_impl::ServerSubagentRunner;
 
 /// Adapter to wrap rcode_providers::LlmProvider and expose it as rcode_core::LlmProvider.
@@ -69,6 +70,8 @@ pub struct AppState {
     pub explorer_service: Arc<ExplorerService>,
     /// Privacy service for sensitive data sanitization
     pub privacy: PrivacyService,
+    /// Project health registry (cargo check results)
+    pub project_health: Arc<ProjectHealthRegistry>,
 }
 
 fn create_storage_path() -> std::path::PathBuf {
@@ -258,6 +261,7 @@ impl AppState {
                     mock_provider: Arc::new(std::sync::Mutex::new(None)),
                     explorer_service: Arc::new(ExplorerService::new()),
                     privacy,
+                    project_health: Arc::new(ProjectHealthRegistry::new()),
                 };
             }
         };
@@ -286,9 +290,10 @@ impl AppState {
                 permission_services: Arc::new(TokioMutex::new(HashMap::new())),
                 lsp_registry,
                 mock_provider: Arc::new(std::sync::Mutex::new(None)),
-                explorer_service: Arc::new(ExplorerService::new()),
-                privacy,
-            };
+                    explorer_service: Arc::new(ExplorerService::new()),
+                    privacy,
+                    project_health: Arc::new(ProjectHealthRegistry::new()),
+                };
         }
 
         // ---- Path 3: Second connection (message repo) fails ----
@@ -316,6 +321,7 @@ impl AppState {
                     mock_provider: Arc::new(std::sync::Mutex::new(None)),
                     explorer_service: Arc::new(ExplorerService::new()),
                     privacy,
+                    project_health: Arc::new(ProjectHealthRegistry::new()),
                 };
             }
         };
@@ -352,6 +358,7 @@ impl AppState {
                     mock_provider: Arc::new(std::sync::Mutex::new(None)),
                     explorer_service: Arc::new(ExplorerService::new()),
                     privacy,
+                    project_health: Arc::new(ProjectHealthRegistry::new()),
                 };
             }
         };
@@ -412,6 +419,7 @@ impl AppState {
             mock_provider: Arc::new(std::sync::Mutex::new(None)),
             explorer_service: Arc::new(ExplorerService::new()),
             privacy,
+            project_health: Arc::new(ProjectHealthRegistry::new()),
         }
     }
 }

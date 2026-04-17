@@ -1,7 +1,8 @@
-import { createMemo, createSignal, For, onMount, Show } from "solid-js";
+import { createMemo, createSignal, For, onMount, Show, createEffect } from "solid-js";
 import { getApiBase } from "../api/config";
 import type { ProviderInfo, ModelInfo } from "../api/types";
 import { PrivacySettings } from "./PrivacySettings";
+import { useProviderModels } from "../hooks/useProviderModels";
 
 type SettingsSection = "general" | "shortcuts" | "providers" | "models" | "privacy";
 
@@ -57,32 +58,32 @@ function detectSelectedPreset(providerId: string, url: string) {
 }
 
 function providerBadge(provider: ProviderInfo) {
-  if (!provider.has_key) return { label: "Not connected", bg: "rgba(239,68,68,0.12)", color: "var(--error)" };
-  if (provider.key_source === "env") return { label: "Environment", bg: "rgba(59,130,246,0.12)", color: "#60a5fa" };
-  if (provider.key_source === "auth") return { label: "API Key", bg: "rgba(34,197,94,0.12)", color: "var(--success)" };
-  if (provider.key_source === "config") return { label: "Config", bg: "rgba(168,85,247,0.12)", color: "#c084fc" };
-  return { label: "Configured", bg: "rgba(148,163,184,0.12)", color: "var(--text-secondary)" };
+  if (!provider.has_key) return { label: "Not connected", bg: "var(--error-bg-subtle)", color: "var(--error)" };
+  if (provider.key_source === "env") return { label: "Environment", bg: "var(--info-bg-subtle)", color: "var(--info-color)" };
+  if (provider.key_source === "auth") return { label: "API Key", bg: "var(--success-bg-subtle)", color: "var(--secondary)" };
+  if (provider.key_source === "config") return { label: "Config", bg: "var(--info-bg-subtle)", color: "var(--info-color)" };
+  return { label: "Configured", bg: "var(--surface-container)", color: "var(--on-surface-variant)" };
 }
 
 function sourceBadge(source: ModelInfo["source"]) {
   switch (source) {
     case "configured":
-      return { label: "configured", bg: "rgba(34,197,94,0.12)", color: "var(--success)" };
+      return { label: "configured", bg: "var(--success-bg-subtle)", color: "var(--secondary)" };
     case "api":
-      return { label: "live", bg: "rgba(59,130,246,0.12)", color: "#60a5fa" };
+      return { label: "live", bg: "var(--info-bg-subtle)", color: "var(--info-color)" };
     default:
-      return { label: "fallback", bg: "rgba(148,163,184,0.12)", color: "var(--text-secondary)" };
+      return { label: "fallback", bg: "var(--surface-container)", color: "var(--on-surface-variant)" };
   }
 }
 
 function protocolBadge(protocol: ProviderInfo["protocol"]) {
   switch (protocol) {
     case "openai_compat":
-      return { label: "OpenAI compat", bg: "rgba(99,102,241,0.14)", color: "#818cf8" };
+      return { label: "OpenAI compat", bg: "var(--info-bg-subtle)", color: "var(--info-color)" };
     case "anthropic_compat":
-      return { label: "Anthropic compat", bg: "rgba(245,158,11,0.14)", color: "#fbbf24" };
+      return { label: "Anthropic compat", bg: "var(--warning-bg-subtle)", color: "var(--warning-color)" };
     case "google":
-      return { label: "Google", bg: "rgba(34,197,94,0.14)", color: "var(--secondary)" };
+      return { label: "Google", bg: "var(--success-bg-subtle)", color: "var(--secondary)" };
     default:
       return null;
   }
@@ -107,6 +108,20 @@ export function Settings(props: { onClose: () => void }) {
   const [customBaseUrl, setCustomBaseUrl] = createSignal("");
   const [customProviderProtocol, setCustomProviderProtocol] = createSignal<"openai_compat" | "anthropic_compat">("openai_compat");
   const [modelSearch, setModelSearch] = createSignal("");
+
+  // Hook for Models tab - fetches providers and models in parallel, groups by display_name
+  const pm = useProviderModels();
+
+  // Track if Models tab has been refreshed this session
+  const [modelsTabRefreshed, setModelsTabRefreshed] = createSignal(false);
+
+  // When Models tab becomes visible, trigger refresh then re-fetch
+  createEffect(() => {
+    if (activeSection() === "models" && !modelsTabRefreshed()) {
+      setModelsTabRefreshed(true);
+      pm.refresh();
+    }
+  });
 
   onMount(async () => {
     await Promise.all([loadProviders(), loadModels()]);
@@ -295,7 +310,8 @@ export function Settings(props: { onClose: () => void }) {
 
   const filteredModels = createMemo(() => {
     const query = modelSearch().trim().toLowerCase();
-    let visible = models();
+    // Use allModels from hook (already filtered to enabled/configured providers)
+    let visible = pm.allModels;
     if (query) {
       visible = visible.filter((model) =>
         model.id.toLowerCase().includes(query)
@@ -304,16 +320,22 @@ export function Settings(props: { onClose: () => void }) {
       );
     }
 
-    const groups = new Map<string, ModelInfo[]>();
+    // Group by provider display_name, only for configured providers
+    const groups = new Map<string, { provider: ProviderInfo; models: ModelInfo[] }>();
     for (const model of visible) {
-      if (!groups.has(model.provider)) {
-        groups.set(model.provider, []);
+      const providerInfo = pm.modelsByProvider.get(model.provider);
+      // Only show models from configured providers
+      if (!providerInfo || !providerInfo.configured && !providerInfo.has_key) continue;
+      const providerName = providerInfo.display_name || model.provider;
+      if (!groups.has(providerName)) {
+        groups.set(providerName, { provider: providerInfo, models: [] });
       }
-      groups.get(model.provider)!.push(model);
+      groups.get(providerName)!.models.push(model);
     }
 
-    return [...groups.entries()].map(([provider, items]) => ({
-      provider,
+    return [...groups.entries()].map(([providerName, { provider: providerInfo, models: items }]) => ({
+      provider: providerName,
+      providerInfo,
       models: [...items].sort((a, b) => {
         const rank = (model: ModelInfo) => {
           if (model.source === "configured") return 0;
@@ -412,10 +434,10 @@ export function Settings(props: { onClose: () => void }) {
                       </div>
                     </div>
                     <Show when={saveError()}>
-                      <div style="margin-top: 12px; padding: 8px 10px; background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.3); border-radius: 10px; color: var(--error); font-size: 12px;">{saveError()}</div>
+                      <div style="margin-top: 12px; padding: 8px 10px; background: var(--error-bg-subtle); border: 1px solid var(--error-border-subtle); border-radius: 10px; color: var(--error); font-size: 12px;">{saveError()}</div>
                     </Show>
                     <Show when={saveSuccess()}>
-                      <div style="margin-top: 12px; padding: 8px 10px; background: rgba(34,197,94,0.12); border: 1px solid rgba(34,197,94,0.3); border-radius: 10px; color: var(--success); font-size: 12px;">Saved successfully</div>
+                      <div style="margin-top: 12px; padding: 8px 10px; background: var(--success-bg-subtle); border: 1px solid var(--success-border-subtle); border-radius: 10px; color: var(--success); font-size: 12px;">Saved successfully</div>
                     </Show>
                     <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px;">
                       <button onClick={cancelEditing} style="padding: 8px 14px; border-radius: 10px; border: 1px solid var(--border); background: none; color: var(--text-secondary); cursor: pointer;">Cancel</button>
@@ -458,7 +480,7 @@ export function Settings(props: { onClose: () => void }) {
                   </div>
                   <button
                     onClick={() => startEditing(provider)}
-                    style="padding: 8px 14px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255,255,255,0.04); color: var(--text-primary); cursor: pointer;"
+                    style="padding: 8px 14px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-container); color: var(--text-primary); cursor: pointer;"
                   >
                     + Connect
                   </button>
@@ -534,41 +556,56 @@ export function Settings(props: { onClose: () => void }) {
         />
       </div>
 
+      <Show when={filteredModels().length === 0}>
+        <div style={`${cardStyle}; text-align: center; padding: 40px 20px; color: var(--text-secondary);`}>
+          <div style="font-size: 15px; margin-bottom: 8px;">No providers configured</div>
+          <div style="font-size: 13px; opacity: 0.7;">Configure a provider in the Providers tab to see available models.</div>
+        </div>
+      </Show>
+
       <For each={filteredModels()}>
-        {(group) => (
-          <div style="margin-bottom: 20px;">
-            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
-              <strong style="font-size: 22px; color: var(--text-primary); text-transform: capitalize;">{group.provider}</strong>
-            </div>
-            <div style={`${cardStyle}; display: flex; flex-direction: column; gap: 0;`}>
-              <For each={group.models}>
-                {(model, index) => {
-                  const badge = sourceBadge(model.source);
-                  return (
-                    <div style={`padding: 14px 0; display: flex; justify-content: space-between; align-items: center; gap: 14px; ${index() > 0 ? "border-top: 1px solid var(--border);" : ""}`}>
-                      <div style="min-width: 0;">
-                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
-                          <span style="font-size: 15px; color: var(--text-primary);">{model.display_name || model.id.split("/")[1] || model.id}</span>
-                          <span style={`font-size: 11px; padding: 2px 8px; border-radius: 999px; background: ${badge.bg}; color: ${badge.color};`}>
-                            {badge.label}
-                          </span>
+        {(group) => {
+          const pBadge = protocolBadge(group.providerInfo?.protocol);
+          return (
+            <div style="margin-bottom: 20px;">
+              <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                <strong style="font-size: 22px; color: var(--text-primary); text-transform: capitalize;">{group.provider}</strong>
+                <Show when={pBadge}>
+                  <span style={`font-size: 11px; padding: 2px 8px; border-radius: 999px; background: ${pBadge!.bg}; color: ${pBadge!.color};`}>
+                    {pBadge!.label}
+                  </span>
+                </Show>
+              </div>
+              <div style={`${cardStyle}; display: flex; flex-direction: column; gap: 0;`}>
+                <For each={group.models}>
+                  {(model, index) => {
+                    const badge = sourceBadge(model.source);
+                    return (
+                      <div style={`padding: 14px 0; display: flex; justify-content: space-between; align-items: center; gap: 14px; ${index() > 0 ? "border-top: 1px solid var(--border);" : ""}`}>
+                        <div style="min-width: 0;">
+                          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                            <span style="font-size: 15px; color: var(--text-primary);">{model.display_name || model.id.split("/")[1] || model.id}</span>
+                            <span style={`font-size: 11px; padding: 2px 8px; border-radius: 999px; background: ${badge.bg}; color: ${badge.color};`}>
+                              {badge.label}
+                            </span>
+                          </div>
+                          <div style="font-size: 12px; color: var(--text-secondary);">{model.id}</div>
                         </div>
-                        <div style="font-size: 12px; color: var(--text-secondary);">{model.id}</div>
+                        <div
+                          onClick={() => void setModelEnabled(model.id, !model.enabled)}
+                          style={`width: 30px; height: 18px; border-radius: 999px; border: 1px solid var(--border); background: ${model.enabled ? "var(--toggle-track-on)" : "var(--toggle-track-off)"}; position: relative; cursor: pointer;`}
+                          title={model.enabled ? "Available" : "Not available"}
+                        >
+                          <div style={`position: absolute; top: 1px; ${model.enabled ? "right: 1px;" : "left: 1px;"} width: 14px; height: 14px; border-radius: 50%; background: ${model.enabled ? "var(--toggle-thumb-on)" : "var(--toggle-thumb-off)"};`} />
+                        </div>
                       </div>
-                      <div
-                        onClick={() => void setModelEnabled(model.id, !model.enabled)}
-                        style={`width: 30px; height: 18px; border-radius: 999px; border: 1px solid var(--border); background: ${model.enabled ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.08)"}; position: relative;`}
-                        title={model.enabled ? "Available" : "Not available"}
-                      >
-                        <div style={`position: absolute; top: 1px; ${model.enabled ? "right: 1px;" : "left: 1px;"} width: 14px; height: 14px; border-radius: 50%; background: ${model.enabled ? "#111" : "rgba(255,255,255,0.35)"};`} />
-                      </div>
-                    </div>
-                  );
-                }}
-              </For>
+                    );
+                  }}
+                </For>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        }}
       </For>
     </div>
   );
@@ -599,8 +636,8 @@ export function Settings(props: { onClose: () => void }) {
   );
 
   return (
-    <div style="position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: stretch; justify-content: center; z-index: 1000;">
-      <div style="width: min(1100px, 96vw); height: min(780px, 92vh); margin: auto; background: var(--bg-primary); color: var(--text-primary); border-radius: 18px; overflow: hidden; display: flex; box-shadow: 0 30px 100px rgba(0,0,0,0.45); border: 1px solid var(--border-strong);">
+    <div style="position: fixed; inset: 0; background: var(--overlay-bg); display: flex; align-items: stretch; justify-content: center; z-index: 1000;">
+      <div style="width: min(1100px, 96vw); height: min(780px, 92vh); margin: auto; background: var(--bg-primary); color: var(--text-primary); border-radius: 18px; overflow: hidden; display: flex; box-shadow: var(--shadow-xl); border: 1px solid var(--border-strong);">
         <aside style="width: 220px; border-right: 1px solid var(--border); background: var(--bg-secondary); padding: 18px 12px; display: flex; flex-direction: column; justify-content: space-between;">
           <div>
             <For each={["Desktop", "Server"]}>
@@ -636,7 +673,7 @@ export function Settings(props: { onClose: () => void }) {
           </div>
 
           <Show when={backendUnreachable()}>
-            <div style="margin-bottom: 18px; padding: 12px 14px; background: rgba(239,68,68,0.10); border: 1px solid rgba(239,68,68,0.25); border-radius: 12px; color: #b91c1c; font-size: 13px;">
+            <div style="margin-bottom: 18px; padding: 12px 14px; background: var(--error-bg-subtle); border: 1px solid var(--error-border-subtle); border-radius: 12px; color: var(--error); font-size: 13px;">
               Backend not available. Make sure the server is running or that `VITE_API_BASE` points to the correct address.
             </div>
           </Show>

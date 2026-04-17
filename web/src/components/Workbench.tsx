@@ -5,6 +5,7 @@ import WorkbenchLeftRail from "./WorkbenchLeftRail";
 import WorkbenchOutline from "./WorkbenchOutline";
 import { ResizeHandle } from "./ResizeHandle";
 import ProjectRail from "./ProjectRail";
+import { useProjectContext } from "../context/ProjectContext";
 
 // Width constants
 const DEFAULT_WIDTH = 256;
@@ -51,6 +52,7 @@ interface WorkbenchProps {
 }
 
 export default function Workbench(props: WorkbenchProps) {
+  const projectContext = useProjectContext();
   const [outlineOpen, setOutlineOpen] = createSignal(false);
 
   // Use external prop if provided, otherwise use internal signal
@@ -179,6 +181,7 @@ export default function Workbench(props: WorkbenchProps) {
         onSettingsClick={props.onSettingsClick}
         onOutlineToggle={toggleOutline}
         outlineOpen={outlineOpen()}
+        activeProjectName={projectContext.activeProject()?.name}
       />
 
       {/* Main 3-column content area */}

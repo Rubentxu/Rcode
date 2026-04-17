@@ -1,4 +1,4 @@
-import { For, Show, Switch, Match, createSignal, onCleanup, createEffect, createMemo, onMount } from "solid-js";
+import { For, Show, Switch, Match, createSignal, onCleanup, createEffect, createMemo } from "solid-js";
 import type { Session } from "../stores";
 import type { Message, MessagePart } from "../api/types";
 import { createSSEClient, type SSEClient } from "../api/sse";
@@ -34,6 +34,8 @@ import type {
 } from "../api/types";
 import { useWorkspace } from "../context/WorkspaceContext";
 import { showToast } from "./Toast";
+import { createChatAutoScroll } from "../hooks/createChatAutoScroll";
+import { JumpToBottomButton } from "./JumpToBottomButton";
 
 /** Represents a conversational turn: one or more consecutive messages from the same role */
 interface Turn {
@@ -188,11 +190,17 @@ export default function SessionView(props: SessionViewProps) {
   // T3.3: Get virtual items reactively for rendering
   const virtualItems = () => virtualizer.getVirtualItems();
   const totalSize = () => virtualizer.getTotalSize();
-  
-  // Phase 5: Scroll anchoring state
-  const NEAR_BOTTOM_THRESHOLD_PX = 100;
-  let rafScheduled = false;
-  let lastTurnCount = 0;
+
+  // T3.3: Auto-scroll hook — manages isFollowing, ResizeObserver, scrollToLast
+  let contentRef: HTMLDivElement | undefined;
+  let draftElementRef: HTMLElement | undefined;
+
+  const autoScroll = createChatAutoScroll({
+    scrollEl: () => scrollContainerRef,
+    virtualizer: () => virtualizer,
+    draftRef: () => draftElementRef,
+    bottomThreshold: 48,
+  });
 
   /**
    * Extracts the final text content from a message for copy action (MQA-1).
@@ -261,73 +269,6 @@ export default function SessionView(props: SessionViewProps) {
     const messagesUpTo = msgs.slice(0, messageIndex + 1);
     props.onBranch?.(messageId, messagesUpTo);
   };
-  
-  // Phase 5: isNearBottom as a function (not a mutable let)
-  const isNearBottom = () => {
-    if (!scrollContainerRef) return true;
-    const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef;
-    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-    return distanceFromBottom <= NEAR_BOTTOM_THRESHOLD_PX;
-  };
-  
-  // Phase 5: Scroll handler to track user's scroll position
-  const handleScroll = () => {
-    // No-op: scroll tracking is handled by the scroll event listener added in onMount
-  };
-  
-  // Phase 5: Scroll to bottom function with RAF batching
-  const scrollToBottom = () => {
-    if (!scrollContainerRef || rafScheduled) return;
-    rafScheduled = true;
-    requestAnimationFrame(() => {
-      if (scrollContainerRef) {
-        // Use scrollTop instead of scrollTo for JSDOM compatibility
-        scrollContainerRef.scrollTop = scrollContainerRef.scrollHeight;
-      }
-      rafScheduled = false;
-    });
-  };
-  
-  // Phase 5: Scroll to bottom on mount
-  onMount(() => {
-    scrollToBottom();
-    
-    // Add scroll event listener to track manual scrolls
-    const container = scrollContainerRef;
-    if (container) {
-      const onScroll = () => {
-        // isNearBottom() is called here to check current scroll position
-        // We don't need to store it - just triggering the effect is enough
-      };
-      container.addEventListener('scroll', onScroll);
-      onCleanup(() => container.removeEventListener('scroll', onScroll));
-    }
-  });
-  
-  // Phase 5: Auto-scroll when turns increase from history load
-  createEffect(() => {
-    const currentTurnCount = turns().length;
-    if (currentTurnCount > lastTurnCount && isNearBottom()) {
-      scrollToBottom();
-    }
-    lastTurnCount = currentTurnCount;
-  });
-  
-  // Phase 5: Auto-scroll on session change
-  createEffect(() => {
-    const sessionId = props.session.id;
-    if (sessionId) {
-      lastTurnCount = 0;
-      scrollToBottom();
-    }
-  });
-  
-  // Phase 5: Auto-scroll during loading when near bottom
-  createEffect(() => {
-    if (workspaceContext.workspace.isLoading(props.session.id) && draft() && isNearBottom()) {
-      scrollToBottom();
-    }
-  });
 
   // SS-3: Determine if skeleton should be shown (optimistic shell with no content yet)
   // Returns true when draft is optimistic AND has only the initial empty text part
@@ -375,7 +316,11 @@ export default function SessionView(props: SessionViewProps) {
         }
       },
       onMessage: () => {
-        props.onReloadMessages?.();
+        // DO NOT reload on every message_added event.
+        // The user message was already appended optimistically, and reloading
+        // here calls setMessages() which — even without the loadingState reset —
+        // causes unnecessary network churn while the assistant is still streaming.
+        // We reload once in onAssistantCommitted / onDone when streaming is complete.
       },
       onDone: () => {
         // DON'T clear the draft yet! The backend may not have persisted
@@ -524,14 +469,15 @@ export default function SessionView(props: SessionViewProps) {
           scrollContainerRef = el;
           setScrollElement(el);
         }}
-        class="flex-1 overflow-y-auto px-4 md:px-8 py-6 custom-scrollbar"
-        onScroll={handleScroll}
+        data-component="chat-scroll-container"
+        class="flex-1 overflow-y-auto px-4 md:px-8 py-3 custom-scrollbar"
+        onScroll={autoScroll.handleScroll}
         role="log"
         aria-label="Chat transcript"
       >
         <TaskChecklistPanel items={checklistItems()} />
         {/* CT-3: Transcript uses fluid width from CSS variable */}
-        <div data-component="transcript" class="w-full">
+        <div data-component="transcript" class="w-full" ref={el => contentRef = el}>
           <Show when={turns().length === 0 && !draft()} fallback={
             <>
               {/* T3.3: Virtualized turns for efficient rendering when scroll element is available */}
@@ -748,11 +694,18 @@ export default function SessionView(props: SessionViewProps) {
               {/* Phase 3: Show draft message during streaming as an assistant turn */}
               {/* SS-1: Optimistic shell appears immediately on submit BEFORE any SSE delta */}
               {/* SS-2: Abort button lives inside the shell, not in a separate bottom bar */}
-              <Show when={workspaceContext.workspace.isLoading(props.session.id) && draft()}>
-                <div 
-                  class="turn turn--assistant" 
+              {/* FIX: Show draft whenever it exists — NOT gated on isLoading.
+                   Previously: isLoading && draft() caused the draft to vanish the moment
+                   onMessage triggered a setMessages() reload that reset loadingState to idle,
+                   even though SSE tokens were still arriving. Now: draft() drives visibility;
+                   clearDraft() is only called on terminal events (onDone, onAssistantCommitted,
+                   onError) so the draft persists for the full streaming lifetime. */}
+              <Show when={draft()}>
+                <div
+                  class="turn turn--assistant"
                   data-turn-role="assistant"
                   data-streaming={draft()?.isOptimistic ? "optimistic" : "streaming"}
+                  ref={el => draftElementRef = el as HTMLElement}
                 >
                   <TurnAvatar role="assistant" />
                   <div class="turn-content">
@@ -807,6 +760,11 @@ export default function SessionView(props: SessionViewProps) {
             </Show>
           </Show>
         </div>
+
+        <JumpToBottomButton
+          isVisible={() => !autoScroll.isFollowing()}
+          onClick={() => autoScroll.resume()}
+        />
       </div>
 
       {/* Bottom processing bar removed — abort control lives inside the assistant shell */}

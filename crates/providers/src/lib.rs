@@ -95,11 +95,19 @@ pub fn parse_model_id(model: &str) -> (String, String) {
     if parts.len() == 2 {
         (parts[0].to_string(), parts[1].to_string())
     } else {
+        // Heuristic inference from well-known model name prefixes.
+        // This preserves backward compatibility for bare model IDs used in configs and
+        // session storage. The source is heuristic — callers that need provenance can
+        // use parse_model_id_strict() which returns ("unknown", ...) for bare IDs.
         let model_lower = model.to_lowercase();
         if model_lower.starts_with("gpt-") || model_lower.starts_with("o1") || model_lower.starts_with("o3") {
             ("openai".to_string(), model.to_string())
-        } else {
+        } else if model_lower.starts_with("claude-") {
             ("anthropic".to_string(), model.to_string())
+        } else if model_lower.starts_with("gemini-") {
+            ("google".to_string(), model.to_string())
+        } else {
+            ("unknown".to_string(), model.to_string())
         }
     }
 }
@@ -240,14 +248,26 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_model_id_short_format_defaults_to_anthropic() {
+    fn test_parse_model_id_short_format_heuristic_inference() {
+        // claude- prefix → anthropic
         assert_eq!(
             parse_model_id("claude-3-5-sonnet"),
             ("anthropic".to_string(), "claude-3-5-sonnet".to_string())
         );
+        // gpt- prefix → openai
         assert_eq!(
             parse_model_id("gpt-4o"),
             ("openai".to_string(), "gpt-4o".to_string())
+        );
+        // gemini- prefix → google
+        assert_eq!(
+            parse_model_id("gemini-pro"),
+            ("google".to_string(), "gemini-pro".to_string())
+        );
+        // truly unknown bare ID
+        assert_eq!(
+            parse_model_id("MiniMax-M2.7-highspeed"),
+            ("unknown".to_string(), "MiniMax-M2.7-highspeed".to_string())
         );
     }
 

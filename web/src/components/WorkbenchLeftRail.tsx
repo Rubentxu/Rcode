@@ -4,6 +4,9 @@ import { fetchExplorerBootstrap, fetchExplorerTree, type ExplorerBootstrap, type
 import { renameSession } from "../api/session";
 import { useProjectContext } from "../context/ProjectContext";
 import { useWorkspace, type WorkspaceContextValue } from "../context/WorkspaceContext";
+import { formatTime, formatCompactDate, getSessionGroup, type SessionGroup } from "../lib/dateUtils";
+import { FilterBar, type FilterCounts } from "./left-rail/FilterBar";
+import { TreeNodeRow } from "./left-rail/TreeNodeRow";
 
 interface WorkbenchLeftRailProps {
   sessions: Session[];
@@ -19,259 +22,9 @@ interface WorkbenchLeftRailProps {
 
 type RailTab = "sessions" | "explorer";
 
-// Filter counts for badge display
-interface FilterCounts {
-  changed: number;
-  staged: number;
-  untracked: number;
-  conflicted: number;
-}
-
-function formatTime(dateStr: string): string {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diff = now.getTime() - date.getTime();
-  const minutes = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
-
-  if (minutes < 1) return "Just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-
-function formatCompactDate(dateStr: string): string {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterday = new Date(today.getTime() - 86400000);
-  const dateOnly = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-
-  if (dateOnly.getTime() === today.getTime()) return "Today";
-  if (dateOnly.getTime() === yesterday.getTime()) return "Yesterday";
-  if (dateOnly.getTime() > today.getTime() - 7 * 86400000) return date.toLocaleDateString("en-US", { weekday: "short" });
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-
-type SessionGroup = "Today" | "Yesterday" | "This Week" | "Older";
-
-function getSessionGroup(dateStr: string): SessionGroup {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterday = new Date(today.getTime() - 86400000);
-  const weekAgo = new Date(today.getTime() - 7 * 86400000);
-  const dateOnly = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-
-  if (dateOnly.getTime() === today.getTime()) return "Today";
-  if (dateOnly.getTime() === yesterday.getTime()) return "Yesterday";
-  if (dateOnly.getTime() > weekAgo.getTime()) return "This Week";
-  return "Older";
-}
-
 interface SessionGrouped {
   group: SessionGroup;
   sessions: Session[];
-}
-
-// Filter bar component
-function FilterBar(props: {
-  activeFilter: ExplorerFilter;
-  onFilterChange: (filter: ExplorerFilter) => void;
-  counts: FilterCounts;
-}) {
-  const filters: { key: ExplorerFilter; label: string }[] = [
-    { key: "all", label: "All" },
-    { key: "changed", label: "Changed" },
-    { key: "staged", label: "Staged" },
-    { key: "untracked", label: "Untracked" },
-    { key: "conflicted", label: "Conflicted" },
-  ];
-
-  return (
-    <div class="flex items-center gap-1 px-2 py-1 border-b border-outline-variant/20 overflow-x-auto custom-scrollbar">
-      <For each={filters}>
-        {(filter) => {
-          const count = () => {
-            switch (filter.key) {
-              case "changed": return props.counts.changed;
-              case "staged": return props.counts.staged;
-              case "untracked": return props.counts.untracked;
-              case "conflicted": return props.counts.conflicted;
-              default: return null;
-            }
-          };
-
-          return (
-            <button
-              onClick={() => props.onFilterChange(filter.key)}
-              class={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium transition-all whitespace-nowrap ${
-                props.activeFilter === filter.key
-                  ? "bg-primary-container text-on-primary-container"
-                  : "text-outline hover:bg-surface-container-high hover:text-on-surface"
-              }`}
-            >
-              <span>{filter.label}</span>
-              <Show when={count() !== null && count()! > 0}>
-                <span class={`px-1 rounded-full text-[9px] ${
-                  props.activeFilter === filter.key 
-                    ? "bg-on-primary-container/20" 
-                    : "bg-surface-container-high"
-                }`}>
-                  {count()}
-                </span>
-              </Show>
-            </button>
-          );
-        }}
-      </For>
-    </div>
-  );
-}
-
-// Tree node component for explorer
-function TreeNodeRow(props: {
-  node: TreeNode;
-  onToggle: (node: TreeNode) => void;
-  expandedPaths: Set<string>;
-  loadedPaths: Map<string, TreeNode[]>;
-  onLoadChildren: (node: TreeNode) => void;
-  onSelectFile?: (path: string) => void;
-  isFocused?: boolean;
-  focusedNodeId?: string | null;
-  // T4.4: Active file path for highlight
-  activeFilePath?: string | null;
-}) {
-  const isExpanded = () => props.expandedPaths.has(props.node.id);
-  const isDir = () => props.node.kind === "dir";
-  const children = () => props.loadedPaths.get(props.node.id) || [];
-  
-  const handleClick = () => {
-    if (isDir()) {
-      if (isExpanded()) {
-        props.onToggle(props.node);
-      } else {
-        props.onLoadChildren(props.node);
-        props.onToggle(props.node);
-      }
-    } else {
-      // File node - call onSelectFile with the relative path
-      if (props.onSelectFile) {
-        props.onSelectFile(props.node.relative_path);
-      }
-    }
-  };
-
-  // Git status indicator
-  const gitStatus = () => props.node.git;
-  const isChanged = () => gitStatus()?.is_changed === true && gitStatus()?.is_staged !== true;
-  const isStaged = () => gitStatus()?.is_staged === true;
-  const isUntracked = () => gitStatus()?.is_untracked === true;
-  const isConflicted = () => gitStatus()?.is_conflicted === true;
-  const isIgnored = () => gitStatus()?.ignored === true;
-  const isOutsideRepo = () => gitStatus()?.repo_scope === "outside_repo";
-
-  // Icon color based on git status
-  const getIconClass = () => {
-    if (isDir()) return "text-secondary";
-    if (isConflicted()) return "text-error";
-    if (isChanged()) return "text-accent";
-    if (isStaged()) return "text-secondary";
-    if (isUntracked()) return "text-tertiary";
-    if (isIgnored()) return "text-outline-variant opacity-50";
-    if (isOutsideRepo()) return "text-outline-variant";
-    return "text-outline";
-  };
-
-  // Get badge element
-  const getBadge = () => {
-    if (isConflicted()) return <span class="w-2 h-2 rounded-full bg-error shrink-0" title="Conflicted" />;
-    if (isStaged() && isChanged()) return <span class="w-2 h-2 rounded-full bg-secondary shrink-0" title="Staged + Modified" />;
-    if (isStaged()) return <span class="w-2 h-2 rounded-full bg-secondary shrink-0" title="Staged" />;
-    if (isChanged()) return <span class="w-2 h-2 rounded-full bg-accent shrink-0" title="Modified" />;
-    if (isUntracked()) return <span class="w-2 h-2 rounded-full bg-tertiary shrink-0" title="Untracked" />;
-    return null;
-  };
-
-  // T4.4: Check if this is the active file
-  const isActiveFile = () => !isDir() && props.activeFilePath === props.node.relative_path;
-
-  return (
-    <div class="tree-node">
-      <div
-        onClick={handleClick}
-        class={`flex items-center gap-1.5 px-2 py-1 rounded cursor-pointer hover:bg-surface-container-high text-xs transition-colors ${
-          isDir() ? "font-medium" : ""
-        } ${isIgnored() ? "opacity-50" : ""} ${isOutsideRepo() ? "opacity-70" : ""} ${
-          props.focusedNodeId === props.node.id ? "ring-1 ring-primary bg-primary/10" : ""
-        } ${isActiveFile() && props.focusedNodeId !== props.node.id ? "bg-primary-container/30 text-primary" : ""}`}
-        data-node-id={props.node.id}
-        data-node-kind={props.node.kind}
-        data-active={isActiveFile() ? "true" : undefined}
-        data-focused={props.focusedNodeId === props.node.id ? "true" : "false"}
-      >
-        {/* Expand/collapse icon for dirs */}
-        <Show when={isDir()}>
-          <span class={`material-symbols-outlined text-sm w-4 text-center transition-transform ${isExpanded() ? "rotate-90" : ""}`}>
-            chevron_right
-          </span>
-        </Show>
-        <Show when={!isDir()}>
-          <span class="w-4" />
-        </Show>
-
-        {/* Icon */}
-        <Show when={isDir()}>
-          <span class={`material-symbols-outlined text-sm ${getIconClass()}`}>folder</span>
-        </Show>
-        <Show when={!isDir()}>
-          <span class={`material-symbols-outlined text-sm ${getIconClass()}`}>description</span>
-        </Show>
-
-        {/* Name */}
-        <span class="truncate flex-1">{props.node.name}</span>
-
-        {/* Aggregate counts for directories */}
-        <Show when={isDir() && props.node.aggregate}>
-          <Show when={(props.node.aggregate?.changed_descendants ?? 0) > 0}>
-            <span class="w-1.5 h-1.5 rounded-full bg-accent shrink-0" title={`${props.node.aggregate?.changed_descendants} changed`} />
-          </Show>
-          <Show when={(props.node.aggregate?.untracked_descendants ?? 0) > 0}>
-            <span class="w-1.5 h-1.5 rounded-full bg-tertiary shrink-0" title={`${props.node.aggregate?.untracked_descendants} untracked`} />
-          </Show>
-          <Show when={(props.node.aggregate?.conflicted_descendants ?? 0) > 0}>
-            <span class="w-1.5 h-1.5 rounded-full bg-error shrink-0" title={`${props.node.aggregate?.conflicted_descendants} conflicted`} />
-          </Show>
-        </Show>
-
-        {/* Git status badge */}
-        {getBadge()}
-      </div>
-
-      {/* Children */}
-      <Show when={isDir() && isExpanded()}>
-        <div class="pl-4 border-l border-outline-variant/20 ml-2">
-          <Show when={children().length === 0}>
-            <div class="px-2 py-1 text-xs text-outline italic">Empty</div>
-          </Show>
-          <For each={children()}>
-            {(child) => (
-              <TreeNodeRow
-                node={child}
-                onToggle={props.onToggle}
-                expandedPaths={props.expandedPaths}
-                loadedPaths={props.loadedPaths}
-                onLoadChildren={props.onLoadChildren}
-                onSelectFile={props.onSelectFile}
-                focusedNodeId={props.focusedNodeId}
-                activeFilePath={props.activeFilePath}
-              />
-            )}
-          </For>
-        </div>
-      </Show>
-    </div>
-  );
 }
 
 export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
@@ -306,6 +59,10 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
   const [renamingSessionId, setRenamingSessionId] = createSignal<string | null>(null);
   const [renameValue, setRenameValue] = createSignal("");
   const [renameError, setRenameError] = createSignal<string | null>(null);
+
+  // Session list — show limited recents by default, expand on demand
+  const RECENT_LIMIT = 8;
+  const [showAllSessions, setShowAllSessions] = createSignal(false);
 
   // Phase 2+3: Search state with debounce
   const [searchInput, setSearchInput] = createSignal("");
@@ -356,6 +113,28 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
       if (sessions.length > 0) {
         result.push({ group: group as SessionGroup, sessions });
       }
+    }
+    return result;
+  });
+
+  // Total session count across all groups (for "show all" button label)
+  const totalSessionCount = createMemo(() =>
+    groupedSessions().reduce((sum, g) => sum + g.sessions.length, 0)
+  );
+
+  // Sessions to display — limit to RECENT_LIMIT unless expanded or searching
+  const visibleGroupedSessions = createMemo((): SessionGrouped[] => {
+    const query = debouncedSearch().toLowerCase().trim();
+    if (query || showAllSessions()) return groupedSessions();
+
+    // Show only the most recent RECENT_LIMIT sessions, preserving group structure
+    let remaining = RECENT_LIMIT;
+    const result: SessionGrouped[] = [];
+    for (const { group, sessions } of groupedSessions()) {
+      if (remaining <= 0) break;
+      const slice = sessions.slice(0, remaining);
+      result.push({ group, sessions: slice });
+      remaining -= slice.length;
     }
     return result;
   });
@@ -725,109 +504,182 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
 
   return (
     <aside 
+      aria-label="Sessions and file explorer"
       data-component="workbench-left-rail"
-      class="bg-[#181c22] flex flex-col h-full shrink-0 border-r border-outline-variant/20"
-      style={{ width: `${props.width ?? 256}px`, "min-width": "180px" }}
+      class="flex flex-col h-full shrink-0 border-r border-outline-variant/20"
+      style={{ 
+        width: `${props.width ?? 272}px`, 
+        "min-width": "200px",
+        background: "var(--surface-container-low)",
+      }}
     >
-      {/* T3.1: Active project header */}
-      <Show when={projectContext.activeProject()}>
-        {(project) => (
-          <div class="px-3 py-2 border-b border-outline-variant/20 bg-surface-container-low/50">
-            <div class="text-xs font-semibold text-on-surface truncate flex items-center gap-1" title={project().name}>
-              <span>{project().name}</span>
-              <Show when={bootstrap()?.git_branch}>
-                <span class="text-[10px] text-secondary opacity-70">@</span>
-                <span class="text-[10px] text-secondary truncate" title={bootstrap()?.git_branch ?? ""}>
-                  {bootstrap()?.git_branch}
-                </span>
-              </Show>
+      {/* Workspace header */}
+      <div class="shrink-0" style={{ background: "var(--surface-container-low)" }}>
+        <Show
+          when={projectContext.activeProject()}
+          fallback={
+            <div class="px-3 py-2.5 flex items-center justify-between gap-2">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="material-symbols-outlined" style={{ "font-size": "16px", color: "var(--outline)" }}>workspaces</span>
+                <span class="text-xs italic truncate" style={{ color: "var(--outline)" }}>No workspace</span>
+              </div>
+              {/* Icon-only new session button */}
+              <button
+                data-component="new-session-button"
+                onClick={props.onNewSession}
+                title="New session"
+                class="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg transition-all duration-150 active:scale-95"
+                style={{ color: "var(--on-surface-variant)" }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--surface-container-high)"; (e.currentTarget as HTMLElement).style.color = "var(--primary)"; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "var(--on-surface-variant)"; }}
+              >
+                <span class="material-symbols-outlined" style={{ "font-size": "18px" }}>edit_square</span>
+              </button>
             </div>
-            <div class="text-[10px] text-outline truncate mt-0.5" title={project().canonical_path}>
-              {project().canonical_path}
-            </div>
-          </div>
-        )}
-      </Show>
-
-      {/* New Session button */}
-      <div class="p-3">
-        <button
-          data-component="new-session-button"
-          onClick={props.onNewSession}
-          class="w-full bg-primary-container text-on-primary-container py-2.5 rounded-lg font-bold flex items-center justify-center gap-2 hover:opacity-90 active:scale-95 duration-150 transition-all text-sm"
+          }
         >
-          <span class="material-symbols-outlined text-sm">add</span>
-          <span>New Session</span>
-        </button>
-      </div>
+          {(project) => (
+            <div class="px-3 pt-2.5 pb-2">
+              {/* Single row: avatar + name + icon button */}
+              <div class="flex items-center gap-2">
 
-      {/* Phase 2+3: Search and controls */}
-      <Show when={activeTab() === "sessions"}>
-        <div class="px-3 pb-2">
-          <div class="flex items-center gap-2">
+                {/* Project avatar — letter, skip leading dots/symbols */}
+                <div
+                  class="w-7 h-7 rounded-lg shrink-0 flex items-center justify-center text-[12px] font-bold select-none"
+                  style={{
+                    background: "var(--primary-container)",
+                    color: "var(--on-primary-container)",
+                  }}
+                >
+                  {project().name.replace(/^[^a-zA-Z0-9]+/, "").charAt(0).toUpperCase() || "P"}
+                </div>
+
+                {/* Project name only — no path below */}
+                <div class="flex-1 min-w-0">
+                  <div
+                    class="text-[13px] font-semibold leading-snug truncate"
+                    style={{ color: "var(--on-surface)" }}
+                    title={project().canonical_path ?? project().name}
+                  >
+                    {project().name}
+                  </div>
+                  {/* Git branch inline — only if available */}
+                  <Show when={bootstrap()?.git_branch}>
+                    <div class="flex items-center gap-0.5 mt-0.5">
+                      <span class="material-symbols-outlined" style={{ "font-size": "9px", color: "var(--secondary)" }}>call_split</span>
+                      <span
+                        class="text-[10px] truncate leading-tight"
+                        style={{ color: "var(--secondary)", "max-width": "120px" }}
+                        title={bootstrap()?.git_branch ?? ""}
+                      >
+                        {bootstrap()?.git_branch}
+                      </span>
+                    </div>
+                  </Show>
+                </div>
+
+                {/* New session — icon only, clean */}
+                <button
+                  data-component="new-session-button"
+                  onClick={props.onNewSession}
+                  title="New session"
+                  class="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg transition-all duration-150 active:scale-95"
+                  style={{ color: "var(--on-surface-variant)" }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--surface-container-high)"; (e.currentTarget as HTMLElement).style.color = "var(--primary)"; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "var(--on-surface-variant)"; }}
+                >
+                  <span class="material-symbols-outlined" style={{ "font-size": "18px" }}>edit_square</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </Show>
+
+        {/* Divider */}
+        <div class="h-px" style={{ background: "var(--outline-variant)", opacity: "0.4" }} />
+
+        {/* Search + compact toggle */}
+        <Show when={activeTab() === "sessions"}>
+          <div class="px-3 py-2 flex items-center gap-1.5">
             <div class="relative flex-1">
-              <span class="material-symbols-outlined absolute left-2 top-1/2 -translate-y-1/2 text-outline text-xs">search</span>
+              <span
+                class="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                style={{ "font-size": "13px", color: "var(--on-surface-variant)", opacity: "0.45" }}
+              >search</span>
               <input
                 type="text"
-                placeholder="Filter sessions..."
+                aria-label="Filter sessions"
+                placeholder="Search sessions…"
                 value={searchInput()}
                 onInput={(e) => handleSearchInput(e.currentTarget.value)}
-                class="w-full bg-surface-container-low text-on-surface text-xs pl-7 pr-3 py-1.5 rounded-md border border-outline-variant/20 focus:border-primary focus:outline-none transition-colors placeholder:text-outline"
+                class="w-full text-[12px] pl-7 pr-3 py-1.5 rounded-lg focus:outline-none transition-all placeholder:opacity-40"
+                style={{
+                  background: "var(--surface-container)",
+                  color: "var(--on-surface)",
+                  "box-shadow": "inset 0 0 0 1px transparent",
+                }}
+                onFocus={(e) => { e.currentTarget.style.background = "var(--surface-container-high)"; e.currentTarget.style.boxShadow = `inset 0 0 0 1.5px var(--primary)`; }}
+                onBlur={(e) => { e.currentTarget.style.background = "var(--surface-container)"; e.currentTarget.style.boxShadow = "inset 0 0 0 1px transparent"; }}
               />
             </div>
             <button
               onClick={toggleCompactMode}
-              class="p-1.5 rounded-md hover:bg-surface-container-high transition-colors"
-              title={safeWorkspace()?.workspace.compactMode ? "Normal mode" : "Compact mode"}
+              class="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg transition-all duration-150"
+              style={{ color: "var(--on-surface-variant)", opacity: "0.5" }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = "1"; (e.currentTarget as HTMLElement).style.background = "var(--surface-container-high)"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = "0.5"; (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+              title={safeWorkspace()?.workspace.compactMode ? "Normal view" : "Compact view"}
+              aria-label={safeWorkspace()?.workspace.compactMode ? "Switch to normal mode" : "Switch to compact mode"}
             >
-              <span class="material-symbols-outlined text-sm text-outline">
+              <span class="material-symbols-outlined" style={{ "font-size": "15px" }}>
                 {safeWorkspace()?.workspace.compactMode ? "density_small" : "density_medium"}
               </span>
             </button>
           </div>
-        </div>
-      </Show>
+        </Show>
 
-      {/* Tab switcher */}
-      <div 
-        data-component="rail-tabs"
-        class="flex border-b border-outline-variant/20 px-2"
-      >
-        <button
-          onClick={() => setActiveTab("sessions")}
-          class={`flex-1 py-2.5 text-xs font-semibold transition-all relative ${
-            activeTab() === "sessions" 
-              ? "text-primary" 
-              : "text-outline hover:text-on-surface"
-          }`}
-          data-tab="sessions"
+        {/* Tab switcher — underline style */}
+        <div
+          role="tablist"
+          data-component="rail-tabs"
+          class="flex border-b"
+          style={{ "border-color": "var(--outline-variant)", opacity: "1" }}
         >
-          <span class="flex items-center justify-center gap-1.5">
-            <span class="material-symbols-outlined text-sm">chat_bubble</span>
+          <button
+            role="tab"
+            aria-selected={activeTab() === "sessions"}
+            aria-controls="sessions-panel"
+            onClick={() => setActiveTab("sessions")}
+            data-tab="sessions"
+            class="flex-1 flex items-center justify-center gap-1.5 py-2 text-[11px] font-semibold transition-all duration-150 border-b-2 -mb-px"
+            style={{
+              color: activeTab() === "sessions" ? "var(--primary)" : "var(--on-surface-variant)",
+              opacity: activeTab() === "sessions" ? "1" : "0.5",
+              "border-bottom-color": activeTab() === "sessions" ? "var(--primary)" : "transparent",
+              background: "transparent",
+            }}
+          >
+            <span class="material-symbols-outlined" style={{ "font-size": "13px" }}>chat_bubble</span>
             <span>Sessions</span>
-          </span>
-          <Show when={activeTab() === "sessions"}>
-            <div class="absolute bottom-0 left-2 right-2 h-0.5 bg-primary rounded-full"></div>
-          </Show>
-        </button>
-        
-        <button
-          onClick={() => setActiveTab("explorer")}
-          class={`flex-1 py-2.5 text-xs font-semibold transition-all relative ${
-            activeTab() === "explorer" 
-              ? "text-primary" 
-              : "text-outline hover:text-on-surface"
-          }`}
-          data-tab="explorer"
-        >
-          <span class="flex items-center justify-center gap-1.5">
-            <span class="material-symbols-outlined text-sm">folder_open</span>
+          </button>
+          <button
+            role="tab"
+            aria-selected={activeTab() === "explorer"}
+            aria-controls="explorer-panel"
+            onClick={() => setActiveTab("explorer")}
+            data-tab="explorer"
+            class="flex-1 flex items-center justify-center gap-1.5 py-2 text-[11px] font-semibold transition-all duration-150 border-b-2 -mb-px"
+            style={{
+              color: activeTab() === "explorer" ? "var(--primary)" : "var(--on-surface-variant)",
+              opacity: activeTab() === "explorer" ? "1" : "0.5",
+              "border-bottom-color": activeTab() === "explorer" ? "var(--primary)" : "transparent",
+              background: "transparent",
+            }}
+          >
+            <span class="material-symbols-outlined" style={{ "font-size": "13px" }}>folder_open</span>
             <span>Explorer</span>
-          </span>
-          <Show when={activeTab() === "explorer"}>
-            <div class="absolute bottom-0 left-2 right-2 h-0.5 bg-primary rounded-full"></div>
-          </Show>
-        </button>
+          </button>
+        </div>
       </div>
 
       {/* Tab content */}
@@ -835,18 +687,48 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
         {/* Sessions tab */}
         <Show when={activeTab() === "sessions"}>
           <div 
+            role="tabpanel"
+            id="sessions-panel"
             data-component="sessions-list"
             class="h-full overflow-y-auto py-2 px-2 custom-scrollbar"
           >
             <Show when={groupedSessions().length === 0}>
-              <div class="p-3 text-center">
-                <p class="text-outline text-xs">
-                  {debouncedSearch() ? "No sessions match your search" : "No sessions yet"}
-                </p>
+              <div class="flex flex-col items-center justify-center py-10 px-4 text-center gap-3">
+                <div
+                  class="w-12 h-12 rounded-2xl flex items-center justify-center"
+                  style={{ background: "var(--surface-container-high)" }}
+                >
+                  <span class="material-symbols-outlined" style={{ "font-size": "24px", color: "var(--on-surface-variant)", opacity: "0.5" }}>
+                    {debouncedSearch() ? "search_off" : "forum"}
+                  </span>
+                </div>
+                <div>
+                  <p class="text-[12px] font-medium" style={{ color: "var(--on-surface-variant)" }}>
+                    {debouncedSearch() ? "No matches" : "No sessions yet"}
+                  </p>
+                  <Show when={!debouncedSearch()}>
+                    <p class="text-[11px] mt-0.5" style={{ color: "var(--outline)" }}>
+                      Start a new session to begin
+                    </p>
+                  </Show>
+                </div>
+                <Show when={!debouncedSearch()}>
+                  <button
+                    onClick={props.onNewSession}
+                    class="flex items-center gap-1.5 px-4 py-2 rounded-full text-[11px] font-semibold transition-all duration-150 active:scale-95 hover:brightness-105"
+                    style={{
+                      background: "var(--primary-container)",
+                      color: "var(--on-primary-container)",
+                    }}
+                  >
+                    <span class="material-symbols-outlined" style={{ "font-size": "14px" }}>add</span>
+                    New Session
+                  </button>
+                </Show>
               </div>
             </Show>
 
-            <For each={groupedSessions()}>
+            <For each={visibleGroupedSessions()}>
               {({ group, sessions }) => {
                 const isCollapsed = () => isGroupCollapsed(group);
                 const isCompact = () => safeWorkspace()?.workspace.compactMode ?? false;
@@ -856,13 +738,15 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
                     {/* Group header */}
                     <button
                       onClick={() => toggleGroup(group)}
-                      class="w-full flex items-center gap-2 px-2 py-1 text-[10px] font-semibold text-outline uppercase tracking-wider hover:bg-surface-container-low rounded transition-colors"
+                      aria-expanded={!isGroupCollapsed(group)}
+                      aria-label={`${group} sessions group`}
+                      class="w-full flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium hover:bg-surface-container-low rounded transition-colors mt-2 mb-0.5" style={{ color: "var(--outline)", opacity: "0.8" }}
                     >
-                      <span class={`material-symbols-outlined text-xs transition-transform ${isCollapsed() ? "" : "rotate-90"}`}>
+                      <span class={`material-symbols-outlined text-[10px] transition-transform ${isCollapsed() ? "" : "rotate-90"}`}>
                         chevron_right
                       </span>
                       <span>{group}</span>
-                      <span class="ml-auto bg-surface-container-high px-1.5 py-0.5 rounded-full text-[9px]">
+                      <span class="ml-auto text-[9px]" style={{ color: "var(--outline)", opacity: "0.6" }}>
                         {sessions.length}
                       </span>
                     </button>
@@ -879,31 +763,40 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
                               onClick={() => !isRenaming() && props.onSelect(session)}
                               onDblClick={(e) => !isRenaming() && startRename(session, e)}
                               data-session-id={session.id}
-                              class={`rounded-lg text-xs font-medium flex items-center gap-2 cursor-pointer transition-all mb-0.5 ${
-                                isCompact() ? "px-2 py-1" : "p-2.5"
-                              } ${
-                                isActive()
-                                  ? "bg-surface-container-high text-primary font-semibold border-l-2 border-secondary"
-                                  : "text-outline hover:bg-surface-container-high hover:text-on-surface-variant"
+                              class={`rounded-lg text-xs font-medium flex items-center gap-2 cursor-pointer transition-all duration-200 mb-0.5 ${
+                                isCompact() ? "px-2 py-1" : "px-2.5 py-2"
                               }`}
+                              style={{
+                                background: isActive() ? "var(--secondary-container)" : "transparent",
+                                color: isActive() ? "var(--on-secondary-container)" : "var(--on-surface-variant)",
+                              }}
+                              onMouseEnter={(e) => {
+                                if (!isActive() && !isRenaming()) {
+                                  (e.currentTarget as HTMLElement).style.background = "var(--surface-container)";
+                                  (e.currentTarget as HTMLElement).style.color = "var(--on-surface)";
+                                }
+                              }}
+                              onMouseLeave={(e) => {
+                                if (!isActive() && !isRenaming()) {
+                                  (e.currentTarget as HTMLElement).style.background = "transparent";
+                                  (e.currentTarget as HTMLElement).style.color = "var(--on-surface-variant)";
+                                }
+                              }}
                             >
-                              <span class="material-symbols-outlined text-sm shrink-0">chat_bubble</span>
+                              <span class="material-symbols-outlined text-[14px] shrink-0" style={{ color: isActive() ? "var(--secondary)" : "var(--outline)", opacity: isActive() ? "1" : "0.5" }}>chat</span>
                               
                               <Show when={isRenaming()} fallback={
                                 <>
-                                  <span class="truncate flex-1">
+                                  <span class="truncate flex-1 text-[12px]">
                                     {session.title || "Untitled"}
                                   </span>
-                                  <Show when={isActive()}>
-                                    <span class="shrink-0 px-1 py-0.5 bg-primary-container text-[9px] text-primary rounded font-bold">active</span>
-                                  </Show>
                                   <Show when={!isCompact()}>
-                                    <span class="text-[10px] text-outline-variant shrink-0">
+                                    <span class="text-[10px] shrink-0" style={{ color: "var(--outline)", opacity: "0.5" }}>
                                       {formatTime(session.updated_at)}
                                     </span>
                                   </Show>
                                   <Show when={isCompact()}>
-                                    <span class="text-[10px] text-outline-variant shrink-0">
+                                    <span class="text-[10px] shrink-0" style={{ color: "var(--outline)", opacity: "0.5" }}>
                                       {formatCompactDate(session.updated_at)}
                                     </span>
                                   </Show>
@@ -936,12 +829,34 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
                 {renameError()}
               </div>
             </Show>
+
+            {/* Show all / collapse footer */}
+            <Show when={!debouncedSearch() && totalSessionCount() > RECENT_LIMIT}>
+              <button
+                onClick={() => setShowAllSessions(v => !v)}
+                class="w-full flex items-center justify-center gap-1.5 py-2 mt-1 text-[11px] transition-all duration-150 rounded-lg"
+                style={{ color: "var(--outline)" }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--surface-container)"; (e.currentTarget as HTMLElement).style.color = "var(--on-surface-variant)"; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "var(--outline)"; }}
+              >
+                <span class="material-symbols-outlined" style={{ "font-size": "13px" }}>
+                  {showAllSessions() ? "expand_less" : "expand_more"}
+                </span>
+                <span>
+                  {showAllSessions()
+                    ? "Show less"
+                    : `${totalSessionCount() - RECENT_LIMIT} more sessions`}
+                </span>
+              </button>
+            </Show>
           </div>
         </Show>
 
         {/* Explorer tab */}
         <Show when={activeTab() === "explorer"}>
           <div 
+            role="tabpanel"
+            id="explorer-panel"
             data-component="explorer-tree"
             class="h-full overflow-y-auto py-2 px-2 custom-scrollbar flex flex-col"
             onKeyDown={handleExplorerKeyDown}

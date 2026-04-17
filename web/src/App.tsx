@@ -1,7 +1,8 @@
 import { createEffect, createSignal, on, onMount, Show } from "solid-js";
 import Workbench from "./components/Workbench";
 import SessionView from "./components/SessionView";
-import EmptySessionView from "./components/EmptySessionView";
+import WelcomeScreen from "./components/WelcomeScreen";
+import RecentProjectsView from "./components/RecentProjectsView";
 import Terminal from "./components/Terminal";
 import { Settings } from "./components/Settings";
 import { ToastContainer, showToast } from "./components/Toast";
@@ -63,6 +64,19 @@ export default function App() {
 
   // Track whether we're doing an initial session load (full replace) vs an incremental reload
   let isSessionLoad = false;
+
+  const handleSelectProject = (projectId: string) => {
+    projectContext.setActiveProject(projectId);
+  };
+
+  const handleAddProject = () => {
+    // ProjectRail handles the actual add-project flow via its own dialog
+    // This is called from WelcomeScreen/RecentProjectsView CTAs which don't have direct access
+    // to the ProjectRail's dialog state. The actual trigger happens through the ProjectRail's
+    // handleAddProject. For now, we dispatch a custom event that ProjectRail listens to.
+    const event = new CustomEvent("rcode:open-add-project");
+    window.dispatchEvent(event);
+  };
 
   // Local SSE status (per App-level SSE connection if needed)
   const [sseStatus, setSseStatus] = createSignal<"connected" | "connecting" | "disconnected">("disconnected");
@@ -152,20 +166,23 @@ export default function App() {
   };
 
   const createSession = async () => {
+    const activeProject = projectContext.activeProject();
+    if (!activeProject) {
+      showToast({
+        type: "warning",
+        message: `No project selected. Please open a project folder first.`,
+        duration: 5000,
+      });
+      return null;
+    }
+
     try {
-      const activeProject = projectContext.activeProject();
       const model = globalStore.currentModel();
-      const payload = activeProject
-        ? {
-            project_id: activeProject.id,
-            agent_id: "build",
-            model_id: model,
-          }
-        : {
-            project_path: ".",
-            agent_id: "build",
-            model_id: model,
-          };
+      const payload = {
+        project_id: activeProject.id,
+        agent_id: "build",
+        model_id: model,
+      };
 
       const res = await fetch(`${await getApiBase()}/session`, {
         method: "POST",
@@ -447,6 +464,52 @@ export default function App() {
     return workspace.sessions().find(s => s.id === sessionId) || null;
   };
 
+  // 3-way routing: onboarding → project list → session
+  const renderMainContent = () => {
+    if (projectContext.projects().length === 0) {
+      return <WelcomeScreen onAddProject={handleAddProject} />;
+    }
+    if (!currentSession()) {
+      return (
+        <RecentProjectsView
+          projects={projectContext.projects()}
+          activeProject={projectContext.activeProject()}
+          onSelectProject={handleSelectProject}
+          onAddProject={handleAddProject}
+        />
+      );
+    }
+    return (
+      <SessionView
+        session={currentSession()!}
+        onSubmit={submitPrompt}
+        onAbort={abortSession}
+        onCommandResult={handleCommandResult}
+        onComplete={() => {
+          const sessionId = workspace.activeSessionId();
+          if (sessionId) {
+            workspace.setLoading(sessionId, false);
+          }
+        }}
+        onReloadMessages={async () => {
+          const sessionId = workspace.activeSessionId();
+          if (sessionId) {
+            await loadMessages(sessionId);
+          }
+        }}
+        onError={(errorMsg) => {
+          showToast({
+            type: "error",
+            message: `Agent error: ${errorMsg}`,
+            duration: 6000,
+          });
+        }}
+        onRetry={handleRetry}
+        currentModel={globalStore.currentModel()}
+      />
+    );
+  };
+
   return (
     <>
       <Workbench
@@ -462,33 +525,7 @@ export default function App() {
         onTerminalToggle={() => globalStore.toggleTerminal()}
         onSettingsClick={() => globalStore.toggleSettings(true)}
       >
-        <Show
-          when={currentSession()}
-          fallback={<EmptySessionView onCreateSession={createSession} />}
-        >
-          <SessionView
-            session={currentSession()!}
-            onSubmit={submitPrompt}
-            onAbort={abortSession}
-            onCommandResult={handleCommandResult}
-            onComplete={() => {}}
-            onReloadMessages={async () => {
-              const sessionId = workspace.activeSessionId();
-              if (sessionId) {
-                await loadMessages(sessionId);
-              }
-            }}
-            onError={(errorMsg) => {
-              showToast({
-                type: "error",
-                message: `Agent error: ${errorMsg}`,
-                duration: 6000,
-              });
-            }}
-            onRetry={handleRetry}
-            currentModel={globalStore.currentModel()}
-          />
-        </Show>
+        {renderMainContent()}
       </Workbench>
       <Terminal isOpen={globalStore.terminalOpen()} onClose={() => globalStore.toggleTerminal(false)} />
       <Show when={globalStore.showSettings()}>

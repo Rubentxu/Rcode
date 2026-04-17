@@ -1,7 +1,69 @@
-import { createSignal, onMount, Show, For } from "solid-js";
+import { createSignal, Show, For, onMount } from "solid-js";
 import type { Session } from "../stores";
+import type { ModelInfo } from "../api/types";
 import { getApiBase } from "../api/config";
 import { useProjectContext } from "../context/ProjectContext";
+import { useProviderModels } from "../hooks/useProviderModels";
+
+// ── Action button with tooltip ───────────────────────────────────────────────
+function ActionButton(props: {
+  onClick?: () => void;
+  icon: string;
+  label: string;
+  shortcut?: string;
+  active?: boolean;
+  "data-component"?: string;
+}) {
+  const [show, setShow] = createSignal(false);
+  return (
+    <div class="relative" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+      <button
+        onClick={props.onClick}
+        data-component={props["data-component"]}
+        class={`p-2 hover:bg-surface-container-high rounded-md transition-all active:scale-95 ${props.active ? "bg-surface-container-high" : ""}`}
+        aria-label={props.label}
+      >
+        <span class="material-symbols-outlined text-[18px] text-primary">{props.icon}</span>
+      </button>
+      <Show when={show()}>
+        <div class="absolute bottom-full right-0 mb-1.5 pointer-events-none z-50">
+          <div class="flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap shadow-lg"
+            style="background: var(--surface-container-highest); border: 1px solid var(--outline-variant); color: var(--on-surface);">
+            <span>{props.label}</span>
+            <Show when={props.shortcut}>
+              <kbd class="px-1 py-0.5 rounded text-[10px] font-mono"
+                style="background: var(--surface-container); border: 1px solid var(--outline-variant); color: var(--outline);">
+                {props.shortcut}
+              </kbd>
+            </Show>
+          </div>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
+// ── Theme toggle (persisted in localStorage) ──────────────────────────────────
+function getInitialTheme(): "dark" | "light" {
+  try {
+    const saved = localStorage.getItem("rcode-theme");
+    if (saved === "light" || saved === "dark") return saved;
+  } catch {}
+  return "dark";
+}
+
+const [currentTheme, setCurrentTheme] = createSignal<"dark" | "light">(getInitialTheme());
+
+function applyTheme(theme: "dark" | "light") {
+  document.documentElement.setAttribute("data-theme", theme);
+  try { localStorage.setItem("rcode-theme", theme); } catch {}
+}
+
+function toggleTheme() {
+  const next = currentTheme() === "dark" ? "light" : "dark";
+  setCurrentTheme(next);
+  applyTheme(next);
+}
 
 interface WorkbenchTopNavProps {
   title: string;
@@ -14,15 +76,7 @@ interface WorkbenchTopNavProps {
   onSettingsClick?: () => void;
   onOutlineToggle?: () => void;
   outlineOpen?: boolean;
-}
-
-interface ModelInfo {
-  id: string;
-  provider: string;
-  display_name?: string;
-  has_credentials: boolean;
-  source: "api" | "fallback" | "configured";
-  enabled: boolean;
+  activeProjectName?: string;
 }
 
 interface ModelGroup {
@@ -33,32 +87,28 @@ interface ModelGroup {
 
 export default function WorkbenchTopNav(props: WorkbenchTopNavProps) {
   const projectContext = useProjectContext();
-  const [models, setModels] = createSignal<ModelInfo[]>([]);
+  const pm = useProviderModels();
   const [showModelDropdown, setShowModelDropdown] = createSignal(false);
   const [currentModel, setCurrentModel] = createSignal(props.currentModel || "");
+  const [searchExpanded, setSearchExpanded] = createSignal(false);
 
-  onMount(async () => {
-    try {
-      const res = await fetch(`${await getApiBase()}/models`);
-      if (res.ok) {
-        const data = await res.json();
-        setModels(data.models || []);
-      }
-    } catch {
-      // Silently fail - selector just shows current model
-    }
-  });
+  // Apply persisted theme on first mount
+  onMount(() => applyTheme(currentTheme()));
 
-  // Group models by provider, only including enabled models in the dropdown
+  // Group models by provider display_name, only for configured providers, only enabled models
   const grouped = (): ModelGroup[] => {
     const groups: Record<string, ModelGroup> = {};
-    for (const m of models()) {
+    for (const m of pm.allModels) {
       // Only include enabled models in the dropdown selector (per REQ-WB-01)
       if (!m.enabled) continue;
-      if (!groups[m.provider]) {
-        groups[m.provider] = { name: m.provider, hasCreds: m.has_credentials, models: [] };
+      const provider = pm.modelsByProvider.get(m.provider);
+      // Only show models from configured providers
+      if (!provider || !provider.configured && !provider.has_key) continue;
+      const providerName = provider.display_name || m.provider;
+      if (!groups[providerName]) {
+        groups[providerName] = { name: providerName, hasCreds: provider.has_key, models: [] };
       }
-      groups[m.provider].models.push(m);
+      groups[providerName].models.push(m);
     }
     return Object.values(groups).map((group) => ({
       ...group,
@@ -74,7 +124,7 @@ export default function WorkbenchTopNav(props: WorkbenchTopNavProps) {
     }));
   };
 
-  const currentModelMeta = () => models().find((model) => model.id === currentModel());
+  const currentModelMeta = () => pm.allModels.find((model) => model.id === currentModel());
 
   const sourceBadgeLabel = (source: ModelInfo["source"]) => {
     switch (source) {
@@ -90,11 +140,11 @@ export default function WorkbenchTopNav(props: WorkbenchTopNavProps) {
   const sourceBadgeStyle = (source: ModelInfo["source"]) => {
     switch (source) {
       case "configured":
-        return "background: rgba(34,197,94,0.14); color: var(--secondary);";
+        return "background: var(--success-bg-subtle); color: var(--secondary);";
       case "api":
-        return "background: rgba(59,130,246,0.14); color: #60a5fa;";
+        return "background: var(--info-bg-subtle); color: var(--info-color);";
       default:
-        return "background: rgba(148,163,184,0.14); color: var(--on-surface-variant);";
+        return "background: var(--surface-container); color: var(--on-surface-variant);";
     }
   };
 
@@ -125,7 +175,7 @@ export default function WorkbenchTopNav(props: WorkbenchTopNavProps) {
   return (
     <header
       data-component="workbench-topnav"
-      class="flex justify-between items-center w-full px-4 h-12 bg-[#181c22] border-b border-outline-variant/20 shrink-0"
+      class="flex justify-between items-center w-full px-4 h-12 bg-surface-container-low border-b border-outline-variant/20 shrink-0"
     >
       {/* Left section - Brand + session title */}
       <div class="flex items-center gap-4 min-w-0">
@@ -139,59 +189,102 @@ export default function WorkbenchTopNav(props: WorkbenchTopNavProps) {
         <div class="h-5 w-[1px] bg-outline-variant/30 hidden sm:block"></div>
 
         <div class="flex items-center gap-2 min-w-0">
-          <span class="text-xs font-medium text-outline shrink-0">Session:</span>
-          <span class="text-sm font-semibold text-on-surface truncate">{props.title || "No session"}</span>
-          <Show when={projectContext.activeProject()}>
-            <div class="flex items-center gap-1.5 px-2 py-0.5 bg-surface-container-low rounded-full border border-outline-variant/10">
-              <span class="material-symbols-outlined text-xs text-secondary shrink-0">folder</span>
-              <span class="text-xs font-medium text-secondary truncate max-w-[150px]" title={projectContext.activeProject()?.name}>
-                {projectContext.activeProject()?.name}
-              </span>
-            </div>
+          <Show when={props.activeProjectName}>
+            <>
+              <span class="material-symbols-outlined text-[14px] text-outline" style={{"font-variation-settings": "'FILL' 0"}}>folder</span>
+              <span class="text-xs font-semibold text-on-surface-variant truncate max-w-[100px] sm:max-w-[140px]">{props.activeProjectName}</span>
+              <span class="text-outline-variant/40 text-xs select-none">/</span>
+            </>
           </Show>
+          <span class="text-sm font-semibold text-on-surface truncate max-w-[120px] sm:max-w-[200px] md:max-w-[300px]" title={props.title || "RCode"}>{props.title || "RCode"}</span>
         </div>
       </div>
 
       {/* Center section - Search */}
-      <div class="flex-1 max-w-md mx-4 hidden md:block">
-        <div class="relative">
-          <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-outline text-sm">search</span>
-          <input
-            type="text"
-            placeholder="Search..."
-            data-component="workbench-search"
-            class="w-full bg-surface-container-low text-on-surface text-sm pl-9 pr-4 py-2 rounded-lg border border-outline-variant/20 focus:border-primary focus:outline-none transition-colors"
-          />
+      <div class="flex-1 mx-2 md:mx-4">
+        {/* Full search bar on md+ */}
+        <div class="hidden md:block max-w-md mx-auto">
+          <div class="relative">
+            <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-outline text-sm">search</span>
+            <input
+              type="text"
+              placeholder="Search..."
+              aria-label="Search sessions and files"
+              data-component="workbench-search"
+              class="w-full bg-surface-container-low text-on-surface text-sm pl-9 pr-4 py-2 rounded-lg border border-outline-variant/20 focus:border-primary focus:outline-none transition-colors"
+            />
+          </div>
+        </div>
+        {/* Compact search toggle on small screens */}
+        <div class="md:hidden flex justify-center">
+          <Show when={!searchExpanded()}>
+            <button
+              onClick={() => setSearchExpanded(true)}
+              aria-label="Open search"
+              class="p-2 hover:bg-surface-container-high rounded-md transition-all"
+            >
+              <span class="material-symbols-outlined text-[18px] text-outline">search</span>
+            </button>
+          </Show>
+          <Show when={searchExpanded()}>
+            <div class="relative w-full max-w-[200px]">
+              <span class="material-symbols-outlined absolute left-2 top-1/2 -translate-y-1/2 text-outline text-sm">search</span>
+              <input
+                type="text"
+                placeholder="Search..."
+                aria-label="Search sessions and files"
+                autofocus
+                onBlur={() => setSearchExpanded(false)}
+                class="w-full bg-surface-container-low text-on-surface text-xs pl-7 pr-3 py-1.5 rounded-lg border border-primary focus:outline-none transition-colors"
+              />
+            </div>
+          </Show>
         </div>
       </div>
 
       {/* Right section - Status and controls */}
       <div class="flex items-center gap-3">
         {/* Connected status badge */}
-        <div class="flex items-center gap-2 bg-surface-container-low px-2.5 py-1 rounded-full border border-outline-variant/10">
+        <div
+          class="flex items-center gap-2 px-2.5 py-1 rounded-full border transition-all"
+          style={{
+            background: props.sseStatus === "connected"
+              ? "var(--success-bg-subtle)"
+              : props.sseStatus === "connecting"
+              ? "var(--warning-bg-subtle)"
+              : "transparent",
+            "border-color": props.sseStatus === "connected"
+              ? "var(--success-border-subtle)"
+              : props.sseStatus === "connecting"
+              ? "var(--outline-variant)"
+              : "var(--outline-variant)",
+            opacity: props.sseStatus === "disconnected" || !props.sseStatus ? "0.6" : "1",
+          }}
+        >
           <span class="relative flex h-2 w-2">
-            <span
-              class={`inline-flex rounded-full h-2 w-2 ${
-                props.sseStatus === "connected" ? "bg-secondary" :
-                props.sseStatus === "connecting" ? "bg-tertiary" : "bg-outline"
-              }`}
-            ></span>
+            <span class={`inline-flex rounded-full h-2 w-2 ${
+              props.sseStatus === "connected" ? "bg-secondary" :
+              props.sseStatus === "connecting" ? "bg-tertiary" : "bg-outline/50"
+            }`}></span>
             <Show when={props.sseStatus === "connected"}>
               <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-secondary opacity-75"></span>
             </Show>
           </span>
-          <span class="text-[10px] font-bold text-secondary tracking-widest uppercase hidden sm:inline">
+          <span class={`text-[10px] font-semibold tracking-wide uppercase hidden sm:inline ${
+            props.sseStatus === "connected" ? "text-secondary" :
+            props.sseStatus === "connecting" ? "text-tertiary" : "text-outline"
+          }`}>
             {props.sseStatus || "disconnected"}
           </span>
         </div>
 
         {/* Model selector dropdown */}
-        <div class="relative hidden lg:block">
+        <div class="relative hidden sm:block">
           <button
             onClick={() => setShowModelDropdown(!showModelDropdown())}
             class="flex items-center gap-1.5 bg-surface-container-low px-2.5 py-1 rounded-full border border-outline-variant/10 hover:bg-surface-container-high transition-all cursor-pointer"
           >
-            <span class="text-[10px] font-semibold text-primary truncate max-w-[120px]">
+            <span class="text-[10px] font-semibold text-primary truncate max-w-[80px] lg:max-w-[120px]">
               {currentModelMeta()?.display_name || currentModel().split('/')[1] || currentModel() || "No model"}
             </span>
             <Show when={currentModelMeta()}>
@@ -209,6 +302,8 @@ export default function WorkbenchTopNav(props: WorkbenchTopNavProps) {
 
           <Show when={showModelDropdown()}>
             <div
+              role="listbox"
+              aria-label="Available models"
               class="absolute top-full right-0 mt-2 bg-surface-container border border-outline-variant/20 rounded-xl min-w-[320px] z-[100] max-h-[450px] overflow-y-auto shadow-2xl"
             >
               <For each={grouped()}>
@@ -269,43 +364,44 @@ export default function WorkbenchTopNav(props: WorkbenchTopNavProps) {
           </Show>
         </div>
 
-        {/* Fallback model badge for smaller screens */}
-        <div class="lg:hidden flex items-center gap-1.5 bg-surface-container-low px-2.5 py-1 rounded-full border border-outline-variant/10">
-          <span class="text-[10px] font-semibold text-primary truncate max-w-[120px]">
+        {/* Fallback model badge — only on xs screens */}
+        <div class="sm:hidden flex items-center gap-1.5 bg-surface-container-low px-2.5 py-1 rounded-full border border-outline-variant/10">
+          <span class="text-[10px] font-semibold text-primary truncate max-w-[80px]">
             {props.currentModel?.split('/')[1] || props.currentModel || "No model"}
           </span>
         </div>
 
         {/* Action buttons */}
         <div class="flex items-center gap-1">
-          <button
+          <ActionButton
+            onClick={toggleTheme}
+            icon={currentTheme() === "dark" ? "light_mode" : "dark_mode"}
+            label={currentTheme() === "dark" ? "Light mode" : "Dark mode"}
+            data-component="theme-toggle"
+          />
+          <ActionButton
             onClick={props.onOutlineToggle}
-            class="p-2 hover:bg-surface-container-high rounded-md transition-all active:scale-95"
-            title="Toggle Outline Panel"
+            icon={props.outlineOpen ? "right_panel_close" : "right_panel_open"}
+            label="Toggle outline"
+            shortcut="Ctrl+\\"
+            active={props.outlineOpen}
             data-component="outline-toggle"
-          >
-            <span class="material-symbols-outlined text-[18px] text-primary">
-              {props.outlineOpen ? "panel_right_close" : "panel_right"}
-            </span>
-          </button>
-
-          <button
+          />
+          <ActionButton
             onClick={props.onTerminalToggle}
-            class="p-2 hover:bg-surface-container-high rounded-md transition-all active:scale-95"
-            title="Toggle Terminal"
+            icon="terminal"
+            label="Toggle terminal"
+            shortcut="Ctrl+`"
+            active={props.terminalOpen}
             data-component="terminal-toggle"
-          >
-            <span class="material-symbols-outlined text-[18px] text-primary">terminal</span>
-          </button>
-
-          <button
+          />
+          <ActionButton
             onClick={props.onSettingsClick}
-            class="p-2 hover:bg-surface-container-high rounded-md transition-all active:scale-95"
-            title="Settings"
+            icon="settings"
+            label="Settings"
+            shortcut="Ctrl+,"
             data-component="settings-toggle"
-          >
-            <span class="material-symbols-outlined text-[18px] text-primary">settings</span>
-          </button>
+          />
         </div>
       </div>
     </header>

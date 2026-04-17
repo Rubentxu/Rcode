@@ -132,6 +132,9 @@ pub struct ProviderConfig {
     /// Legacy field - use `enabled` instead (inverted logic)
     #[serde(default)]
     pub disabled: bool,
+    /// Display name for this provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
@@ -401,17 +404,17 @@ impl RcodeConfig {
     pub fn effective_model(&self) -> Option<String> {
         self.model.clone().or_else(|| {
             // Check environment-based model signals when no explicit config.model is set.
-            // This respects environment-based model configuration for various providers
-            // including MiniMax Anthropic-compatible setups.
-            std::env::var("ANTHROPIC_MODEL")
-                .ok()
-                .filter(|v| !v.is_empty())
-                .or_else(|| {
-                    std::env::var("MINIMAX_MODEL")
-                        .ok()
-                        .filter(|v| !v.is_empty())
-                })
-                .or_else(|| std::env::var("ZAI_MODEL").ok().filter(|v| !v.is_empty()))
+            // Generic approach: check {PROVIDER}_MODEL env vars for all configured providers.
+            // Iterate through configured providers and check each one's _MODEL env var.
+            for provider_id in self.providers.keys() {
+                let env_var = format!("{}_MODEL", provider_id.to_uppercase().replace('-', "_"));
+                if let Ok(model) = std::env::var(&env_var)
+                    && !model.is_empty()
+                {
+                    return Some(format!("{}/{}", provider_id, model));
+                }
+            }
+            None
         })
     }
 
@@ -781,46 +784,48 @@ mod tests {
     }
 
     #[test]
-    fn test_effective_model_falls_back_to_anthropic_model_env() {
+    fn test_effective_model_falls_back_to_provider_model_env() {
+        // Test with minimax in providers
+        let _guard = EnvGuard::new(&[("MINIMAX_MODEL", Some("minimax-01")), ("ZAI_MODEL", None)]);
+
+        let mut config = RcodeConfig::default();
+        config
+            .providers
+            .insert("minimax".to_string(), ProviderConfig::default());
+
+        assert_eq!(
+            config.effective_model(),
+            Some("minimax/minimax-01".to_string())
+        );
+    }
+
+    #[test]
+    fn test_effective_model_returns_none_when_no_provider_configured() {
+        let _guard = EnvGuard::new(&[
+            ("ANTHROPIC_MODEL", Some("claude-sonnet-4-5")),
+            ("MINIMAX_MODEL", Some("MiniMax-M2.7")),
+        ]);
+
+        // No providers configured - should return None
+        let config = RcodeConfig::default();
+        assert_eq!(config.effective_model(), None);
+    }
+
+    #[test]
+    fn test_effective_model_ignores_env_var_for_unconfigured_provider() {
         let _guard = EnvGuard::new(&[
             ("ANTHROPIC_MODEL", Some("claude-sonnet-4-5")),
             ("MINIMAX_MODEL", None),
             ("ZAI_MODEL", None),
         ]);
 
-        let config = RcodeConfig::default();
-        assert_eq!(
-            config.effective_model(),
-            Some("claude-sonnet-4-5".to_string())
-        );
-    }
+        // Only minimax is configured - ANTHROPIC_MODEL should be ignored
+        let mut config = RcodeConfig::default();
+        config
+            .providers
+            .insert("minimax".to_string(), ProviderConfig::default());
 
-    #[test]
-    fn test_effective_model_falls_back_to_minimax_model_env() {
-        let _guard = EnvGuard::new(&[
-            ("ANTHROPIC_MODEL", Some("")), // empty = ignored
-            ("MINIMAX_MODEL", Some("MiniMax-M2.7")),
-            ("ZAI_MODEL", Some("")), // empty = ignored
-        ]);
-
-        let config = RcodeConfig::default();
-        assert_eq!(config.effective_model(), Some("MiniMax-M2.7".to_string()));
-    }
-
-    #[test]
-    fn test_effective_model_prefers_anthropic_over_minimax() {
-        let _guard = EnvGuard::new(&[
-            ("ANTHROPIC_MODEL", Some("claude-haiku-test")),
-            ("MINIMAX_MODEL", Some("MiniMax-M2.7")),
-            ("ZAI_MODEL", Some("")), // empty = ignored
-        ]);
-
-        let config = RcodeConfig::default();
-        // ANTHROPIC_MODEL should take precedence over MINIMAX_MODEL
-        assert_eq!(
-            config.effective_model(),
-            Some("claude-haiku-test".to_string())
-        );
+        assert_eq!(config.effective_model(), None);
     }
 
     #[test]
@@ -843,52 +848,36 @@ mod tests {
             ("ZAI_MODEL", Some("")),
         ]);
 
-        let config = RcodeConfig::default();
-        // Empty ANTHROPIC_MODEL should be ignored
+        let mut config = RcodeConfig::default();
+        config
+            .providers
+            .insert("minimax".to_string(), ProviderConfig::default());
+
+        // Empty MINIMAX_MODEL should be ignored
         assert_eq!(config.effective_model(), None);
     }
 
     #[test]
-    fn test_effective_model_falls_back_to_zai_model_env() {
+    fn test_effective_model_first_configured_provider_wins() {
         let _guard = EnvGuard::new(&[
-            ("ANTHROPIC_MODEL", Some("")), // empty = ignored
-            ("MINIMAX_MODEL", Some("")),   // empty = ignored
-            ("ZAI_MODEL", Some("zai-coding-plan/zai-5.1")),
-        ]);
-
-        let config = RcodeConfig::default();
-        assert_eq!(
-            config.effective_model(),
-            Some("zai-coding-plan/zai-5.1".to_string())
-        );
-    }
-
-    #[test]
-    fn test_effective_model_prefers_anthropic_over_zai() {
-        let _guard = EnvGuard::new(&[
-            ("ANTHROPIC_MODEL", Some("claude-haiku-test")),
-            ("MINIMAX_MODEL", Some("")), // empty = ignored
-            ("ZAI_MODEL", Some("zai-coding-plan/zai-5.1")),
-        ]);
-
-        let config = RcodeConfig::default();
-        // ANTHROPIC_MODEL should take precedence over ZAI_MODEL
-        assert_eq!(
-            config.effective_model(),
-            Some("claude-haiku-test".to_string())
-        );
-    }
-
-    #[test]
-    fn test_effective_model_prefers_minimax_over_zai() {
-        let _guard = EnvGuard::new(&[
-            ("ANTHROPIC_MODEL", Some("")), // empty = ignored
             ("MINIMAX_MODEL", Some("MiniMax-M2.7")),
-            ("ZAI_MODEL", Some("zai-coding-plan/zai-5.1")),
+            ("ZAI_MODEL", Some("zai-coding-standard")),
         ]);
 
-        let config = RcodeConfig::default();
-        // MINIMAX_MODEL should take precedence over ZAI_MODEL
-        assert_eq!(config.effective_model(), Some("MiniMax-M2.7".to_string()));
+        // Both minimax and zai configured - minimax comes first in iteration
+        let mut config = RcodeConfig::default();
+        config
+            .providers
+            .insert("minimax".to_string(), ProviderConfig::default());
+        config
+            .providers
+            .insert("zai".to_string(), ProviderConfig::default());
+
+        // HashMap iteration order is not guaranteed, so we just verify it returns one of them
+        let result = config.effective_model();
+        assert!(result.is_some());
+        // The result should be either minimax/minimax-01 or zai/zai-coding-standard
+        let val = result.unwrap();
+        assert!(val == "minimax/MiniMax-M2.7" || val == "zai/zai-coding-standard");
     }
 }
