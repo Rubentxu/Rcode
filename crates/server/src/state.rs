@@ -7,9 +7,10 @@ use rcode_agent::permissions::InteractivePermissionService;
 use rcode_core::{RcodeConfig, SubagentRunner};
 use rcode_event::EventBus;
 use rcode_lsp::LanguageServerRegistry;
+use rcode_privacy::service::PrivacyService;
 use rcode_providers::catalog::ModelCatalogService;
 use rcode_providers::CacheStore;
-use rcode_providers::{LlmProvider, ProviderRegistry};
+use rcode_providers::{LlmProvider, ProviderFactory, ProviderRegistry};
 use rcode_session::{ProjectService, SessionService};
 use rcode_storage::{schema, catalog_cache::CatalogCacheRepository, MessageRepository, ProjectRepository, SessionRepository};
 use rcode_tools::ToolRegistryService;
@@ -20,6 +21,34 @@ use crate::cache_store_impl::ServerCacheStore;
 use crate::cancellation::CancellationRegistry;
 use crate::explorer::ExplorerService;
 use crate::subagent_runner_impl::ServerSubagentRunner;
+
+/// Adapter to wrap rcode_providers::LlmProvider and expose it as rcode_core::LlmProvider.
+/// This allows using production providers (via ProviderFactory) with LlmDetector
+/// which expects rcode_core::LlmProvider.
+struct PrivacyProviderAdapter {
+    inner: Arc<dyn rcode_providers::LlmProvider>,
+}
+
+impl PrivacyProviderAdapter {
+    fn new(inner: Arc<dyn rcode_providers::LlmProvider>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait::async_trait]
+impl rcode_core::LlmProvider for PrivacyProviderAdapter {
+    async fn complete(&self, req: rcode_core::CompletionRequest) -> rcode_core::error::Result<rcode_core::CompletionResponse> {
+        self.inner.complete(req).await
+    }
+
+    async fn stream(&self, req: rcode_core::CompletionRequest) -> rcode_core::error::Result<rcode_core::StreamingResponse> {
+        self.inner.stream(req).await
+    }
+
+    fn model_info(&self, model_id: &str) -> Option<rcode_core::ModelInfo> {
+        self.inner.model_info(model_id)
+    }
+}
 
 pub struct AppState {
     pub project_service: Option<Arc<ProjectService>>,
@@ -38,6 +67,8 @@ pub struct AppState {
     pub mock_provider: Arc<std::sync::Mutex<Option<Arc<dyn LlmProvider>>>>,
     /// Explorer service for workspace file tree
     pub explorer_service: Arc<ExplorerService>,
+    /// Privacy service for sensitive data sanitization
+    pub privacy: PrivacyService,
 }
 
 fn create_storage_path() -> std::path::PathBuf {
@@ -85,6 +116,105 @@ fn create_tools_with_runner(
     tools
 }
 
+/// Build a [`PrivacyService`] from the config.
+///
+/// Privacy is disabled by default (passthrough) to preserve existing behavior.
+fn build_privacy_service(config: &RcodeConfig, _event_bus: &Arc<EventBus>) -> PrivacyService {
+    // Try to extract privacy config from RcodeConfig.extra
+    // If not present, use defaults (privacy disabled)
+    let privacy_config = extract_privacy_config(config);
+
+    let mut builder = rcode_privacy::service::PrivacyService::builder()
+        .with_config(privacy_config.clone())
+        .with_emitter(rcode_privacy::events::EventEmitter::noop());
+
+    // Wire LLM detector based on detector_model
+    match &privacy_config.detector_model {
+        rcode_privacy::detector::DetectorModel::LocalOllama { .. } => {
+            let detector_config = rcode_privacy::detector::LlmDetectorConfig {
+                model: privacy_config.detector_model.clone(),
+                trigger_mode: privacy_config.trigger_mode,
+                auto_tokenize_threshold: privacy_config.auto_tokenize_threshold as f32,
+                proposal_threshold: privacy_config.proposal_threshold as f32,
+                max_proposals_per_session: privacy_config.max_proposals_per_session,
+            };
+            builder = builder.with_llm_detector(Arc::new(rcode_privacy::detector::LlmDetector::new(detector_config)));
+        }
+        rcode_privacy::detector::DetectorModel::ConfiguredProvider { model } => {
+            if let Ok((provider, _)) = ProviderFactory::build(model, Some(config)) {
+                let detector_config = rcode_privacy::detector::LlmDetectorConfig {
+                    model: privacy_config.detector_model.clone(),
+                    trigger_mode: privacy_config.trigger_mode,
+                    auto_tokenize_threshold: privacy_config.auto_tokenize_threshold as f32,
+                    proposal_threshold: privacy_config.proposal_threshold as f32,
+                    max_proposals_per_session: privacy_config.max_proposals_per_session,
+                };
+                let adapter = Arc::new(PrivacyProviderAdapter::new(provider)) as Arc<dyn rcode_core::LlmProvider>;
+                builder = builder.with_llm_detector(Arc::new(rcode_privacy::detector::LlmDetector::with_provider(detector_config, adapter)));
+            }
+        }
+        rcode_privacy::detector::DetectorModel::Disabled => {}
+    }
+
+    builder.build()
+}
+
+/// Extract [`rcode_privacy::service::PrivacyConfig`] from the RCode overlay config.
+///
+/// Uses a Kustomize-like configuration model:
+/// - **Base**: standard opencode config (`~/.config/opencode/opencode.json`) — never modified
+/// - **Overlay**: RCode-specific config (`~/.config/rcode/config.json`) — extends/overrides base
+///
+/// The overlay file contains only RCode-specific extensions like `privacy`:
+/// ```json
+/// {
+///   "privacy": { "enabled": true, "security_level": "Strict" }
+/// }
+/// ```
+///
+/// Standard opencode fields (model, providers, lsp, etc.) can also be overridden
+/// in the overlay, keeping the base opencode config untouched.
+fn extract_privacy_config(_config: &RcodeConfig) -> rcode_privacy::service::PrivacyConfig {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let rcode_config_path = std::path::PathBuf::from(home)
+        .join(".config")
+        .join("rcode")
+        .join("config.json");
+
+    if !rcode_config_path.exists() {
+        return rcode_privacy::service::PrivacyConfig::default();
+    }
+
+    let content = match std::fs::read_to_string(&rcode_config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!(path = %rcode_config_path.display(), error = %e, "rcode overlay config not readable");
+            return rcode_privacy::service::PrivacyConfig::default();
+        }
+    };
+
+    let full: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(path = %rcode_config_path.display(), error = %e, "failed to parse rcode overlay config");
+            return rcode_privacy::service::PrivacyConfig::default();
+        }
+    };
+
+    let privacy_json = match full.get("privacy") {
+        Some(v) => v,
+        None => return rcode_privacy::service::PrivacyConfig::default(),
+    };
+
+    match serde_json::from_value(privacy_json.clone()) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to parse privacy config from rcode overlay, using defaults");
+            rcode_privacy::service::PrivacyConfig::default()
+        }
+    }
+}
+
 impl AppState {
     pub fn new() -> Self {
         Self::with_storage_impl(RcodeConfig::default())
@@ -96,6 +226,9 @@ impl AppState {
 
     fn with_storage_impl(config: RcodeConfig) -> Self {
         let event_bus = Arc::new(EventBus::new(1024));
+
+        // Build privacy service with config (passthrough by default)
+        let privacy = build_privacy_service(&config, &event_bus);
 
         let db_path = create_storage_path();
         tracing::info!("Using database at: {:?}", db_path);
@@ -124,6 +257,7 @@ impl AppState {
                     lsp_registry,
                     mock_provider: Arc::new(std::sync::Mutex::new(None)),
                     explorer_service: Arc::new(ExplorerService::new()),
+                    privacy,
                 };
             }
         };
@@ -153,6 +287,7 @@ impl AppState {
                 lsp_registry,
                 mock_provider: Arc::new(std::sync::Mutex::new(None)),
                 explorer_service: Arc::new(ExplorerService::new()),
+                privacy,
             };
         }
 
@@ -180,6 +315,7 @@ impl AppState {
                     lsp_registry,
                     mock_provider: Arc::new(std::sync::Mutex::new(None)),
                     explorer_service: Arc::new(ExplorerService::new()),
+                    privacy,
                 };
             }
         };
@@ -215,6 +351,7 @@ impl AppState {
                     lsp_registry,
                     mock_provider: Arc::new(std::sync::Mutex::new(None)),
                     explorer_service: Arc::new(ExplorerService::new()),
+                    privacy,
                 };
             }
         };
@@ -274,6 +411,7 @@ impl AppState {
             lsp_registry,
             mock_provider: Arc::new(std::sync::Mutex::new(None)),
             explorer_service: Arc::new(ExplorerService::new()),
+            privacy,
         }
     }
 }

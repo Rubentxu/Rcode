@@ -36,6 +36,10 @@ pub enum ServerError {
     NotFound,
     BadRequest(String),
     Conflict(String),
+    ConflictWithDetails {
+        message: String,
+        details: serde_json::Value,
+    },
     Internal(String),
     InvalidTransition(String),
     Forbidden(String),
@@ -53,6 +57,15 @@ impl ServerError {
 
     pub fn conflict(msg: impl Into<String>) -> Self {
         ServerError::Conflict(msg.into())
+    }
+
+    /// Creates a CONFLICT error with structured details in the error response.
+    /// The details are embedded in the JSON response body for API consumers.
+    pub fn conflict_with_details(msg: impl Into<String>, details: serde_json::Value) -> Self {
+        ServerError::ConflictWithDetails {
+            message: msg.into(),
+            details,
+        }
     }
 
     pub fn internal(msg: impl Into<String>) -> Self {
@@ -82,6 +95,20 @@ impl IntoResponse for ServerError {
             ),
             ServerError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.as_str()),
             ServerError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.as_str()),
+            ServerError::ConflictWithDetails { message, details } => {
+                let error_response =
+                    ErrorResponse::new("CONFLICT", message).with_details(details.clone());
+                return (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::to_value(error_response).unwrap_or_else(|_| {
+                        json!({
+                            "code": "CONFLICT",
+                            "message": message
+                        })
+                    })),
+                )
+                    .into_response();
+            }
             ServerError::Internal(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",

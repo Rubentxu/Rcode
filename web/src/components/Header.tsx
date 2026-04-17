@@ -1,5 +1,6 @@
 import { createSignal, onMount, Show, For } from "solid-js";
 import { getApiBase } from "../api/config";
+import type { ModelInfo, ProviderProtocol } from "../api/types";
 
 interface HeaderProps {
   title: string;
@@ -10,15 +11,6 @@ interface HeaderProps {
   onModelChange?: (model: string) => void;
   activeSessionId?: string;
   onSettingsClick?: () => void;
-}
-
-interface ModelInfo {
-  id: string;
-  provider: string;
-  display_name?: string;
-  has_credentials: boolean;
-  source: "api" | "fallback" | "configured";
-  enabled: boolean;
 }
 
 interface ModelGroup {
@@ -41,7 +33,9 @@ export default function Header(props: HeaderProps) {
         setModels(availableModels);
         if (availableModels.length > 0 && !props.currentModel) {
           const preferredModel =
-            availableModels.find((model) => model.enabled && model.id === "anthropic/MiniMax-M2.7-highspeed")
+            // 1. Backend-configured model (highest priority)
+            availableModels.find((model) => model.enabled && model.source === "configured")
+            // 2. First enabled model
             ?? availableModels.find((model) => model.enabled)
             ?? availableModels[0];
 
@@ -109,6 +103,32 @@ export default function Header(props: HeaderProps) {
         return "background: rgba(59,130,246,0.14); color: #60a5fa;";
       default:
         return "background: rgba(148,163,184,0.14); color: var(--on-surface-variant);";
+    }
+  };
+
+  const protocolBadgeLabel = (protocol?: ProviderProtocol) => {
+    switch (protocol) {
+      case "openai_compat":
+        return "OpenAI compat";
+      case "anthropic_compat":
+        return "Anthropic compat";
+      case "google":
+        return "Google";
+      default:
+        return null;
+    }
+  };
+
+  const protocolBadgeStyle = (protocol?: ProviderProtocol) => {
+    switch (protocol) {
+      case "openai_compat":
+        return "background: rgba(99,102,241,0.14); color: #818cf8;";
+      case "anthropic_compat":
+        return "background: rgba(245,158,11,0.14); color: #fbbf24;";
+      case "google":
+        return "background: rgba(34,197,94,0.14); color: var(--secondary);";
+      default:
+        return null;
     }
   };
 
@@ -254,6 +274,14 @@ export default function Header(props: HeaderProps) {
                               <span class="text-sm font-medium text-on-surface truncate">
                                 {model.display_name || model.id.split('/')[1] || model.id}
                               </span>
+                              <Show when={model.is_compatible && protocolBadgeLabel(model.protocol)}>
+                                <span
+                                  class="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                                  style={protocolBadgeStyle(model.protocol) || ""}
+                                >
+                                  {protocolBadgeLabel(model.protocol)}
+                                </span>
+                              </Show>
                               <span
                                 class={`text-[10px] px-2 py-0.5 rounded uppercase`}
                                 style={sourceBadgeStyle(model.source)}

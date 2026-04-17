@@ -57,30 +57,30 @@ impl Run {
         let model_string = rcode_core::resolve_model_from_config(&config, self.model.as_deref(), self.agent.as_deref())
             .unwrap_or_else(|| "anthropic/claude-sonnet-4-5".to_string());
         
-        let (provider_id, model_name) = parse_model_id(&model_string);
+        let (_, model_name) = parse_model_id(&model_string);
         let (provider, _) = ProviderFactory::build(&model_string, Some(&config))
-            .context(format!("Failed to configure provider '{}'", provider_id))?;
-        state.providers.lock().unwrap().register(provider.clone());
-        
+            .context(format!("Failed to configure provider for model '{}'", model_string))?;
+
         let session = Session::new(
             work_dir,
             self.agent.clone().unwrap_or_else(|| "default".to_string()),
             model_name.clone(),
         );
         let session = state.session_service.create(session);
-        
+
         state.session_service.update_status(&session.id.0, SessionStatus::Running);
-        
+
         state.event_bus.publish(rcode_event::Event::AgentStarted {
             session_id: session.id.0.clone(),
         });
-        
+
         let user_message = Message::user(
             session.id.0.clone(),
             vec![Part::Text { content: prompt.clone() }],
         );
         state.session_service.add_message(&session.id.0, user_message.clone());
-        
+
+        let pre_existing_count = 1; // user message already added
         let mut ctx = AgentContext {
             session_id: session.id.0.clone(),
             messages: vec![user_message],
@@ -89,10 +89,7 @@ impl Run {
             user_id: None,
             model_id: model_name.clone(),
         };
-        
-        let provider = state.providers.lock().unwrap().get(&provider_id)
-            .with_context(|| format!("Provider '{}' not found", provider_id))?
-            .clone();
+
         let executor = AgentExecutor::new(
             Arc::new(DefaultAgent::new()),
             provider,
@@ -102,7 +99,14 @@ impl Run {
         tracing::info!("Starting agent execution for session {}", session.id.0);
         
         let result = executor.run(&mut ctx).await;
-        
+
+        // Persist new assistant/tool messages produced during execution
+        for msg in ctx.messages.iter().skip(pre_existing_count) {
+            if msg.role == rcode_core::Role::Assistant {
+                state.session_service.add_message(&session.id.0, msg.clone());
+            }
+        }
+
         let stop_reason = match &result {
             Ok(r) => format!("{:?}", r.stop_reason),
             Err(e) => format!("Error: {}", e),

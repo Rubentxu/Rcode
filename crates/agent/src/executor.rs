@@ -75,6 +75,7 @@ pub struct AgentExecutorBuilder {
     auto_compact: bool,
     max_messages_before_compact: usize,
     messages_to_keep_after_compact: usize,
+    privacy: Option<rcode_privacy::service::PrivacyService>,
 }
 
 impl AgentExecutorBuilder {
@@ -93,6 +94,7 @@ impl AgentExecutorBuilder {
             auto_compact: false,
             max_messages_before_compact: 50,
             messages_to_keep_after_compact: 20,
+            privacy: None,
         }
     }
     
@@ -161,6 +163,12 @@ impl AgentExecutorBuilder {
         self.permission_service = Some(svc);
         self
     }
+
+    /// Set the privacy service for sanitizing sensitive data
+    pub fn with_privacy_service(mut self, privacy: rcode_privacy::service::PrivacyService) -> Self {
+        self.privacy = Some(privacy);
+        self
+    }
     
     /// Enable or disable automatic message compaction
     pub fn with_auto_compact(mut self, enabled: bool) -> Self {
@@ -191,6 +199,7 @@ impl AgentExecutorBuilder {
             auto_compact: self.auto_compact,
             max_messages_before_compact: self.max_messages_before_compact,
             messages_to_keep_after_compact: self.messages_to_keep_after_compact,
+            privacy: self.privacy,
         }
     }
 }
@@ -209,6 +218,7 @@ pub struct AgentExecutor {
     auto_compact: bool,
     max_messages_before_compact: usize,
     messages_to_keep_after_compact: usize,
+    privacy: Option<rcode_privacy::service::PrivacyService>,
 }
 
 impl AgentExecutor {
@@ -237,6 +247,7 @@ impl AgentExecutor {
             auto_compact: false,
             max_messages_before_compact: 50,
             messages_to_keep_after_compact: 20,
+            privacy: None,
         }
     }
 
@@ -267,6 +278,12 @@ impl AgentExecutor {
 
     pub fn with_permission_service(mut self, svc: Arc<dyn PermissionService>) -> Self {
         self.permission_service = Some(svc);
+        self
+    }
+
+    /// Set the privacy service for sanitizing sensitive data
+    pub fn with_privacy_service(mut self, privacy: rcode_privacy::service::PrivacyService) -> Self {
+        self.privacy = Some(privacy);
         self
     }
 
@@ -464,10 +481,18 @@ impl AgentExecutor {
             return Ok(ShouldContinue(false, StopReason::EndOfTurn, None));
         }
         
+        // Hook 1: Sanitize system prompt before sending to LLM
+        // This ensures any sensitive data in the system prompt is masked before it leaves the executor
+        let system_prompt = if let Some(ref privacy) = self.privacy {
+            privacy.sanitize_prompt(&ctx.session_id, &self.agent.system_prompt()).await
+        } else {
+            self.agent.system_prompt()
+        };
+
         let request = rcode_core::CompletionRequest {
             model,
             messages: ctx.messages.clone(), // TODO: CompletionRequest owns messages, cannot take slice without significant refactoring
-            system_prompt: Some(self.agent.system_prompt()),
+            system_prompt: Some(system_prompt),
             tools: if provider_supports_tools {
                 filtered_tools.into_iter().map(|t| {
                     let params = self.tools.get(&t.id)
@@ -683,6 +708,28 @@ impl AgentExecutor {
             return Ok(ShouldContinue(false, StopReason::EndOfTurn, final_usage.clone()));
         }
 
+        // Hook 2: Sanitize assistant message content before storing
+        // This prevents sensitive data in the LLM response from being persisted
+        let assistant_parts = if let Some(ref privacy) = self.privacy {
+            let mut sanitized = Vec::new();
+            for part in assistant_parts {
+                match part {
+                    Part::Text { content } => {
+                        let sanitized_content = privacy.sanitize_response(&ctx.session_id, &content).await;
+                        sanitized.push(Part::Text { content: sanitized_content });
+                    }
+                    Part::Reasoning { content } => {
+                        let sanitized_content = privacy.sanitize_response(&ctx.session_id, &content).await;
+                        sanitized.push(Part::Reasoning { content: sanitized_content });
+                    }
+                    other => sanitized.push(other),
+                }
+            }
+            sanitized
+        } else {
+            assistant_parts
+        };
+
         // Add assistant message to context
         let assistant_msg = Message::assistant(ctx.session_id.clone(), assistant_parts.clone());
         ctx.messages.push(assistant_msg.clone());
@@ -769,9 +816,16 @@ impl AgentExecutor {
             match result {
                 Ok((id, name, Ok(r))) => {
                     info!("Tool {} executed successfully", name);
+                    // Hook 3: Sanitize tool result content before storing
+                    // Tool output may contain sensitive data (file contents, shell output with IPs, etc.)
+                    let sanitized_content = if let Some(ref privacy) = self.privacy {
+                        privacy.sanitize_response(&ctx.session_id, &r.content).await
+                    } else {
+                        r.content.clone()
+                    };
                     tool_results.push(Part::ToolResult {
                         tool_call_id: id.clone(),
-                        content: r.content.clone(),
+                        content: sanitized_content.clone(),
                         is_error: false,
                     });
                     if name == "todowrite" {
@@ -779,7 +833,7 @@ impl AgentExecutor {
                             tool_results.push(Part::TaskChecklist { items });
                         }
                     }
-                    // Publish stream tool result event
+                    // Publish stream tool result event (use original r.content for real-time event)
                     self.publish_event(rcode_event::Event::StreamToolResult {
                         session_id: ctx.session_id.clone(),
                         tool_call_id: id,
@@ -790,9 +844,15 @@ impl AgentExecutor {
                 Ok((id, _, Err(e))) => {
                     warn!("Tool {} failed: {}", id, e);
                     let err_content = format!("Error: {}", e);
+                    // Hook 3: Sanitize error content before storing (errors may leak sensitive info)
+                    let sanitized_err_content = if let Some(ref privacy) = self.privacy {
+                        privacy.sanitize_response(&ctx.session_id, &err_content).await
+                    } else {
+                        err_content.clone()
+                    };
                     tool_results.push(Part::ToolResult {
                         tool_call_id: id.clone(),
-                        content: err_content.clone(),
+                        content: sanitized_err_content.clone(),
                         is_error: true,
                     });
                     // Publish stream tool result event for error case

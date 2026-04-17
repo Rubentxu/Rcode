@@ -91,6 +91,21 @@ export interface SSEErrorEvent {
   error: string;
 }
 
+// T-03: New semantic SSE event types for errors
+export interface ToolErrorEvent {
+  type: "tool_error";
+  session_id: string;
+  tool_id: string;
+  error: string;
+  duration_ms?: number;
+}
+
+export interface ProviderErrorEvent {
+  type: "provider_error";
+  provider_id: string;
+  error: string;
+}
+
 // Phase 3: New semantic SSE event types
 // Derived from: crates/event/src/bus.rs Event enum streaming variants
 // PSOT-5: These are manually synced with Rust. Full codegen from Event enum
@@ -148,10 +163,42 @@ export interface SSEStreamAssistantCommitted {
   session_id: string;
 }
 
-export type SSEEventData = SSEMessageEvent | SSEDeltaEvent | SSEDoneEvent | SSEErrorEvent 
-  | SSEStreamTextDelta | SSEStreamReasoningDelta | SSEStreamToolCallStart 
-  | SSEStreamToolCallArg | SSEStreamToolCallEnd | SSEStreamToolResult 
-  | SSEStreamAssistantCommitted;
+export type SSEEventData = SSEMessageEvent | SSEDeltaEvent | SSEDoneEvent | SSEErrorEvent
+  | SSEStreamTextDelta | SSEStreamReasoningDelta | SSEStreamToolCallStart
+  | SSEStreamToolCallArg | SSEStreamToolCallEnd | SSEStreamToolResult
+  | SSEStreamAssistantCommitted
+  // T-03: Error event types
+  | ToolErrorEvent | ProviderErrorEvent;
+
+// Provider protocol type
+export type ProviderProtocol = "openai_compat" | "anthropic_compat" | "google";
+
+// Provider info from GET /config/providers
+export interface ProviderInfo {
+  id: string;
+  name: string;
+  display_name: string;
+  protocol: ProviderProtocol;
+  native: boolean;
+  supports_custom_base_url: boolean;
+  has_key: boolean;
+  key_source: string;
+  base_url: string | null;
+  enabled: boolean;
+  models_count: number;
+}
+
+// Model info from GET /models (extends backend model with protocol info)
+export interface ModelInfo {
+  id: string;
+  provider: string;
+  display_name?: string;
+  protocol?: ProviderProtocol;
+  is_compatible?: boolean;
+  has_credentials: boolean;
+  source: "api" | "fallback" | "configured";
+  enabled: boolean;
+}
 
 // Connection status
 export type SSEStatus = "connected" | "connecting" | "disconnected";
@@ -173,4 +220,7 @@ export interface SSEConfig {
   onToolCallEnd?: (event: SSEStreamToolCallEnd) => void;
   onToolResult?: (event: SSEStreamToolResult) => void;
   onAssistantCommitted?: (event: SSEStreamAssistantCommitted) => void;
+  // T-03: Error event callbacks
+  onToolError?: (event: ToolErrorEvent) => void;
+  onProviderError?: (event: ProviderErrorEvent) => void;
 }

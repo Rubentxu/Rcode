@@ -1,10 +1,11 @@
 //! Provider factory for building LLM providers from model strings
 //!
 //! This module provides a centralized way to create providers with proper
-/// configuration and API key resolution.
+//! configuration and API key resolution.
 use std::sync::Arc;
 
 use rcode_core::error::{RCodeError, Result};
+use rcode_core::provider::ProviderProtocol;
 use rcode_core::RcodeConfig;
 
 use super::anthropic::AnthropicProvider;
@@ -13,6 +14,7 @@ use super::minimax::MiniMaxProvider;
 use super::openai::OpenAIProvider;
 use super::openrouter::OpenRouterProvider;
 use super::zai::ZaiProvider;
+use super::registry;
 use super::{parse_model_id, LlmProvider};
 
 /// Information about an available model
@@ -27,6 +29,8 @@ pub struct ModelInfo {
 }
 
 /// Known providers and their supported models
+/// NOTE: This will be replaced by registry-based model listing in Phase 3.
+/// Keeping for backward compatibility with list_models() until Phase 3.
 const KNOWN_PROVIDERS: &[(&str, &[&str])] = &[
     (
         "anthropic",
@@ -79,6 +83,10 @@ const KNOWN_PROVIDERS: &[(&str, &[&str])] = &[
             "zai-coding-premium",
         ],
     ),
+    (
+        "github-copilot",
+        &["gpt-4o", "gpt-4o-mini", "claude-sonnet-4-5", "claude-3.5-sonnet", "o3-mini"],
+    ),
 ];
 
 /// Factory for creating LLM providers from model identifiers
@@ -90,6 +98,8 @@ impl ProviderFactory {
     /// Returns a list of ModelInfo for all known models, with `enabled` indicating
     /// whether the model is available given the current config (provider not disabled,
     /// or provider is in enabled_providers list if specified).
+    ///
+    /// NOTE: This will be refactored in Phase 3 to use registry-based model listing.
     pub fn list_models(config: &RcodeConfig) -> Vec<ModelInfo> {
         let mut models = Vec::new();
 
@@ -166,133 +176,161 @@ impl ProviderFactory {
             }
         }
 
+        // Look up provider in registry
+        let def = registry::lookup(&provider_id);
+
         // Resolve api_key and base_url using shared helper
         let resolution = crate::resolution::ProviderResolution::for_provider(&provider_id, config);
 
-        match provider_id.as_str() {
-            "anthropic" => {
-                let api_key = resolution.api_key.ok_or_else(|| {
-                    RCodeError::Config(format!(
-                        "No API key found for {}. Set the ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN environment variable, or provide api_key in config.",
-                        provider_id
-                    ))
-                })?;
-                Ok((Arc::new(AnthropicProvider::new(api_key)), model_name))
-            }
-            "openai" => {
-                let api_key = resolution.api_key.ok_or_else(|| {
-                    RCodeError::Config(format!(
-                        "No API key found for {}. Set the OPENAI_API_KEY environment variable, or provide api_key in config.",
-                        provider_id
-                    ))
-                })?;
-                match resolution.base_url {
-                    Some(url) => Ok((
-                        Arc::new(OpenAIProvider::new_with_base_url(api_key, url)),
-                        model_name,
-                    )),
-                    None => Ok((Arc::new(OpenAIProvider::new(api_key)), model_name)),
+        // Dispatch by protocol if provider is known
+        if let Some(definition) = def {
+            let api_key = resolution.api_key.ok_or_else(|| {
+                let env_var = format!("{}_API_KEY", definition.env_key_prefix);
+                let alt_token = format!("{}_AUTH_TOKEN", definition.env_key_prefix);
+                RCodeError::Config(format!(
+                    "No API key found for {}. Set the {} or {} environment variable, or provide api_key in config.",
+                    provider_id, env_var, alt_token
+                ))
+            })?;
+
+            let base_url = resolution.base_url;
+
+            return match definition.protocol {
+                ProviderProtocol::OpenAiCompat => {
+                    Self::build_openai_compat(&provider_id, api_key, base_url, model_name)
+                }
+                ProviderProtocol::AnthropicCompat => {
+                    Self::build_anthropic_compat(&provider_id, api_key, base_url, model_name)
+                }
+                ProviderProtocol::Google => {
+                    Self::build_google(api_key, base_url, model_name)
+                }
+            };
+        }
+
+        // Unknown provider - check if config has explicit protocol
+        if let Some(cfg) = config {
+            if let Some(provider_config) = cfg.providers.get(&provider_id) {
+                if let Some(protocol) = &provider_config.protocol {
+                    let api_key = resolution.api_key.ok_or_else(|| {
+                        let env_provider_id = provider_id.to_uppercase().replace('-', "_");
+                        RCodeError::Config(format!(
+                            "No API key found for {}. Set the {}_API_KEY environment variable, or provide api_key in config.",
+                            provider_id, env_provider_id
+                        ))
+                    })?;
+
+                    let base_url = resolution.base_url;
+
+                    return match protocol {
+                        ProviderProtocol::OpenAiCompat => {
+                            Self::build_openai_compat(&provider_id, api_key, base_url, model_name)
+                        }
+                        ProviderProtocol::AnthropicCompat => {
+                            Self::build_anthropic_compat(&provider_id, api_key, base_url, model_name)
+                        }
+                        ProviderProtocol::Google => {
+                            Self::build_google(api_key, base_url, model_name)
+                        }
+                    };
                 }
             }
-            "google" => {
-                let api_key = resolution.api_key.ok_or_else(|| {
-                    RCodeError::Config(format!(
-                        "No API key found for {}. Set the GOOGLE_API_KEY environment variable, or provide api_key in config.",
-                        provider_id
-                    ))
-                })?;
-                Ok((Arc::new(GoogleProvider::new(api_key)), model_name))
+        }
+
+        // Unknown provider with no explicit protocol - check if we have both api_key and base_url
+        // This is the fallback for custom providers that provide both credentials
+        if let (Some(api_key), Some(base_url)) = (resolution.api_key, resolution.base_url) {
+            return Self::build_openai_compat(&provider_id, api_key, Some(base_url), model_name);
+        }
+
+        // No api_key or base_url available - error with helpful message
+        let env_provider_id = provider_id.to_uppercase().replace('-', "_");
+        Err(RCodeError::Config(format!(
+            "Unknown provider '{}'. Configure providers.{}.api_key and providers.{}.base_url in config, or set {}_API_KEY and {}_BASE_URL environment variables.",
+            provider_id, provider_id, provider_id, env_provider_id, env_provider_id
+        )))
+    }
+
+    /// Build an OpenAI-compatible provider.
+    fn build_openai_compat(
+        provider_id: &str,
+        api_key: String,
+        base_url: Option<String>,
+        model: String,
+    ) -> Result<(Arc<dyn LlmProvider>, String)> {
+        match provider_id {
+            "openai" => {
+                match base_url {
+                    Some(url) => Ok((Arc::new(OpenAIProvider::new_with_base_url(api_key, url)), model)),
+                    None => Ok((Arc::new(OpenAIProvider::new(api_key)), model)),
+                }
             }
             "openrouter" => {
-                let api_key = resolution.api_key.ok_or_else(|| {
-                    RCodeError::Config(format!(
-                        "No API key found for {}. Set the OPENROUTER_API_KEY environment variable, or provide api_key in config.",
-                        provider_id
-                    ))
-                })?;
-                match resolution.base_url {
-                    Some(url) => Ok((
-                        Arc::new(OpenRouterProvider::new_with_base_url(api_key, url)),
-                        model_name,
-                    )),
-                    None => Ok((Arc::new(OpenRouterProvider::new(api_key)), model_name)),
+                match base_url {
+                    Some(url) => Ok((Arc::new(OpenRouterProvider::new_with_base_url(api_key, url)), model)),
+                    None => Ok((Arc::new(OpenRouterProvider::new(api_key)), model)),
                 }
             }
             "minimax" => {
-                let api_key = resolution.api_key.ok_or_else(|| {
-                    RCodeError::Config(format!(
-                        "No API key found for {}. Set the MINIMAX_API_KEY environment variable, or provide api_key in config.",
-                        provider_id
-                    ))
-                })?;
-                match resolution.base_url {
-                    Some(url) => Ok((
-                        Arc::new(MiniMaxProvider::new_with_base_url(api_key, url)),
-                        model_name,
-                    )),
-                    None => Ok((Arc::new(MiniMaxProvider::new(api_key)), model_name)),
+                match base_url {
+                    Some(url) => Ok((Arc::new(MiniMaxProvider::new_with_base_url(api_key, url)), model)),
+                    None => Ok((Arc::new(MiniMaxProvider::new(api_key)), model)),
                 }
             }
             "zai" => {
-                let api_key = resolution.api_key.ok_or_else(|| {
-                    RCodeError::Config(format!(
-                        "No API key found for {}. Set the ZAI_API_KEY environment variable, or provide api_key in config.",
-                        provider_id
-                    ))
-                })?;
-                match resolution.base_url {
-                    Some(url) => Ok((
-                        Arc::new(ZaiProvider::new_with_base_url(api_key, url)),
-                        model_name,
-                    )),
-                    None => Ok((Arc::new(ZaiProvider::new(api_key)), model_name)),
+                match base_url {
+                    Some(url) => Ok((Arc::new(ZaiProvider::new_with_base_url(api_key, url)), model)),
+                    None => Ok((Arc::new(ZaiProvider::new(api_key)), model)),
                 }
             }
+            "github-copilot" => {
+                // GitHub Copilot uses OpenAI-compatible API with custom base URL
+                let base_url = base_url.unwrap_or_else(|| "https://api.githubcopilot.com".to_string());
+                Ok((Arc::new(OpenAIProvider::new_with_base_url(api_key, base_url)), model))
+            }
             other => {
-                // CUSTOM PROVIDER SUPPORT
-                // Resolution already handles auth.json, env vars, and config for custom providers
-                let custom_api_key = resolution.api_key;
-                let custom_base_url = resolution.base_url;
-
-                match (custom_api_key, custom_base_url) {
-                    (Some(key), Some(url)) => {
-                        Ok((Arc::new(OpenAIProvider::new_with_base_url(key, url)), model_name))
-                    }
-                    _ => {
+                // Generic OpenAI-compatible provider (custom providers)
+                match base_url {
+                    Some(url) => Ok((Arc::new(OpenAIProvider::new_with_base_url(api_key, url)), model)),
+                    None => {
                         let env_provider_id = other.to_uppercase().replace('-', "_");
                         Err(RCodeError::Config(format!(
-                            "Unknown provider '{}'. Configure providers.{}.api_key and providers.{}.base_url in config, or set {}_API_KEY and {}_BASE_URL environment variables.",
-                            other, other, other, env_provider_id, env_provider_id
+                            "Custom provider '{}' requires a base_url. Set providers.{}.base_url in config or {}_BASE_URL environment variable.",
+                            other, other, env_provider_id
                         )))
                     }
                 }
             }
         }
     }
-}
 
-/// Resolve API key from environment or config
-fn resolve_api_key(provider: &str, config_key: Option<String>) -> Result<String> {
-    use super::load_api_key;
+    /// Build an Anthropic-compatible provider.
+    fn build_anthropic_compat(
+        provider_id: &str,
+        api_key: String,
+        base_url: Option<String>,
+        model: String,
+    ) -> Result<(Arc<dyn LlmProvider>, String)> {
+        // Anthropic requires a base_url
+        let base_url = base_url.ok_or_else(|| {
+            RCodeError::Config(format!(
+                "No base_url found for {}. Set providers.{}.base_url in config or {}_BASE_URL environment variable.",
+                provider_id, provider_id, provider_id.to_uppercase().replace('-', "_")
+            ))
+        })?;
 
-    // First try environment variable
-    if let Ok(key) = load_api_key(provider) {
-        return Ok(key);
+        // Use new_with_base_url to override any env var
+        Ok((Arc::new(AnthropicProvider::new_with_base_url(api_key, base_url)), model))
     }
 
-    // Then try config value
-    if let Some(key) = config_key {
-        if !key.is_empty() {
-            return Ok(key);
-        }
+    /// Build a Google provider, honouring an optional custom base URL.
+    fn build_google(api_key: String, base_url: Option<String>, model: String) -> Result<(Arc<dyn LlmProvider>, String)> {
+        let provider: Arc<dyn LlmProvider> = match base_url {
+            Some(url) => Arc::new(GoogleProvider::new_with_base_url(api_key, url)),
+            None => Arc::new(GoogleProvider::new(api_key)),
+        };
+        Ok((provider, model))
     }
-
-    // Return error with helpful message
-    let provider_upper = provider.to_uppercase();
-    Err(RCodeError::Config(format!(
-        "No API key found for {}. Set the {}_API_KEY or {}_AUTH_TOKEN environment variable, or provide api_key in config.",
-        provider, provider_upper, provider_upper
-    )))
 }
 
 /// Get a string config value from nested provider config
@@ -307,6 +345,7 @@ fn resolve_api_key(provider: &str, config_key: Option<String>) -> Result<String>
 ///   }
 /// }
 /// ```
+#[allow(dead_code)]
 fn get_provider_config_string(
     config: Option<&RcodeConfig>,
     provider_id: &str,
@@ -331,35 +370,6 @@ fn get_provider_config_string(
     })
 }
 
-/// Get API key from config, checking auth.json first (OpenCode-compatible)
-///
-/// Resolution order:
-/// 1. auth.json (primary - rcode_core::auth::get_api_key)
-/// 2. Typed providers config
-/// 3. Legacy extra JSON config
-fn get_api_key_from_config(config: Option<&RcodeConfig>, provider_id: &str) -> Option<String> {
-    // First check auth.json (OpenCode's primary credential store)
-    if let Some(key) = rcode_core::auth::get_api_key(provider_id) {
-        return Some(key);
-    }
-
-    // Then try typed field
-    if let Some(provider) = config.and_then(|c| c.providers.get(provider_id)) {
-        if provider.api_key.is_some() {
-            return provider.api_key.clone();
-        }
-    }
-    // Fallback to extra JSON
-    config.and_then(|cfg| {
-        cfg.extra
-            .get("providers")
-            .and_then(|p| p.get(provider_id))
-            .and_then(|p| p.get("api_key"))
-            .and_then(|k| k.as_str())
-            .map(|s| s.to_string())
-    })
-}
-
 /// Build a provider from a model string (deprecated, use ProviderFactory::build instead)
 ///
 /// This function is kept for backward compatibility.
@@ -374,6 +384,7 @@ pub fn build_provider_from_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rcode_core::ProviderProtocol;
     use serde_json::json;
 
     fn create_config_with_providers(
@@ -385,6 +396,35 @@ mod tests {
             extra: json!({ "providers": api_keys }),
             disabled_providers: disabled.map(|v| v.into_iter().map(String::from).collect()),
             enabled_providers: enabled.map(|v| v.into_iter().map(String::from).collect()),
+            ..Default::default()
+        }
+    }
+
+    /// Helper to create a config with typed provider config (for protocol tests)
+    fn create_config_with_typed_provider(
+        provider_id: &str,
+        api_key: Option<&str>,
+        base_url: Option<&str>,
+        protocol: Option<ProviderProtocol>,
+    ) -> RcodeConfig {
+        use std::collections::HashMap;
+        let mut providers = HashMap::new();
+        
+        if api_key.is_some() || base_url.is_some() || protocol.is_some() {
+            providers.insert(
+                provider_id.to_string(),
+                rcode_core::ProviderConfig {
+                    api_key: api_key.map(String::from),
+                    base_url: base_url.map(String::from),
+                    protocol,
+                    enabled: true,
+                    disabled: false,
+                },
+            );
+        }
+        
+        RcodeConfig {
+            providers,
             ..Default::default()
         }
     }
@@ -597,6 +637,42 @@ mod tests {
         assert_eq!(model_name, "zai-coding-premium");
     }
 
+    // ============ GitHub Copilot Provider Tests ============
+
+    #[test]
+    fn test_factory_github_copilot_provider_with_config() {
+        let config = create_config_with_providers(
+            json!({
+                "github-copilot": {
+                    "api_key": "gho_test_token"
+                }
+            }),
+            None,
+            None,
+        );
+        let result = ProviderFactory::build("github-copilot/gpt-4o", Some(&config));
+        assert!(
+            result.is_ok(),
+            "github-copilot provider should build successfully: {:?}",
+            result.err()
+        );
+        let (provider, model_name) = result.unwrap();
+        // github-copilot uses OpenAI-compatible backend
+        assert_eq!(provider.provider_id(), "openai");
+        assert_eq!(model_name, "gpt-4o");
+    }
+
+    #[test]
+    fn test_factory_github_copilot_disabled() {
+        let config = RcodeConfig {
+            disabled_providers: Some(vec!["github-copilot".to_string()]),
+            ..Default::default()
+        };
+        let result = ProviderFactory::build("github-copilot/gpt-4o", Some(&config));
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("disabled"));
+    }
+
     // ============ Custom Provider Tests ============
 
     #[test]
@@ -671,6 +747,95 @@ mod tests {
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("Unknown provider 'half-config'"));
+    }
+
+    // ============ Protocol Dispatch Tests (T-09) ============
+
+    #[test]
+    fn test_factory_protocol_dispatch_openai_compat() {
+        // Test minimax (an OpenAI-compatible provider) using protocol dispatch
+        let config = create_config_with_providers(
+            json!({
+                "minimax": {
+                    "api_key": "test-key",
+                    "base_url": "https://custom.minimax.io/v1"
+                }
+            }),
+            None,
+            None,
+        );
+        let result = ProviderFactory::build("minimax/MiniMax-Text-01", Some(&config));
+        assert!(result.is_ok(), "minimax should dispatch via OpenAiCompat protocol: {:?}", result.err());
+        let (provider, model_name) = result.unwrap();
+        assert_eq!(provider.provider_id(), "minimax");
+        assert_eq!(model_name, "MiniMax-Text-01");
+    }
+
+    #[test]
+    fn test_factory_unknown_provider_with_protocol() {
+        // Test custom provider with explicit protocol in typed config
+        let config = create_config_with_typed_provider(
+            "my-anthropic-proxy",
+            Some("test-key"),
+            Some("https://my-proxy.example.com/anthropic"),
+            Some(ProviderProtocol::AnthropicCompat),
+        );
+        
+        let result = ProviderFactory::build("my-anthropic-proxy/claude-3-5-sonnet", Some(&config));
+        assert!(result.is_ok(), "Custom provider with explicit protocol should work: {:?}", result.err());
+        let (provider, model_name) = result.unwrap();
+        assert_eq!(provider.provider_id(), "anthropic");
+        assert_eq!(model_name, "claude-3-5-sonnet");
+    }
+
+    #[test]
+    fn test_factory_anthropic_compat_with_base_url() {
+        // Test anthropic-compatible provider with custom base_url
+        let config = create_config_with_typed_provider(
+            "minimax-via-anthropic",
+            Some("test-key"),
+            Some("https://api.minimax.io/anthropic"),
+            Some(ProviderProtocol::AnthropicCompat),
+        );
+        
+        let result = ProviderFactory::build("minimax-via-anthropic/claude-3-5-sonnet", Some(&config));
+        assert!(result.is_ok(), "Anthropic-compat with base_url should work: {:?}", result.err());
+        let (provider, model_name) = result.unwrap();
+        assert_eq!(provider.provider_id(), "anthropic");
+        assert_eq!(model_name, "claude-3-5-sonnet");
+    }
+
+    #[test]
+    fn test_factory_anthropic_compat_without_base_url_fails() {
+        // Test anthropic-compatible provider WITHOUT base_url fails
+        let config = create_config_with_typed_provider(
+            "my-anthropic-proxy",
+            Some("test-key"),
+            None, // no base_url
+            Some(ProviderProtocol::AnthropicCompat),
+        );
+        
+        let result = ProviderFactory::build("my-anthropic-proxy/claude-3-5-sonnet", Some(&config));
+        assert!(result.is_err(), "Anthropic-compat without base_url should fail");
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("base_url"), "Error should mention base_url");
+    }
+
+    #[test]
+    fn test_factory_openai_compat_with_base_url() {
+        // Test openai-compatible provider with custom base_url
+        let config = create_config_with_typed_provider(
+            "my-openai-proxy",
+            Some("test-key"),
+            Some("https://my-proxy.example.com/v1"),
+            Some(ProviderProtocol::OpenAiCompat),
+        );
+        
+        let result = ProviderFactory::build("my-openai-proxy/gpt-4o", Some(&config));
+        assert!(result.is_ok(), "OpenAI-compat with base_url should work: {:?}", result.err());
+        let (provider, model_name) = result.unwrap();
+        assert_eq!(provider.provider_id(), "openai");
+        assert_eq!(model_name, "gpt-4o");
     }
 
     // ============ get_provider_config_string Tests ============

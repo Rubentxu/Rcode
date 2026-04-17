@@ -29,8 +29,11 @@ import type {
   SSEStreamToolCallEnd,
   SSEStreamToolCallStart,
   SSEStreamToolResult,
+  ToolErrorEvent,
+  ProviderErrorEvent,
 } from "../api/types";
 import { useWorkspace } from "../context/WorkspaceContext";
+import { showToast } from "./Toast";
 
 /** Represents a conversational turn: one or more consecutive messages from the same role */
 interface Turn {
@@ -428,6 +431,13 @@ export default function SessionView(props: SessionViewProps) {
         } else {
           props.onComplete?.();
         }
+      },
+      // T-05: Error event callbacks
+      onToolError: (event: ToolErrorEvent) => {
+        showToast({ type: "error", message: `Tool error: ${event.error}` });
+      },
+      onProviderError: (event: ProviderErrorEvent) => {
+        showToast({ type: "error", message: `Provider error: ${event.error}` });
       },
     });
 

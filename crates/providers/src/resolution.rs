@@ -5,6 +5,8 @@
 
 use rcode_core::RcodeConfig;
 
+use super::registry::lookup;
+
 /// Known provider default base URLs
 const KNOWN_DEFAULT_BASE_URLS: &[(&str, &str)] = &[
     ("openai", "https://api.openai.com/v1"),
@@ -13,6 +15,7 @@ const KNOWN_DEFAULT_BASE_URLS: &[(&str, &str)] = &[
     ("openrouter", "https://openrouter.ai/api/v1"),
     ("minimax", "https://api.minimax.chat/v1"),
     ("zai", "https://api.zai.chat/v1"),
+    ("github-copilot", "https://api.githubcopilot.com"),
 ];
 
 /// Unified resolution result for a provider's credentials and endpoint.
@@ -28,12 +31,12 @@ impl ProviderResolution {
     /// Resolve api_key, base_url, and auth_token for a provider.
     ///
     /// Resolution order:
-    /// - api_key: auth.json → env var ({PROVIDER}_API_KEY, {PROVIDER}_AUTH_TOKEN) → config
+    /// - api_key: auth.json → registry credential_aliases → env var ({PROVIDER}_API_KEY, {PROVIDER}_AUTH_TOKEN) → config
     /// - base_url: env var ({PROVIDER}_BASE_URL) → config → provider-known default
     pub fn for_provider(provider_id: &str, config: Option<&RcodeConfig>) -> Self {
         let env_provider_id = provider_id.to_uppercase().replace('-', "_");
 
-        // Resolve api_key: auth.json → env → config
+        // Resolve api_key: auth.json → registry aliases → env → config
         let api_key = resolve_api_key_internal(provider_id, config);
 
         // Resolve base_url: env → config → known default
@@ -51,10 +54,38 @@ impl ProviderResolution {
     }
 }
 
+/// Known alternate credential key names for providers whose auth.json key
+/// differs from the canonical provider_id (e.g. "minimax-coding-plan" for "minimax").
+/// Kept for backward compatibility when registry lookup fails.
+pub const ALTERNATE_CREDENTIAL_KEYS: &[(&str, &[&str])] = &[("minimax", &["minimax-coding-plan"])];
+
 fn resolve_api_key_internal(provider_id: &str, config: Option<&RcodeConfig>) -> Option<String> {
     // 1. auth.json (primary credential store)
     if let Some(key) = rcode_core::auth::get_api_key(provider_id) {
         return Some(key);
+    }
+
+    // 1b. Try credential aliases from registry (if provider is registered)
+    // e.g. "minimax-coding-plan" for "minimax"
+    if let Some(def) = lookup(provider_id) {
+        for alt_key in def.credential_aliases {
+            if let Some(key) = rcode_core::auth::get_api_key(alt_key) {
+                return Some(key);
+            }
+        }
+    } else {
+        // Fallback to hardcoded ALTERNATE_CREDENTIAL_KEYS for backward compat
+        // when provider is not in registry
+        if let Some((_, alt_keys)) = ALTERNATE_CREDENTIAL_KEYS
+            .iter()
+            .find(|(id, _)| *id == provider_id)
+        {
+            for alt_key in *alt_keys {
+                if let Some(key) = rcode_core::auth::get_api_key(alt_key) {
+                    return Some(key);
+                }
+            }
+        }
     }
 
     // 2. Environment variables
@@ -214,6 +245,14 @@ mod tests {
         assert_eq!(
             ProviderResolution::known_default_base_url("zai"),
             Some("https://api.zai.chat/v1")
+        );
+    }
+
+    #[test]
+    fn test_known_default_github_copilot() {
+        assert_eq!(
+            ProviderResolution::known_default_base_url("github-copilot"),
+            Some("https://api.githubcopilot.com")
         );
     }
 

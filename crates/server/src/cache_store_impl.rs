@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use rcode_providers::catalog::{CacheStore, CatalogModel, ModelSource};
+use rcode_providers::lookup_provider;
 use rcode_storage::catalog_cache::{CachedCatalogEntry, CachedModel, CatalogCacheRepository};
 
 /// Adapter that implements `CacheStore` using `CatalogCacheRepository`.
@@ -29,6 +30,10 @@ impl ServerCacheStore {
             "configured" => ModelSource::Configured,
             _ => ModelSource::Fallback,
         };
+        // Look up protocol from registry, default to OpenAiCompat for unknown providers
+        let protocol = lookup_provider(&cached.provider)
+            .map(|def| def.protocol)
+            .unwrap_or(rcode_core::ProviderProtocol::OpenAiCompat);
         CatalogModel {
             id: cached.id,
             provider: cached.provider,
@@ -36,6 +41,7 @@ impl ServerCacheStore {
             has_credentials: cached.has_credentials,
             source,
             enabled: cached.enabled,
+            protocol,
         }
     }
 
@@ -147,6 +153,7 @@ mod tests {
                 has_credentials: true,
                 source: ModelSource::Api,
                 enabled: true,
+                protocol: rcode_core::ProviderProtocol::AnthropicCompat,
             },
             CatalogModel {
                 id: "anthropic/claude-2".to_string(),
@@ -155,6 +162,7 @@ mod tests {
                 has_credentials: true,
                 source: ModelSource::Api,
                 enabled: true,
+                protocol: rcode_core::ProviderProtocol::AnthropicCompat,
             },
         ];
 
@@ -194,6 +202,7 @@ mod tests {
                 has_credentials: true,
                 source: ModelSource::Api,
                 enabled: true,
+                protocol: rcode_core::ProviderProtocol::OpenAiCompat,
             },
             CatalogModel {
                 id: "test/model2".to_string(),
@@ -202,6 +211,7 @@ mod tests {
                 has_credentials: false,
                 source: ModelSource::Fallback,
                 enabled: false,
+                protocol: rcode_core::ProviderProtocol::OpenAiCompat,
             },
         ];
 
@@ -266,6 +276,7 @@ mod tests {
             has_credentials: true,
             source: ModelSource::Api,
             enabled: true,
+            protocol: rcode_core::ProviderProtocol::OpenAiCompat,
         }];
         store.save_cached_models("test", &models);
 

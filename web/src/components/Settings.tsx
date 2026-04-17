@@ -1,34 +1,17 @@
 import { createMemo, createSignal, For, onMount, Show } from "solid-js";
 import { getApiBase } from "../api/config";
+import type { ProviderInfo, ModelInfo } from "../api/types";
+import { PrivacySettings } from "./PrivacySettings";
 
-interface Provider {
-  id: string;
-  name: string;
-  has_key: boolean;
-  base_url: string | null;
-  enabled: boolean;
-  key_source?: string;
-}
-
-interface ModelInfo {
-  id: string;
-  provider: string;
-  display_name?: string;
-  has_credentials: boolean;
-  source: "api" | "fallback" | "configured";
-  enabled: boolean;
-}
-
-type SettingsSection = "general" | "shortcuts" | "providers" | "models";
+type SettingsSection = "general" | "shortcuts" | "providers" | "models" | "privacy";
 
 const SETTINGS_NAV: Array<{ id: SettingsSection; title: string; group: string; icon: string }> = [
   { id: "general", title: "General", group: "Desktop", icon: "settings" },
   { id: "shortcuts", title: "Shortcuts", group: "Desktop", icon: "keyboard" },
   { id: "providers", title: "Providers", group: "Server", icon: "model_training" },
   { id: "models", title: "Models", group: "Server", icon: "auto_awesome" },
+  { id: "privacy", title: "Privacy", group: "Server", icon: "security" },
 ];
-
-const POPULAR_PROVIDER_IDS = ["opencode-zen", "opencode-go", "anthropic", "openai", "google", "openrouter", "minimax", "zai"];
 
 const PROVIDER_URLS: Record<string, Array<{ label: string; url: string }>> = {
   anthropic: [
@@ -73,7 +56,7 @@ function detectSelectedPreset(providerId: string, url: string) {
   return match ? match.url : CUSTOM_OPTION;
 }
 
-function providerBadge(provider: Provider) {
+function providerBadge(provider: ProviderInfo) {
   if (!provider.has_key) return { label: "Not connected", bg: "rgba(239,68,68,0.12)", color: "var(--error)" };
   if (provider.key_source === "env") return { label: "Environment", bg: "rgba(59,130,246,0.12)", color: "#60a5fa" };
   if (provider.key_source === "auth") return { label: "API Key", bg: "rgba(34,197,94,0.12)", color: "var(--success)" };
@@ -92,8 +75,21 @@ function sourceBadge(source: ModelInfo["source"]) {
   }
 }
 
+function protocolBadge(protocol: ProviderInfo["protocol"]) {
+  switch (protocol) {
+    case "openai_compat":
+      return { label: "OpenAI compat", bg: "rgba(99,102,241,0.14)", color: "#818cf8" };
+    case "anthropic_compat":
+      return { label: "Anthropic compat", bg: "rgba(245,158,11,0.14)", color: "#fbbf24" };
+    case "google":
+      return { label: "Google", bg: "rgba(34,197,94,0.14)", color: "var(--secondary)" };
+    default:
+      return null;
+  }
+}
+
 export function Settings(props: { onClose: () => void }) {
-  const [providers, setProviders] = createSignal<Provider[]>([]);
+  const [providers, setProviders] = createSignal<ProviderInfo[]>([]);
   const [models, setModels] = createSignal<ModelInfo[]>([]);
   const [activeSection, setActiveSection] = createSignal<SettingsSection>("general");
   const [editingProvider, setEditingProvider] = createSignal<string | null>(null);
@@ -106,8 +102,10 @@ export function Settings(props: { onClose: () => void }) {
   const [backendUnreachable, setBackendUnreachable] = createSignal(false);
   const [showCustomForm, setShowCustomForm] = createSignal(false);
   const [customProviderId, setCustomProviderId] = createSignal("");
+  const [customProviderDisplayName, setCustomProviderDisplayName] = createSignal("");
   const [customApiKey, setCustomApiKey] = createSignal("");
   const [customBaseUrl, setCustomBaseUrl] = createSignal("");
+  const [customProviderProtocol, setCustomProviderProtocol] = createSignal<"openai_compat" | "anthropic_compat">("openai_compat");
   const [modelSearch, setModelSearch] = createSignal("");
 
   onMount(async () => {
@@ -225,7 +223,12 @@ export function Settings(props: { onClose: () => void }) {
       const res = await fetch(`${await getApiBase()}/config/providers/${customProviderId()}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: customApiKey(), base_url: customBaseUrl() }),
+        body: JSON.stringify({
+          api_key: customApiKey(),
+          base_url: customBaseUrl(),
+          display_name: customProviderDisplayName().trim() || customProviderId(),
+          protocol: customProviderProtocol(),
+        }),
       });
 
       if (!res.ok) {
@@ -235,8 +238,10 @@ export function Settings(props: { onClose: () => void }) {
       }
 
       setCustomProviderId("");
+      setCustomProviderDisplayName("");
       setCustomApiKey("");
       setCustomBaseUrl("");
+      setCustomProviderProtocol("openai_compat");
       setShowCustomForm(false);
       await Promise.all([loadProviders(), loadModels()]);
     } catch (error) {
@@ -244,7 +249,7 @@ export function Settings(props: { onClose: () => void }) {
     }
   }
 
-  function startEditing(provider: Provider) {
+  function startEditing(provider: ProviderInfo) {
     setEditingProvider(provider.id);
     setSaveError(null);
     setSaveSuccess(false);
@@ -278,33 +283,9 @@ export function Settings(props: { onClose: () => void }) {
     }
   }
 
-  // All providers: backend providers + known popular providers not returned by backend
-  // This ensures MiniMax/ZAI appear even when has_key is false
+  // All providers come from the backend via GET /config/providers
   const allProviders = createMemo(() => {
-    const existingById = new Map(providers().map((p) => [p.id, p]));
-    const merged: Provider[] = [];
-
-    // First add all providers returned by backend
-    for (const p of providers()) {
-      merged.push(p);
-    }
-
-    // Then add popular IDs that aren't already in backend list
-    const backendIds = new Set(providers().map((p) => p.id));
-    for (const id of POPULAR_PROVIDER_IDS) {
-      if (!backendIds.has(id)) {
-        merged.push({
-          id,
-          name: id === "opencode-zen" ? "OpenCode Zen" : id === "opencode-go" ? "OpenCode Go" : id.charAt(0).toUpperCase() + id.slice(1),
-          has_key: false,
-          base_url: null,
-          enabled: true,
-          key_source: undefined,
-        });
-      }
-    }
-
-    return merged;
+    return providers();
   });
 
   const connectedProviders = createMemo(() => allProviders().filter((provider) => provider.has_key));
@@ -357,6 +338,7 @@ export function Settings(props: { onClose: () => void }) {
         <For each={connectedProviders()}>
           {(provider, index) => {
             const badge = providerBadge(provider);
+            const pBadge = protocolBadge(provider.protocol);
             const presets = getPresetOptions(provider.id);
             const hasPresets = presets.length > 1;
             return (
@@ -364,11 +346,16 @@ export function Settings(props: { onClose: () => void }) {
                 <div style="display: flex; justify-content: space-between; align-items: center; gap: 16px;">
                   <div style="display: flex; align-items: center; gap: 12px; min-width: 0;">
                     <div style="width: 28px; height: 28px; border-radius: 8px; background: var(--bg-tertiary); display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: var(--text-primary); text-transform: uppercase;">
-                      {provider.name.slice(0, 1)}
+                      {provider.display_name.slice(0, 1)}
                     </div>
                     <div>
                       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 2px;">
-                        <strong style="font-size: 15px; color: var(--text-primary);">{provider.name}</strong>
+                        <strong style="font-size: 15px; color: var(--text-primary);">{provider.display_name}</strong>
+                        <Show when={pBadge}>
+                          <span style={`font-size: 11px; padding: 2px 8px; border-radius: 999px; background: ${pBadge!.bg}; color: ${pBadge!.color};`}>
+                            {pBadge!.label}
+                          </span>
+                        </Show>
                         <span style={`font-size: 11px; padding: 2px 8px; border-radius: 999px; background: ${badge.bg}; color: ${badge.color};`}>
                           {badge.label}
                         </span>
@@ -447,16 +434,22 @@ export function Settings(props: { onClose: () => void }) {
         <For each={unconnectedProviders()}>
           {(provider, index) => {
             const badge = providerBadge(provider);
+            const pBadge = protocolBadge(provider.protocol);
             return (
               <div style={`padding: 14px 0; ${index() > 0 ? "border-top: 1px solid var(--border);" : ""}`}>
                 <div style="display: flex; justify-content: space-between; align-items: center; gap: 16px;">
                   <div style="display: flex; align-items: center; gap: 12px; min-width: 0;">
                     <div style="width: 28px; height: 28px; border-radius: 8px; background: var(--bg-tertiary); display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: var(--text-primary); text-transform: uppercase;">
-                      {provider.name.slice(0, 1)}
+                      {provider.display_name.slice(0, 1)}
                     </div>
                     <div>
                       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 2px;">
-                        <strong style="font-size: 15px; color: var(--text-primary);">{provider.name}</strong>
+                        <strong style="font-size: 15px; color: var(--text-primary);">{provider.display_name}</strong>
+                        <Show when={pBadge}>
+                          <span style={`font-size: 11px; padding: 2px 8px; border-radius: 999px; background: ${pBadge!.bg}; color: ${pBadge!.color};`}>
+                            {pBadge!.label}
+                          </span>
+                        </Show>
                         <span style={`font-size: 11px; padding: 2px 8px; border-radius: 999px; background: ${badge.bg}; color: ${badge.color};`}>
                           {badge.label}
                         </span>
@@ -488,19 +481,36 @@ export function Settings(props: { onClose: () => void }) {
 
         <Show when={showCustomForm()}>
           <div style={`${cardStyle}; margin-top: 10px;`}>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
               <div>
                 <label style="display: block; margin-bottom: 6px; font-size: 12px; color: var(--text-secondary);">Provider ID</label>
                 <input value={customProviderId()} onInput={(e) => setCustomProviderId(e.currentTarget.value)} placeholder="my-provider" style={inputStyle} />
               </div>
               <div>
+                <label style="display: block; margin-bottom: 6px; font-size: 12px; color: var(--text-secondary);">Display Name</label>
+                <input value={customProviderDisplayName()} onInput={(e) => setCustomProviderDisplayName(e.currentTarget.value)} placeholder="My Provider" style={inputStyle} />
+              </div>
+              <div>
+                <label style="display: block; margin-bottom: 6px; font-size: 12px; color: var(--text-secondary);">Protocol</label>
+                <select
+                  value={customProviderProtocol()}
+                  onInput={(e) => setCustomProviderProtocol(e.currentTarget.value as "openai_compat" | "anthropic_compat")}
+                  style={`${inputStyle};`}
+                >
+                  <option value="openai_compat">OpenAI Compatible</option>
+                  <option value="anthropic_compat">Anthropic Compatible</option>
+                </select>
+              </div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px;">
+              <div>
                 <label style="display: block; margin-bottom: 6px; font-size: 12px; color: var(--text-secondary);">API Key</label>
                 <input type="password" value={customApiKey()} onInput={(e) => setCustomApiKey(e.currentTarget.value)} placeholder="Enter API key" style={inputStyle} />
               </div>
-            </div>
-            <div style="margin-top: 12px;">
-              <label style="display: block; margin-bottom: 6px; font-size: 12px; color: var(--text-secondary);">Base URL</label>
-              <input value={customBaseUrl()} onInput={(e) => setCustomBaseUrl(e.currentTarget.value)} placeholder="https://api.example.com/v1" style={inputStyle} />
+              <div>
+                <label style="display: block; margin-bottom: 6px; font-size: 12px; color: var(--text-secondary);">Base URL</label>
+                <input value={customBaseUrl()} onInput={(e) => setCustomBaseUrl(e.currentTarget.value)} placeholder="https://api.example.com/v1" style={inputStyle} />
+              </div>
             </div>
             <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px;">
               <button onClick={() => setShowCustomForm(false)} style="padding: 8px 14px; border-radius: 10px; border: 1px solid var(--border); background: none; color: var(--text-secondary); cursor: pointer;">Cancel</button>
@@ -635,6 +645,7 @@ export function Settings(props: { onClose: () => void }) {
           <Show when={activeSection() === "shortcuts"}>{renderShortcutsSection()}</Show>
           <Show when={activeSection() === "providers"}>{renderProvidersSection()}</Show>
           <Show when={activeSection() === "models"}>{renderModelsSection()}</Show>
+          <Show when={activeSection() === "privacy"}><PrivacySettings /></Show>
         </section>
       </div>
     </div>

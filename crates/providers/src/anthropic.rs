@@ -32,10 +32,35 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
+    /// Creates a new AnthropicProvider using the ANTHROPIC_BASE_URL env var (or default).
+    /// This constructor reads base_url from the environment.
     pub fn new(api_key: String) -> Self {
         let base_url = std::env::var("ANTHROPIC_BASE_URL")
             .unwrap_or_else(|_| "https://api.anthropic.com".to_string());
         
+        let use_bearer_auth = std::env::var("ANTHROPIC_AUTH_TOKEN").is_ok();
+        
+        let custom_headers = std::env::var("ANTHROPIC_CUSTOM_HEADERS")
+            .map(|h| {
+                serde_json::from_str::<Vec<(String, String)>>(&h)
+                    .unwrap_or_else(|_| vec![])
+            })
+            .unwrap_or_default();
+        
+        Self {
+            api_key,
+            base_url,
+            use_bearer_auth,
+            custom_headers,
+            http_client: Client::new(),
+            rate_limiter: None,
+            active_token: Arc::new(StdMutex::new(None)),
+        }
+    }
+
+    /// Creates a new AnthropicProvider with an explicit base_url.
+    /// This overrides the base_url regardless of ANTHROPIC_BASE_URL env var.
+    pub fn new_with_base_url(api_key: String, base_url: String) -> Self {
         let use_bearer_auth = std::env::var("ANTHROPIC_AUTH_TOKEN").is_ok();
         
         let custom_headers = std::env::var("ANTHROPIC_CUSTOM_HEADERS")
@@ -1978,5 +2003,84 @@ mod tests {
 
         // token2 SHOULD be cancelled (it's the active one)
         assert!(token2.is_cancelled(), "Active stream token should be cancelled");
+    }
+
+    // =============================================================================
+    // new_with_base_url regression tests
+    // =============================================================================
+
+    /// Regression test: new_with_base_url should override base_url regardless of env vars.
+    ///
+    /// Bug: Previously there was no way to programmatically set base_url for Anthropic,
+    /// it always read from ANTHROPIC_BASE_URL env var.
+    #[test]
+    fn test_anthropic_base_url_override() {
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            // Set ANTHROPIC_BASE_URL to something different
+            std::env::set_var("ANTHROPIC_BASE_URL", "https://env.anthropic.com");
+
+            // Create provider with explicit base_url - should use the explicit URL, not env
+            let provider = AnthropicProvider::new_with_base_url(
+                "test-api-key".to_string(),
+                "https://custom.example.com".to_string(),
+            );
+
+            // The provider should use the explicitly provided base_url
+            assert_eq!(provider.base_url, "https://custom.example.com");
+            assert_eq!(provider.api_key, "test-api-key");
+
+            std::env::remove_var("ANTHROPIC_BASE_URL");
+        }
+    }
+
+    /// Regression test: new_with_base_url should work even when ANTHROPIC_BASE_URL is not set.
+    #[test]
+    fn test_anthropic_base_url_override_without_env() {
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::remove_var("ANTHROPIC_BASE_URL");
+
+            let provider = AnthropicProvider::new_with_base_url(
+                "test-api-key".to_string(),
+                "https://custom.example.com".to_string(),
+            );
+
+            // Should use the explicitly provided base_url
+            assert_eq!(provider.base_url, "https://custom.example.com");
+            assert_eq!(provider.api_key, "test-api-key");
+        }
+    }
+
+    /// Regression test: new() should still read from ANTHROPIC_BASE_URL env var.
+    #[test]
+    fn test_anthropic_new_uses_env_base_url() {
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::set_var("ANTHROPIC_BASE_URL", "https://env.anthropic.com/v1");
+
+            let provider = AnthropicProvider::new("test-api-key".to_string());
+
+            // Should use the env var base_url
+            assert_eq!(provider.base_url, "https://env.anthropic.com/v1");
+            assert_eq!(provider.api_key, "test-api-key");
+
+            std::env::remove_var("ANTHROPIC_BASE_URL");
+        }
+    }
+
+    /// Regression test: new() should use default when ANTHROPIC_BASE_URL is not set.
+    #[test]
+    fn test_anthropic_new_uses_default_base_url() {
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::remove_var("ANTHROPIC_BASE_URL");
+
+            let provider = AnthropicProvider::new("test-api-key".to_string());
+
+            // Should use the default base_url
+            assert_eq!(provider.base_url, "https://api.anthropic.com");
+            assert_eq!(provider.api_key, "test-api-key");
+        }
     }
 }

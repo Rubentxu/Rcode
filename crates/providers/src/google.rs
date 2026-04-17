@@ -31,10 +31,24 @@ pub struct GoogleProvider {
 }
 
 impl GoogleProvider {
+    /// Creates a new GoogleProvider using the GOOGLE_BASE_URL env var (or default).
+    /// This constructor reads base_url from the environment.
     pub fn new(api_key: String) -> Self {
         let base_url = std::env::var("GOOGLE_BASE_URL")
             .unwrap_or_else(|_| GOOGLE_BASE_URL.to_string());
 
+        Self {
+            api_key,
+            base_url,
+            http_client: Client::new(),
+            rate_limiter: None,
+            active_token: Arc::new(StdMutex::new(None)),
+        }
+    }
+
+    /// Creates a new GoogleProvider with an explicit base_url.
+    /// This overrides the base_url regardless of GOOGLE_BASE_URL env var.
+    pub fn new_with_base_url(api_key: String, base_url: String) -> Self {
         Self {
             api_key,
             base_url,
@@ -742,5 +756,84 @@ mod tests {
 
         // token2 SHOULD be cancelled (it's the active one)
         assert!(token2.is_cancelled(), "Active stream token should be cancelled");
+    }
+
+    // =============================================================================
+    // new_with_base_url regression tests
+    // =============================================================================
+
+    /// Regression test: new_with_base_url should override base_url regardless of env vars.
+    ///
+    /// Bug: Previously there was no way to programmatically set base_url for Google,
+    /// it always read from GOOGLE_BASE_URL env var.
+    #[test]
+    fn test_google_base_url_override() {
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            // Set GOOGLE_BASE_URL to something different
+            std::env::set_var("GOOGLE_BASE_URL", "https://env.google.com");
+
+            // Create provider with explicit base_url - should use the explicit URL, not env
+            let provider = GoogleProvider::new_with_base_url(
+                "test-api-key".to_string(),
+                "https://custom.example.com".to_string(),
+            );
+
+            // The provider should use the explicitly provided base_url
+            assert_eq!(provider.base_url, "https://custom.example.com");
+            assert_eq!(provider.api_key, "test-api-key");
+
+            std::env::remove_var("GOOGLE_BASE_URL");
+        }
+    }
+
+    /// Regression test: new_with_base_url should work even when GOOGLE_BASE_URL is not set.
+    #[test]
+    fn test_google_base_url_override_without_env() {
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::remove_var("GOOGLE_BASE_URL");
+
+            let provider = GoogleProvider::new_with_base_url(
+                "test-api-key".to_string(),
+                "https://custom.example.com".to_string(),
+            );
+
+            // Should use the explicitly provided base_url
+            assert_eq!(provider.base_url, "https://custom.example.com");
+            assert_eq!(provider.api_key, "test-api-key");
+        }
+    }
+
+    /// Regression test: new() should still read from GOOGLE_BASE_URL env var.
+    #[test]
+    fn test_google_new_uses_env_base_url() {
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::set_var("GOOGLE_BASE_URL", "https://env.google.com/v1");
+
+            let provider = GoogleProvider::new("test-api-key".to_string());
+
+            // Should use the env var base_url
+            assert_eq!(provider.base_url, "https://env.google.com/v1");
+            assert_eq!(provider.api_key, "test-api-key");
+
+            std::env::remove_var("GOOGLE_BASE_URL");
+        }
+    }
+
+    /// Regression test: new() should use default when GOOGLE_BASE_URL is not set.
+    #[test]
+    fn test_google_new_uses_default_base_url() {
+        // SAFETY: Test-only environment variable manipulation
+        unsafe {
+            std::env::remove_var("GOOGLE_BASE_URL");
+
+            let provider = GoogleProvider::new("test-api-key".to_string());
+
+            // Should use the default base_url
+            assert_eq!(provider.base_url, "https://generativelanguage.googleapis.com");
+            assert_eq!(provider.api_key, "test-api-key");
+        }
     }
 }

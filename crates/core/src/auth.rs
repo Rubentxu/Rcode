@@ -1,12 +1,16 @@
-//! OpenCode-compatible auth.json credential system
+//! Kustomize-like auth credential layering
 //!
-//! This module provides reading and writing of `~/.local/share/opencode/auth.json`,
-//! which is the canonical location for API keys and OAuth tokens in OpenCode.
+//! This module provides a layered credential system following the Kustomize principle:
 //!
-//! Credential resolution order (per OpenCode spec):
-//! 1. auth.json (primary - this module)
+//! - **Base** (read-only): `~/.local/share/opencode/auth.json` — OpenCode's credential store
+//! - **Overlay** (RCode-owned): `~/.local/share/rcode/auth.json` — RCode-specific credentials
+//!
+//! Credential resolution order (merged, Kustomize-style):
+//! 1. RCode overlay takes precedence over OpenCode base
 //! 2. Environment variables ({PROVIDER}_API_KEY, {PROVIDER}_AUTH_TOKEN)
 //! 3. Config file (optional fallback, but api_key should NOT be stored here)
+//!
+//! RCode NEVER writes to OpenCode's auth.json. It only manages its own overlay.
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -44,7 +48,8 @@ impl Credential {
     }
 }
 
-/// Get the auth.json path: ~/.local/share/opencode/auth.json
+/// Get the base auth.json path: ~/.local/share/opencode/auth.json
+/// This is OpenCode's credential store — RCode never writes here.
 pub fn auth_path() -> PathBuf {
     let base = dirs::data_local_dir()
         .or_else(dirs::home_dir)
@@ -52,54 +57,75 @@ pub fn auth_path() -> PathBuf {
     base.join("opencode").join("auth.json")
 }
 
-/// Ensure the parent directory exists with proper permissions
-fn ensure_auth_dir() -> Result<()> {
-    let binding = auth_path();
-    let auth_dir = binding
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("Invalid auth path"))?;
+/// RCode overlay credential path: ~/.local/share/rcode/auth.json
+/// This is RCode-owned — OpenCode's auth.json is never written by RCode.
+pub fn rcode_auth_path() -> PathBuf {
+    let base = dirs::data_local_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("rcode").join("auth.json")
+}
 
-    if !auth_dir.exists() {
-        std::fs::create_dir_all(auth_dir).context("Failed to create auth directory")?;
+/// Ensure the rcode auth directory exists with proper permissions
+fn ensure_rcode_auth_dir() -> Result<()> {
+    let path = rcode_auth_path();
+    let dir = path.parent().ok_or_else(|| anyhow::anyhow!("Invalid rcode auth path"))?;
+
+    if !dir.exists() {
+        std::fs::create_dir_all(dir).context("Failed to create rcode auth directory")?;
     }
     Ok(())
 }
 
-/// Load all credentials from auth.json
-/// Returns an empty HashMap if the file doesn't exist or is invalid
-pub fn load_credentials() -> HashMap<String, Credential> {
-    let path = auth_path();
-
+/// Load credentials from a specific path (internal helper)
+fn load_credentials_from_path(path: &std::path::Path) -> HashMap<String, Credential> {
     if !path.exists() {
         return HashMap::new();
     }
 
-    match std::fs::read_to_string(&path) {
+    match std::fs::read_to_string(path) {
         Ok(content) => match serde_json::from_str(&content) {
             Ok(creds) => creds,
             Err(e) => {
-                tracing::warn!("Failed to parse auth.json: {}", e);
+                tracing::warn!("Failed to parse auth file {:?}: {}", path, e);
                 HashMap::new()
             }
         },
         Err(e) => {
-            tracing::warn!("Failed to read auth.json: {}", e);
+            tracing::warn!("Failed to read auth file {:?}: {}", path, e);
             HashMap::new()
         }
     }
 }
 
-/// Save a credential to auth.json
+/// Load credentials from both opencode (base) and rcode (overlay) auth.json files.
+/// Merge strategy: rcode overlay takes precedence over opencode base.
+/// This is the Kustomize-like layering: opencode is the base, rcode is the overlay.
+pub fn load_credentials() -> HashMap<String, Credential> {
+    // 1. Load base (opencode)
+    let mut merged = load_credentials_from_path(&auth_path());
+
+    // 2. Load overlay (rcode) and merge on top — rcode wins
+    let overlay = load_credentials_from_path(&rcode_auth_path());
+    for (key, value) in overlay {
+        merged.insert(key, value);
+    }
+
+    merged
+}
+
+/// Save a credential to RCode's auth overlay file.
 ///
 /// Creates the file and parent directory if needed.
 /// ALWAYS merges with existing credentials - never overwrites the entire file.
+/// Only writes to rcode overlay — never modifies OpenCode's base auth.json.
 pub fn save_credential(provider_id: &str, credential: Credential) -> Result<()> {
-    ensure_auth_dir()?;
+    ensure_rcode_auth_dir()?;
 
-    let path = auth_path();
+    let path = rcode_auth_path();
 
-    // Load existing credentials (or empty map if file doesn't exist)
-    let mut credentials = load_credentials();
+    // Load existing rcode overlay credentials (NOT the merged view — we only update our own file)
+    let mut credentials = load_credentials_from_path(&path);
 
     // Merge the new credential (overwriting just this provider)
     credentials.insert(provider_id.to_string(), credential);
@@ -123,35 +149,37 @@ pub fn save_credential(provider_id: &str, credential: Credential) -> Result<()> 
     std::fs::rename(&temp_path, &path).context("Failed to rename temp auth file")?;
 
     tracing::info!(
-        "Saved credential for provider '{}' to auth.json",
+        "Saved credential for provider '{}' to rcode auth.json",
         provider_id
     );
     Ok(())
 }
 
-/// Delete a credential from auth.json
+/// Delete a credential from RCode's auth overlay file.
+///
+/// Only deletes from rcode overlay — never modifies OpenCode's base auth.json.
 pub fn delete_credential(provider_id: &str) -> Result<()> {
-    let path = auth_path();
+    let path = rcode_auth_path();
 
     if !path.exists() {
-        return Ok(()); // Nothing to delete
+        return Ok(()); // Nothing to delete in our overlay
     }
 
-    let mut credentials = load_credentials();
+    let mut credentials = load_credentials_from_path(&path);
     credentials.remove(provider_id);
 
     if credentials.is_empty() {
         // Remove the file entirely if no credentials remain
-        std::fs::remove_file(&path).context("Failed to remove auth.json")?;
+        std::fs::remove_file(&path).context("Failed to remove rcode auth.json")?;
     } else {
         // Write the updated credentials back
         let json = serde_json::to_string_pretty(&credentials)
             .context("Failed to serialize credentials")?;
-        std::fs::write(&path, json).context("Failed to write auth.json")?;
+        std::fs::write(&path, json).context("Failed to write rcode auth.json")?;
     }
 
     tracing::info!(
-        "Deleted credential for provider '{}' from auth.json",
+        "Deleted credential for provider '{}' from rcode auth.json",
         provider_id
     );
     Ok(())
@@ -408,5 +436,103 @@ mod tests {
             }),
             Some("oauth")
         );
+    }
+
+    #[test]
+    fn test_rcode_auth_path_is_separate_from_opencode() {
+        let opencode = auth_path();
+        let rcode = rcode_auth_path();
+        assert_ne!(opencode, rcode);
+        assert!(opencode.to_string_lossy().contains("opencode"));
+        assert!(rcode.to_string_lossy().contains("rcode"));
+    }
+
+    #[test]
+    fn test_load_credentials_from_path_empty_when_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("nonexistent.json");
+        let result = load_credentials_from_path(&path);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_load_credentials_from_path_reads_api_cred() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("auth.json");
+        std::fs::write(
+            &path,
+            r#"{"myprovider":{"type":"api","key":"sk-test"}}"#,
+        )
+        .unwrap();
+        let result = load_credentials_from_path(&path);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result["myprovider"].primary_secret(), "sk-test");
+    }
+
+    #[test]
+    fn test_merge_overlay_wins_over_base() {
+        // Simulate: base has provider A with key1, overlay has provider A with key2 and provider B
+        let base = HashMap::from([
+            (
+                "provider-a".to_string(),
+                Credential::Api {
+                    key: "base-key-a".to_string(),
+                },
+            ),
+            (
+                "provider-b".to_string(),
+                Credential::Api {
+                    key: "base-key-b".to_string(),
+                },
+            ),
+        ]);
+        let overlay = HashMap::from([
+            (
+                "provider-a".to_string(),
+                Credential::Api {
+                    key: "overlay-key-a".to_string(),
+                },
+            ),
+            (
+                "provider-c".to_string(),
+                Credential::Api {
+                    key: "overlay-key-c".to_string(),
+                },
+            ),
+        ]);
+
+        let mut merged = base;
+        for (k, v) in overlay {
+            merged.insert(k, v);
+        }
+
+        // overlay-key-a wins over base-key-a
+        assert_eq!(merged["provider-a"].primary_secret(), "overlay-key-a");
+        // base-only provider preserved
+        assert_eq!(merged["provider-b"].primary_secret(), "base-key-b");
+        // overlay-only provider present
+        assert_eq!(merged["provider-c"].primary_secret(), "overlay-key-c");
+        assert_eq!(merged.len(), 3);
+    }
+
+    #[test]
+    fn test_merge_base_only_when_no_overlay() {
+        let base = HashMap::from([(
+            "github-copilot".to_string(),
+            Credential::OAuth {
+                access: "gho_test".to_string(),
+                refresh: None,
+                expires: None,
+            },
+        )]);
+        let overlay: HashMap<String, Credential> = HashMap::new();
+
+        let mut merged = base;
+        for (k, v) in overlay {
+            merged.insert(k, v);
+        }
+
+        assert_eq!(merged["github-copilot"].primary_secret(), "gho_test");
+        assert_eq!(merged.len(), 1);
     }
 }

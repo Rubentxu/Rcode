@@ -2,6 +2,7 @@
 
 pub mod terminal;
 pub mod diff;
+pub mod privacy;
 
 use axum::{
     extract::{Path, State, Query},
@@ -32,6 +33,18 @@ use tracing::{debug, error, info, warn, Instrument};
 /// which expects rcode_core::LlmProvider
 struct ProviderAdapter {
     inner: Arc<dyn rcode_providers::LlmProvider>,
+}
+
+/// Helper async fn to sanitize prompt without capturing config in the async context.
+///
+/// This avoids the issue where holding a std::sync::MutexGuard (non-Send) across
+/// an .await point makes the future non-Send.
+async fn sanitize_prompt_async(
+    privacy: &rcode_privacy::service::PrivacyService,
+    session_id: &str,
+    prompt: &str,
+) -> String {
+    privacy.sanitize_prompt(session_id, prompt).await
 }
 
 impl ProviderAdapter {
@@ -202,7 +215,10 @@ pub async fn create_session(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<Json<Session>, ServerError> {
-    let model = state.config.lock().unwrap().effective_model().unwrap_or_else(|| "claude-sonnet-4-5".to_string());
+    let model = state.config.lock()
+        .map(|g| g.effective_model())
+        .unwrap_or(None)
+        .unwrap_or_else(|| "claude-sonnet-4-5".to_string());
     
     let session = if let Some(ref parent_id) = req.parent_id {
         // T11: Create child session inheriting parent's project_path
@@ -415,6 +431,7 @@ pub async fn get_messages(
     Ok(Json(result))
 }
 
+#[axum::debug_handler]
 pub async fn submit_prompt(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -425,58 +442,72 @@ pub async fn submit_prompt(
     info!(session_id = %id, request_id = %request_id, "assigned prompt request id");
 
     // T4: Check for concurrent prompt — reject if session already has active executor run
+    debug!(session_id = %id, request_id = %request_id, "checking cancellation active");
     if state.cancellation.is_active(&id) {
         warn!(session_id = %id, "rejecting prompt because session is already running");
-        return Err(ServerError::conflict("session already running"));
+        // T-02: Return structured details for SESSION_ALREADY_RUNNING conflict
+        return Err(ServerError::conflict_with_details(
+            "session already running",
+            serde_json::json!({
+                "code": "SESSION_ALREADY_RUNNING",
+                "session_id": id
+            }),
+        ));
     }
 
     // D5: Check session exists first
+    debug!(session_id = %id, request_id = %request_id, "looking up session");
     let session = state.session_service.get(&SessionId(id.clone()))
         .ok_or_else(|| ServerError::not_found())?;
     
     // Get agent name from session
     let agent_name = &session.agent_id;
+    debug!(session_id = %id, request_id = %request_id, agent_name = %agent_name, session_model = %session.model_id, "session found, about to sanitize prompt");
+
+    // Privacy: sanitize prompt BEFORE acquiring config lock to avoid
+    // the non-Send MutexGuard crossing any await boundary
+    let safe_prompt = sanitize_prompt_async(&state.privacy, &id, &req.prompt).await;
+    debug!(session_id = %id, request_id = %request_id, "prompt sanitized, acquiring config lock");
     
     // D5: Build provider FIRST, before setting Running status
     // Resolve model using hierarchy: req.model_id > agent_config.model > session.model_id > config.model
-    let config = state.config.lock().map_err(|e| ServerError::internal(e.to_string()))?;
+    let config = state.config.lock().map_err(|e| {
+        error!(session_id = %id, request_id = %request_id, error = %e, "failed to acquire config lock in submit_prompt");
+        ServerError::internal(e.to_string())
+    })?;
     
-    // Get agent config for this agent (if any)
-    let agent_config = config.agent.as_ref()
-        .and_then(|agents| agents.get(agent_name));
-    
-    // Resolve model_id using the full hierarchy:
-    // req.model_id > config.model_for_agent(agent_name) > session.model_id
+    // Extract all needed values from config as owned data before releasing the lock.
+    // This is required because agent_config borrows from config, and we must drop
+    // the lock BEFORE re-acquiring it below (Mutex is NOT re-entrant — double-locking
+    // on the same thread is a guaranteed deadlock).
     let model_id = req.model_id
         .clone()
         .or_else(|| config.model_for_agent(agent_name).map(|s| s.to_string()))
         .unwrap_or_else(|| session.model_id.clone());
-    
-    // Get max_tokens and reasoning_effort from agent config
-    let max_tokens_override = agent_config.and_then(|ac| ac.max_tokens);
-    let reasoning_effort_override = agent_config.as_ref()
+    debug!(session_id = %id, request_id = %request_id, model_id = %model_id, "resolved model_id, about to check fast-path");
+
+    let max_tokens_override: Option<u32> = config.agent.as_ref()
+        .and_then(|agents| agents.get(agent_name))
+        .and_then(|ac| ac.max_tokens);
+    let reasoning_effort_override: Option<String> = config.agent.as_ref()
+        .and_then(|agents| agents.get(agent_name))
         .and_then(|ac| ac.reasoning_effort.clone());
     let allowed_tools = config.tools_for_agent(agent_name);
-    
-    // Get auto_compact setting for executor
     let auto_compact = config.auto_compact;
     let compact_threshold_messages = config.compact_threshold_messages;
     let compact_keep_messages = config.compact_keep_messages;
-    
-    // Resolve title model: small_model > model_for_agent("title") > effective_model
-    // Note: effective_model() returns Option<String>, so we convert others to String for consistency
-    let title_model = config.effective_small_model()
-        .map(|s| s.to_string())
-        .or_else(|| config.model_for_agent("title").map(|s| s.to_string()))
-        .or_else(|| config.effective_model());
+
+    // Release the config lock — must happen before we reach the re-acquire below.
+    drop(config);
 
     if let Some(command) = parse_fast_path_shell_command(&req.prompt, allowed_tools.as_deref()) {
-        drop(config);
+        // agent_config borrow is no longer live (config was dropped above)
+        let _ = agent_name;
 
         let was_set = state.session_service.update_status(&id, SessionStatus::Running);
         if !was_set {
             warn!(session_id = %id, "failed to transition session to running for fast-path command");
-            return Err(ServerError::conflict("Session is already running or in an invalid state"));
+            return Err(ServerError::conflict("session already running for fast-path command"));
         }
 
         let token = state.cancellation.register(&id);
@@ -490,12 +521,19 @@ pub async fn submit_prompt(
         );
 
         let message = Message::user(id.clone(), vec![Part::Text {
-            content: req.prompt.clone(),
+            content: safe_prompt.clone(),
         }]);
         state.session_service.add_message(&id, message.clone());
 
         let title_gen_provider = if pre_existing_count == 0 {
-            if let Some(ref model_str) = title_model {
+            // Compute title_model_str AFTER the await using a fresh config lock
+            let config_guard = state.config.lock().ok();
+            let title_model_str = config_guard
+                .as_ref()
+                .and_then(|g| g.effective_small_model().map(|s| s.to_string()))
+                .or_else(|| config_guard.as_ref().and_then(|g| g.model_for_agent("title").map(|s| s.to_string())))
+                .or_else(|| config_guard.as_ref().and_then(|g| g.effective_model()));
+            if let Some(ref model_str) = title_model_str {
                 let config_guard = state.config.lock().ok();
                 config_guard.and_then(|g| {
                     ProviderFactory::build(model_str, Some(&*g))
@@ -512,7 +550,7 @@ pub async fn submit_prompt(
         if let Some((provider, model_name)) = title_gen_provider {
             let session_service = Arc::clone(&state.session_service);
             let session_id = id.clone();
-            let prompt_content = req.prompt.clone();
+            let prompt_content = safe_prompt.clone();
 
             tokio::spawn(async move {
                 let title_gen = rcode_session::TitleGenerator::new(
@@ -541,6 +579,7 @@ pub async fn submit_prompt(
         let request_id_clone = request_id.clone();
         let agent_name_clone = agent_name.to_string();
         let command_clone = command.clone();
+        let privacy = state.privacy.clone();
 
         tokio::spawn(async move {
             let result = async {
@@ -572,11 +611,8 @@ pub async fn submit_prompt(
                     name: "bash".to_string(),
                     arguments: Box::new(serde_json::json!({ "command": command_clone })),
                 }]);
+                // add_message already publishes MessageAdded
                 session_service.add_message(&session_id_clone, tool_call_message.clone());
-                event_bus.publish(rcode_event::Event::MessageAdded {
-                    session_id: session_id_clone.clone(),
-                    message_id: tool_call_message.id.0.clone(),
-                });
 
                 let tool_result = tools
                     .execute("bash", serde_json::json!({ "command": command }), &tool_ctx)
@@ -587,16 +623,17 @@ pub async fn submit_prompt(
                     Err(error) => (format!("Error: {}", error), true),
                 };
 
+                // Privacy: sanitize tool result content before persisting
+                // (fast-path bypasses AgentExecutor, so Hook 3 is not called automatically)
+                let safe_content = privacy.sanitize_response(&session_id_clone, &content).await;
+
                 let result_message = Message::assistant(session_id_clone.clone(), vec![Part::ToolResult {
                     tool_call_id,
-                    content,
+                    content: safe_content,
                     is_error,
                 }]);
+                // add_message already publishes MessageAdded
                 session_service.add_message(&session_id_clone, result_message.clone());
-                event_bus.publish(rcode_event::Event::MessageAdded {
-                    session_id: session_id_clone.clone(),
-                    message_id: result_message.id.0.clone(),
-                });
 
                 if is_error {
                     event_bus.publish(rcode_event::Event::AgentError {
@@ -627,7 +664,14 @@ pub async fn submit_prompt(
         }));
     }
 
-    // Check for mock provider first (used by integration tests)
+    // Build provider — config lock was already released above (before fast-path check).
+    // Re-acquire it here for both the normal path and any re-entry after fast-path returns.
+    debug!(session_id = %id, request_id = %request_id, model_id = %model_id, "acquiring config lock to build provider");
+    let config = state.config.lock().map_err(|e| {
+        error!(session_id = %id, request_id = %request_id, error = %e, "failed to acquire config lock before provider build");
+        ServerError::internal(e.to_string())
+    })?;
+    debug!(session_id = %id, request_id = %request_id, model_id = %model_id, "building provider");
     let provider_build_result = if let Ok(mock_guard) = state.mock_provider.lock() {
         if let Some(ref mock) = *mock_guard {
             Ok((Arc::clone(mock) as Arc<dyn rcode_providers::LlmProvider>, model_id.clone()))
@@ -650,6 +694,17 @@ pub async fn submit_prompt(
         }
     };
     drop(config); // Release lock before spawning
+
+    // Resolve title model: compute owned String from config (after config is dropped)
+    // This avoids the non-Send MutexGuard from crossing the async boundary
+    let title_model_str = {
+        let config_guard = state.config.lock().ok();
+        config_guard
+            .as_ref()
+            .and_then(|g| g.effective_small_model().map(|s| s.to_string()))
+            .or_else(|| config_guard.as_ref().and_then(|g| g.model_for_agent("title").map(|s| s.to_string())))
+            .or_else(|| config_guard.as_ref().and_then(|g| g.effective_model()))
+    };
     
     // D5: Gate concurrent access - only allow if session is Idle, AFTER provider build succeeds
     let was_set = state.session_service.update_status(&id, SessionStatus::Running);
@@ -664,15 +719,17 @@ pub async fn submit_prompt(
     // D5: Track pre-existing message count for deduplication (captured after provider built)
     let pre_existing_count = state.session_service.get_messages(&id).len();
     info!(session_id = %id, request_id = %request_id, effective_model = %effective_model, pre_existing_count, "prompt accepted and provider configured");
+
+    // safe_prompt was already computed before config was locked
     let message = Message::user(id.clone(), vec![Part::Text {
-        content: req.prompt.clone(),
+        content: safe_prompt.clone(),
     }]);
     state.session_service.add_message(&id, message.clone());
     
     // T3: If this is the first message in the session, spawn async title generation
     // We build the provider BEFORE spawning to avoid holding MutexGuard across await
     let title_gen_provider = if pre_existing_count == 0 {
-        if let Some(ref model_str) = title_model {
+        if let Some(ref model_str) = title_model_str {
             let config_guard = state.config.lock().ok();
             config_guard.and_then(|g| {
                 ProviderFactory::build(model_str, Some(&*g))
@@ -689,7 +746,7 @@ pub async fn submit_prompt(
     if let Some((provider, model_name)) = title_gen_provider {
         let session_service = Arc::clone(&state.session_service);
         let session_id = id.clone();
-        let prompt_content = req.prompt.clone();
+        let prompt_content = safe_prompt.clone();
         
         tokio::spawn(async move {
             let title_gen = rcode_session::TitleGenerator::new(
@@ -754,7 +811,8 @@ pub async fn submit_prompt(
         provider,
         Arc::clone(&state.tools),
     )
-    .with_event_bus(Arc::clone(&state.event_bus));
+    .with_event_bus(Arc::clone(&state.event_bus))
+    .with_privacy_service(state.privacy.clone());
 
     if let Some(tools) = allowed_tools.clone() {
         executor = executor.with_allowed_tools(tools);
@@ -850,11 +908,8 @@ pub async fn submit_prompt(
                     && persisted_new_messages == 0
                 {
                     debug!(request_id = %request_id_clone, message_id = %agent_result.message.id.0, part_count = agent_result.message.parts.len(), "persisting terminal assistant result message");
+                    // add_message already publishes MessageAdded — no manual publish needed
                     session_service.add_message(&session_id_clone, agent_result.message.clone());
-                    event_bus.publish(rcode_event::Event::MessageAdded {
-                        session_id: session_id_clone.clone(),
-                        message_id: agent_result.message.id.0.clone(),
-                    });
                 } else {
                     let new_messages = ctx.messages.iter().skip(pre_existing_count);
                     for msg in new_messages {
@@ -889,6 +944,26 @@ pub async fn submit_prompt(
             Err(e) => {
                 error!(request_id = %request_id_clone, error = %e, "agent execution failed");
                 let _ = session_service.update_status(&session_id_clone, SessionStatus::Aborted);
+                
+                // T-01: Emit AgentError event on executor failure
+                let error_msg = e.to_string();
+                event_bus.publish(rcode_event::Event::AgentError {
+                    session_id: session_id_clone.clone(),
+                    agent_id: agent_name_clone.clone(),
+                    error: error_msg.clone(),
+                });
+                
+                // Persist error message to session
+                let error_message = Message::assistant(
+                    session_id_clone.clone(),
+                    vec![Part::Text { content: format!("⚠ Agent error: {}", error_msg) }],
+                );
+                let msg_id = error_message.id.0.clone();
+                session_service.add_message(&session_id_clone, error_message);
+                event_bus.publish(rcode_event::Event::MessageAdded {
+                    session_id: session_id_clone.clone(),
+                    message_id: msg_id,
+                });
             }
         }
         
@@ -1008,6 +1083,19 @@ pub struct CatalogModelDto {
     pub has_credentials: bool,
     pub source: String,
     pub enabled: bool,
+    /// Wire protocol: "openai_compat" | "anthropic_compat" | "google"
+    pub protocol: String,
+    /// True for non-native providers (anything other than openai, anthropic, google)
+    pub is_compatible: bool,
+}
+
+/// Convert ProviderProtocol to a serializable string
+fn protocol_to_string(protocol: rcode_core::ProviderProtocol) -> &'static str {
+    match protocol {
+        rcode_core::ProviderProtocol::OpenAiCompat => "openai_compat",
+        rcode_core::ProviderProtocol::AnthropicCompat => "anthropic_compat",
+        rcode_core::ProviderProtocol::Google => "google",
+    }
 }
 
 /// GET /models - List all available models
@@ -1017,7 +1105,18 @@ pub async fn list_models(
     let config = (*state.config.lock().unwrap()).clone();
     let models = state.catalog.list_models(&config).await;
     
+    // Native (non-compatible) providers: these use their own native protocol
+    const NATIVE_PROVIDERS: &[&str] = &["openai", "anthropic", "google"];
+    
     let dto_models: Vec<CatalogModelDto> = models.into_iter().map(|m| {
+        // Look up protocol from registry
+        let protocol_str = rcode_providers::lookup_provider(&m.provider)
+            .map(|def| protocol_to_string(def.protocol))
+            .unwrap_or("openai_compat");
+        
+        // is_compatible is false for native providers, true for everything else
+        let is_compatible = !NATIVE_PROVIDERS.contains(&m.provider.as_str());
+        
         CatalogModelDto {
             id: m.id,
             provider: m.provider,
@@ -1025,6 +1124,8 @@ pub async fn list_models(
             has_credentials: m.has_credentials,
             source: format!("{:?}", m.source).to_lowercase(),
             enabled: m.enabled,
+            protocol: protocol_str.to_string(),
+            is_compatible,
         }
     }).collect();
     
@@ -1120,7 +1221,7 @@ pub async fn update_config(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-/// GET /config/providers - Returns provider status
+/// GET /config/providers - Returns provider status with registry-enriched data
 pub async fn get_providers(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
@@ -1222,60 +1323,58 @@ pub async fn get_providers(
             .unwrap_or(true)
     };
 
-    // Well-known providers shown by default (id → display name)
-    let known: &[(&str, &str)] = &[
-        ("anthropic",  "Anthropic"),
-        ("openai",     "OpenAI"),
-        ("google",     "Google"),
-        ("openrouter", "OpenRouter"),
-        ("minimax",    "MiniMax"),
-        ("zai",        "ZAI"),
-    ];
+    // Native (non-compatible) providers - these use their own native protocol
+    const NATIVE_PROVIDERS: &[&str] = &["openai", "anthropic", "google"];
 
-    // Build ordered list: known providers first, then any additional ones
+    // Build ordered list: registry providers first, then any additional ones
     // that exist in the config (e.g. custom or third-party providers).
     let mut seen = std::collections::HashSet::new();
     let mut list: Vec<serde_json::Value> = Vec::new();
 
-    for (id, name) in known {
-        seen.insert(*id);
+    // First add all built-in providers from the registry (maintains order: anthropic, openai, google, openrouter, minimax, zai, github-copilot)
+    for def in rcode_providers::registry().values() {
+        seen.insert(def.id);
+        let is_native = NATIVE_PROVIDERS.contains(&def.id);
+        let protocol_str = protocol_to_string(def.protocol);
+        // supports_custom_base_url: true for openai_compat and anthropic_compat protocols
+        let supports_custom_base_url = matches!(
+            def.protocol,
+            rcode_core::ProviderProtocol::OpenAiCompat | rcode_core::ProviderProtocol::AnthropicCompat
+        );
+
         list.push(serde_json::json!({
-            "id":        id,
-            "name":      name,
-            "has_key":   check_has_key(id),
-            "key_source": get_key_source(id),
-            "base_url":  get_base_url(id),
-            "enabled":   is_provider_enabled(id),
+            "id":                           def.id,
+            "name":                         def.display_name,
+            "display_name":                 def.display_name,
+            "protocol":                     protocol_str,
+            "native":                       is_native,
+            "supports_custom_base_url":     supports_custom_base_url,
+            "has_key":                      check_has_key(def.id),
+            "key_source":                   get_key_source(def.id),
+            "base_url":                     get_base_url(def.id),
+            "enabled":                      is_provider_enabled(def.id),
+            "models_count":                 def.fallback_models.len(),
         }));
     }
 
-    // Add providers from config that are not in the well-known list
+    // Add providers from config that are not in the registry (custom providers)
     for (id, _provider_cfg) in config.providers.iter() {
         if seen.contains(id.as_str()) {
             continue;
         }
-        // Derive a display name: title-case the id, replace dashes/underscores with spaces
-        let name = id
-            .replace('-', " ")
-            .replace('_', " ")
-            .split_whitespace()
-            .map(|w| {
-                let mut c = w.chars();
-                match c.next() {
-                    None => String::new(),
-                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-
+        // Unknown provider: assume openai_compat, non-native, supports custom base_url
         list.push(serde_json::json!({
-            "id":        id,
-            "name":      name,
-            "has_key":   check_has_key(id),
-            "key_source": get_key_source(id),
-            "base_url":  get_base_url(id),
-            "enabled":   is_provider_enabled(id),
+            "id":                           id,
+            "name":                         id,
+            "display_name":                 id,
+            "protocol":                     "openai_compat",
+            "native":                       false,
+            "supports_custom_base_url":     true,
+            "has_key":                      check_has_key(id),
+            "key_source":                   get_key_source(id),
+            "base_url":                     get_base_url(id),
+            "enabled":                      is_provider_enabled(id),
+            "models_count":                 0,
         }));
     }
 
@@ -1867,6 +1966,9 @@ mod tests {
             lsp_registry: Arc::new(LanguageServerRegistry::new()),
             mock_provider: Arc::new(Mutex::new(None)),
             explorer_service: Arc::new(ExplorerService::new()),
+            privacy: rcode_privacy::service::PrivacyService::new(
+                rcode_privacy::service::PrivacyConfig::default()
+            ),
         });
 
         (state, dir)

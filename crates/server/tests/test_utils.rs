@@ -108,6 +108,34 @@ impl TestApp {
         }
     }
 
+    /// Create a TestApp from an existing AppState
+    /// This allows callers to configure the state before creating the test app
+    pub async fn from_state(state: Arc<AppState>) -> Self {
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        // Bind to a random available port
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        // Spawn the server
+        let app = create_app(state.clone()).await;
+        let server = axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                shutdown_rx.await.ok();
+            });
+
+        // Spawn server in background
+        tokio::spawn(async move {
+            server.await.ok();
+        });
+
+        Self {
+            state,
+            port,
+            shutdown_tx: Some(shutdown_tx),
+        }
+    }
+
     pub async fn create_test_session(&self) -> SessionId {
         let session = Session::new(
             std::path::PathBuf::from("/test/project"),

@@ -19,6 +19,7 @@ members = [
     "crates/acp",
     "crates/observability",
     "crates/gen-types",
+    "crates/privacy",
 ]
 
 [workspace.package]

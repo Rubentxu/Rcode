@@ -27,10 +27,10 @@ impl Serve {
         let model_string = rcode_core::resolve_model_from_config(&config_ref, None, None)
             .unwrap_or_else(|| "anthropic/claude-sonnet-4-5".to_string());
         
-        let (_provider_id, _) = parse_model_id(&model_string);
+        let (provider_id, _) = parse_model_id(&model_string);
         let (provider, _) = ProviderFactory::build(&model_string, Some(&config_ref))?;
         drop(config_ref); // Release lock before registering provider
-        state.providers.lock().unwrap().register(provider);
+        state.providers.lock().unwrap().register(provider_id, provider);
         
         tracing::info!("Starting server on {}:{}", self.hostname, self.port);
         

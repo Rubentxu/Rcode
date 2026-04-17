@@ -9,6 +9,7 @@ rcode-event = { path = "../event" }
 rcode-session = { path = "../session" }
 rcode-providers = { path = "../providers" }
 rcode-tools = { path = "../tools" }
+rcode-privacy = { path = "../privacy" }
 tokio.workspace = true
 tokio-stream.workspace = true
 serde.workspace = true

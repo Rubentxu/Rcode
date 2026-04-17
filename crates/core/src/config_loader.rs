@@ -1,12 +1,19 @@
 //! RCode-style configuration file loading
 //!
-//! Implements cascading config merge from multiple sources:
+//! Implements a Kustomize-like cascading config merge:
+//!
+//! **Base** (opencode standard, schema is pure — never modified by RCode):
 //! 1. ~/.config/opencode/config.json
 //! 2. ~/.config/opencode/opencode.json
 //! 3. ~/.config/opencode/opencode.jsonc
 //! 4. Project .opencode/ configs (opencode.jsonc, opencode.json)
 //! 5. OPENCODE_CONFIG file (CLI flag)
 //! 6. OPENCODE_CONFIG_CONTENT env var
+//! 7. ~/.config/opencode/managed/opencode.json
+//!
+//! **Overlay** (RCode-specific, highest precedence):
+//! 8. ~/.config/rcode/config.json — RCode extensions (privacy, etc.) and
+//!    overrides for standard fields (model, providers, lsp…)
 //!
 //! Supports JSONC (JSON with comments) via json_comments crate.
 
@@ -212,6 +219,22 @@ pub async fn load_config(
         }
     }
 
+    // ── RCode overlay (highest precedence) ──────────────────────────────
+    // Kustomize-like: opencode config is the base, ~/.config/rcode/config.json
+    // is the overlay. Standard fields (model, providers, lsp…) can be overridden
+    // here, and RCode-specific fields (privacy, etc.) live only in this file.
+    // This keeps opencode's schema pure — no unknown fields are injected.
+    if let Some(rcode_dir) = dirs::config_dir().map(|p| p.join("rcode")) {
+        let rcode_overlay = rcode_dir.join("config.json");
+        if config_file_exists(&rcode_overlay) {
+            tracing::debug!("Loading RCode overlay from {:?}", rcode_overlay);
+            match load_config_file(&rcode_overlay) {
+                Ok(cfg) => result = merge_configs(&result, &cfg),
+                Err(e) => tracing::warn!("Failed to load RCode overlay from {:?}: {}", rcode_overlay, e),
+            }
+        }
+    }
+
     if let Some(ref agent_map) = result.agent {
         if let Some(ref mode_map) = result.mode {
             let mut merged_agent = agent_map.clone();
@@ -272,7 +295,10 @@ fn find_highest_existing_path(candidates: &[PathBuf]) -> Option<PathBuf> {
 
 /// Resolve the config path to save to disk.
 ///
-/// Mirrors the precedence order that `load_config()` uses when merging files,
+/// Only searches opencode paths — NOT the RCode overlay (`~/.config/rcode/config.json`).
+/// The overlay is read-only (user-managed) and must not be overwritten by `save_config()`.
+///
+/// Mirrors the opencode precedence order that `load_config()` uses when merging files,
 /// so saved provider keys are read back correctly on the next server restart.
 ///
 /// Priority (first existing path wins, highest precedence first):

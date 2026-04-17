@@ -15,6 +15,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::provider::ProviderProtocol;
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct RcodeConfig {
     #[serde(default)]
@@ -120,6 +122,14 @@ pub struct ProviderConfig {
     pub api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    /// Protocol hint for custom/unknown providers.
+    /// Built-in providers get their protocol from the registry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<ProviderProtocol>,
+    /// Whether this provider is enabled. Defaults to true when absent.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Legacy field - use `enabled` instead (inverted logic)
     #[serde(default)]
     pub disabled: bool,
 }

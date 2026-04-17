@@ -13,6 +13,8 @@ import type {
   SSEStreamToolCallEnd,
   SSEStreamToolResult,
   SSEStreamAssistantCommitted,
+  ToolErrorEvent,
+  ProviderErrorEvent,
 } from "./types";
 
 const RECONNECT_DELAY_MS = 1000;
@@ -98,6 +100,15 @@ export class SSEClient {
         this.handleEvent("stream_assistant_committed", event.data);
       });
 
+      // T-03: Error event listeners
+      this.eventSource.addEventListener("tool_error", (event: MessageEvent) => {
+        this.handleEvent("tool_error", event.data);
+      });
+
+      this.eventSource.addEventListener("provider_error", (event: MessageEvent) => {
+        this.handleEvent("provider_error", event.data);
+      });
+
     } catch (error) {
       console.error("Failed to create EventSource:", error);
       this.handleError();
@@ -165,6 +176,13 @@ export class SSEClient {
           break;
         case "stream_assistant_committed":
           this.config.onAssistantCommitted?.(data as SSEStreamAssistantCommitted);
+          break;
+        // T-03: Error event types
+        case "tool_error":
+          this.config.onToolError?.(data as ToolErrorEvent);
+          break;
+        case "provider_error":
+          this.config.onProviderError?.(data as ProviderErrorEvent);
           break;
         default:
           console.warn("Unknown SSE event type:", type);

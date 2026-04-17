@@ -8,6 +8,18 @@ use std::pin::Pin;
 use crate::error::Result;
 use crate::message::Message;
 
+/// Provider protocol - describes the wire protocol a provider uses
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderProtocol {
+    /// OpenAI-compatible API (used by OpenAI, Azure, OpenRouter, MiniMax, ZAI, GitHub Copilot, etc.)
+    OpenAiCompat,
+    /// Anthropic-compatible API (used by Anthropic)
+    AnthropicCompat,
+    /// Google AI API (used by Google Gemini)
+    Google,
+}
+
 /// Provider capabilities - describes what features a provider/model supports
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderCapabilities {
