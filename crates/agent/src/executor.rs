@@ -21,6 +21,88 @@ use super::permissions::{PermissionService, AutoPermissionService};
 const MAX_ACCUMULATED_TEXT: usize = 10_000;
 const FLUSH_INTERVAL_SECS: u64 = 2;
 
+/// Build a workspace context header injected before the agent's system prompt.
+/// This gives the LLM structured information about the project, git state, and OS.
+async fn build_workspace_context(ctx: &AgentContext) -> String {
+    let mut lines = vec![];
+
+    lines.push("<env>".to_string());
+
+    // Working directory
+    lines.push(format!("  Working directory: {}", ctx.cwd.display()));
+
+    // Project path (if different from cwd)
+    if ctx.project_path != ctx.cwd {
+        lines.push(format!("  Project root: {}", ctx.project_path.display()));
+    }
+
+    // Project name (last component of project_path)
+    if let Some(name) = ctx.project_path.file_name().and_then(|n| n.to_str()) {
+        lines.push(format!("  Project: {}", name));
+    }
+
+    // Git branch
+    if let Some(branch) = get_git_branch(&ctx.project_path).await {
+        lines.push(format!("  Git branch: {}", branch));
+    }
+
+    // Git worktree info (if applicable)
+    if let Some(worktree) = get_git_worktree_info(&ctx.project_path).await {
+        lines.push(format!("  Git worktree: {}", worktree));
+    }
+
+    // OS
+    lines.push(format!("  OS: {}", std::env::consts::OS));
+
+    // Session
+    lines.push(format!("  Session ID: {}", ctx.session_id));
+
+    lines.push("</env>".to_string());
+
+    lines.join("\n")
+}
+
+async fn get_git_branch(project_path: &std::path::PathBuf) -> Option<String> {
+    let output = tokio::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(project_path)
+        .output()
+        .await
+        .ok()?;
+
+    if output.status.success() {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !branch.is_empty() {
+            return Some(branch);
+        }
+    }
+    None
+}
+
+async fn get_git_worktree_info(project_path: &std::path::PathBuf) -> Option<String> {
+    let output = tokio::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(project_path)
+        .output()
+        .await
+        .ok()?;
+
+    if output.status.success() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        let worktrees: Vec<&str> = text.split("\n\n").filter(|s| !s.is_empty()).collect();
+        if worktrees.len() > 1 {
+            for wt in &worktrees {
+                if wt.contains(&project_path.display().to_string()) {
+                    let branch_line = wt.lines()
+                        .find(|l| l.starts_with("branch "))?;
+                    return Some(branch_line.trim_start_matches("branch refs/heads/").to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Permission service that denies all tool executions.
 /// Used when Ask mode is set but no InteractivePermissionService is provided.
 struct DenyAllPermissionService;
@@ -483,11 +565,15 @@ impl AgentExecutor {
         
         // Hook 1: Sanitize system prompt before sending to LLM
         // This ensures any sensitive data in the system prompt is masked before it leaves the executor
-        let system_prompt = if let Some(ref privacy) = self.privacy {
+        let agent_prompt = if let Some(ref privacy) = self.privacy {
             privacy.sanitize_prompt(&ctx.session_id, &self.agent.system_prompt()).await
         } else {
             self.agent.system_prompt()
         };
+
+        // Inject workspace context header before the agent's system prompt
+        let workspace_context = build_workspace_context(ctx).await;
+        let system_prompt = format!("{}\n\n{}", workspace_context, agent_prompt);
 
         let request = rcode_core::CompletionRequest {
             model,

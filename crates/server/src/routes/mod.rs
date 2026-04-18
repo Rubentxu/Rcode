@@ -680,7 +680,7 @@ pub async fn submit_prompt(
                     return;
                 }
 
-                let cwd = std::env::current_dir().unwrap_or_else(|_| project_path.clone());
+                let cwd = project_path.clone();
                 let tool_ctx = rcode_core::ToolContext {
                     session_id: session_id_clone.clone(),
                     project_path: project_path.clone(),
@@ -928,9 +928,8 @@ pub async fn submit_prompt(
     }
     
     // Create agent context
-    let cwd = std::env::current_dir()
-        .unwrap_or_else(|_| session.project_path.clone());
-    
+    let cwd = session.project_path.clone();
+
     let mut ctx = AgentContext {
         session_id: id.clone(),
         project_path: session.project_path.clone(),

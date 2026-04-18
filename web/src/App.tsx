@@ -65,8 +65,17 @@ export default function App() {
   // Track whether we're doing an initial session load (full replace) vs an incremental reload
   let isSessionLoad = false;
 
-  const handleSelectProject = (projectId: string) => {
+  const handleSelectProject = async (projectId: string) => {
     projectContext.setActiveProject(projectId);
+    await workspace.loadSessions();
+    // Auto-select most recent session if one exists
+    const sessions = workspace.sessions();
+    if (sessions.length > 0) {
+      const most_recent = [...sessions].sort((a, b) =>
+        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+      )[0];
+      workspace.switchSession(most_recent.id);
+    }
   };
 
   const handleAddProject = () => {
@@ -465,11 +474,44 @@ export default function App() {
   };
 
   // 3-way routing: onboarding → project list → session
+  const NoSessionView = (props: { onNewSession: () => void }) => (
+    <div style={{
+      display: "flex",
+      "flex-direction": "column",
+      "align-items": "center",
+      "justify-content": "center",
+      height: "100%",
+      gap: "16px",
+      color: "var(--color-text-secondary, #9ca3af)",
+    }}>
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style={{ opacity: 0.5 }}>
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <line x1="9" y1="9" x2="15" y2="15" />
+        <line x1="15" y1="9" x2="9" y2="15" />
+      </svg>
+      <p style={{ "font-size": "16px", margin: 0 }}>No sessions yet</p>
+      <button
+        onClick={props.onNewSession}
+        style={{
+          padding: "8px 16px",
+          "border-radius": "6px",
+          border: "none",
+          background: "var(--color-accent, #6366f1)",
+          color: "#fff",
+          "font-size": "14px",
+          cursor: "pointer",
+        }}
+      >
+        + New Session
+      </button>
+    </div>
+  );
+
   const renderMainContent = () => {
     if (projectContext.projects().length === 0) {
       return <WelcomeScreen onAddProject={handleAddProject} />;
     }
-    if (!currentSession()) {
+    if (!projectContext.activeProjectId()) {
       return (
         <RecentProjectsView
           projects={projectContext.projects()}
@@ -479,35 +521,39 @@ export default function App() {
         />
       );
     }
-    return (
-      <SessionView
-        session={currentSession()!}
-        onSubmit={submitPrompt}
-        onAbort={abortSession}
-        onCommandResult={handleCommandResult}
-        onComplete={() => {
-          const sessionId = workspace.activeSessionId();
-          if (sessionId) {
-            workspace.setLoading(sessionId, false);
-          }
-        }}
-        onReloadMessages={async () => {
-          const sessionId = workspace.activeSessionId();
-          if (sessionId) {
-            await loadMessages(sessionId);
-          }
-        }}
-        onError={(errorMsg) => {
-          showToast({
-            type: "error",
-            message: `Agent error: ${errorMsg}`,
-            duration: 6000,
-          });
-        }}
-        onRetry={handleRetry}
-        currentModel={globalStore.currentModel()}
-      />
-    );
+    if (currentSession()) {
+      return (
+        <SessionView
+          session={currentSession()!}
+          onSubmit={submitPrompt}
+          onAbort={abortSession}
+          onCommandResult={handleCommandResult}
+          onComplete={() => {
+            const sessionId = workspace.activeSessionId();
+            if (sessionId) {
+              workspace.setLoading(sessionId, false);
+            }
+          }}
+          onReloadMessages={async () => {
+            const sessionId = workspace.activeSessionId();
+            if (sessionId) {
+              await loadMessages(sessionId);
+            }
+          }}
+          onError={(errorMsg) => {
+            showToast({
+              type: "error",
+              message: `Agent error: ${errorMsg}`,
+              duration: 6000,
+            });
+          }}
+          onRetry={handleRetry}
+          currentModel={globalStore.currentModel()}
+        />
+      );
+    }
+    // Active project selected, no active session → show "no sessions" placeholder
+    return <NoSessionView onNewSession={createSession} />;
   };
 
   return (
