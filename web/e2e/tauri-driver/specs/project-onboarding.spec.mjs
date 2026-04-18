@@ -9,6 +9,8 @@ import {
   waitForBackend,
   waitFor,
   fetchJson,
+  captureState,
+  restoreState,
 } from '../helpers/e2e-helpers.mjs';
 
 // ─── Temp project helpers ──────────────────────────────────────────────────────
@@ -39,17 +41,12 @@ async function deleteProject(projectId) {
   }
 }
 
-async function listProjects() {
-  return fetchJson(`${API_BASE}/projects`);
-}
-
 async function createSession(projectId) {
-  const session = await fetchJson(`${API_BASE}/session`, {
+  return fetchJson(`${API_BASE}/session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ project_id: projectId, agent_id: 'build', model_id: E2E_MODEL }),
   });
-  return session;
 }
 
 async function listSessions() {
@@ -63,45 +60,43 @@ async function deleteSession(sessionId) {
   }
 }
 
-async function deleteAllProjects() {
-  const projects = await listProjects();
-  for (const p of projects) {
-    await deleteProject(p.id);
-  }
-}
-
 // ─── Project onboarding spec ───────────────────────────────────────────────────
 
 describe('RCode Tauri project onboarding', () => {
-  // Track created resources for cleanup
+  // State captured before the suite runs — restored in after()
+  let initialState;
+
+  // Resources created within this suite (cleaned up via restoreState)
   const createdProjects = [];
   const createdSessions = [];
   const tempDirs = [];
 
   before(async () => {
     await waitForBackend();
+    // Snapshot the full state before any mutation
+    initialState = await captureState();
   });
 
   after(async () => {
-    // Clean up sessions first
+    // Delete sessions created in this suite first
     for (const sessionId of createdSessions) {
       await deleteSession(sessionId);
     }
-    // Then clean up projects
-    for (const project of createdProjects) {
-      await deleteProject(project.id);
-    }
-    // Then clean up temp dirs
-    for (const dir of tempDirs) {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    // Restore projects and localStorage to pre-suite state
+    await restoreState(initialState, { deleteTempDirs: tempDirs });
   });
 
   // ── Scenario A: WelcomeScreen shown when no projects ──────────────────────
+  //
+  // Temporarily removes all projects to trigger the WelcomeScreen.
+  // Restores them in the after() via restoreState().
 
   it('Scenario A — WelcomeScreen shown when no projects exist', async () => {
-    // Delete all projects
-    await deleteAllProjects();
+    // Delete all existing projects (restoreState will put them back)
+    const allProjects = await fetchJson(`${API_BASE}/projects`).catch(() => []);
+    for (const p of allProjects) {
+      await deleteProject(p.id);
+    }
 
     // Reload to get fresh UI state
     await browser.reloadSession();
@@ -126,7 +121,7 @@ describe('RCode Tauri project onboarding', () => {
   // ── Scenario B: RecentProjectsView shown when projects exist ──────────────
 
   it('Scenario B — RecentProjectsView shown when projects exist but no session active', async () => {
-    // Create a project via API
+    // Create a test project
     const projectName = `Z Onboarding B ${Date.now()}`;
     const projectPath = setupTempGitProject(projectName);
     tempDirs.push(projectPath);
@@ -158,7 +153,7 @@ describe('RCode Tauri project onboarding', () => {
   // ── Scenario C: Selecting project navigates to session view ──────────────
 
   it('Scenario C — selecting a project from RecentProjectsView navigates to session view', async () => {
-    // Create a project and session via API
+    // Create a project and session
     const projectName = `Z Onboarding C ${Date.now()}`;
     const projectPath = setupTempGitProject(projectName);
     tempDirs.push(projectPath);
@@ -192,10 +187,17 @@ describe('RCode Tauri project onboarding', () => {
   });
 
   // ── Scenario D: createSession guard — no session without active project ───
+  //
+  // Temporarily removes all projects to trigger the WelcomeScreen.
+  // Restores them in the after() via restoreState().
 
   it('Scenario D — clicking new-session-button without active project does not create a session', async () => {
-    // Delete all projects so WelcomeScreen is shown
-    await deleteAllProjects();
+    // Delete all projects (restoreState will put them back)
+    const allProjects = await fetchJson(`${API_BASE}/projects`).catch(() => []);
+    for (const p of allProjects) {
+      await deleteProject(p.id);
+    }
+    // Clear our created-projects list since they're gone now too
     createdProjects.length = 0;
 
     // Reload
@@ -215,7 +217,6 @@ describe('RCode Tauri project onboarding', () => {
     const newSessionBtn = await $('[data-component="new-session-button"]');
     if (await newSessionBtn.isExisting()) {
       await newSessionBtn.click();
-      // Give it a moment
       await new Promise((r) => setTimeout(r, 500));
     }
 
@@ -224,7 +225,7 @@ describe('RCode Tauri project onboarding', () => {
     const countAfter = Array.isArray(sessionsAfter) ? sessionsAfter.length : 0;
     assert.equal(countAfter, countBefore, 'Session count should not increase when no project is active');
 
-    // Verify WelcomeScreen is still showing (not SessionView)
+    // Verify WelcomeScreen is still showing
     assert.equal(await welcome.isDisplayed(), true, 'WelcomeScreen should still be visible after clicking new-session-button');
   });
 });

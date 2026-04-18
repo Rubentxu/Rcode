@@ -5,10 +5,11 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
   API_BASE,
-  E2E_MODEL,
   waitForBackend,
   waitFor,
   fetchJson,
+  captureState,
+  restoreState,
 } from '../helpers/e2e-helpers.mjs';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -43,34 +44,24 @@ async function deleteProject(projectId) {
   }
 }
 
-async function listProjects() {
-  return fetchJson(`${API_BASE}/projects`);
-}
-
-async function deleteAllProjects() {
-  const projects = await listProjects();
-  for (const p of projects) {
-    await deleteProject(p.id);
-  }
-}
-
 // ─── MRU project persistence spec ──────────────────────────────────────────────
 
 describe('RCode Tauri MRU project persistence', () => {
+  // State captured before the suite runs — restored in after()
+  let initialState;
+
   const createdProjects = [];
   const tempDirs = [];
 
   before(async () => {
     await waitForBackend();
+    // Snapshot the full state before any mutation
+    initialState = await captureState();
   });
 
   after(async () => {
-    for (const project of createdProjects) {
-      await deleteProject(project.id);
-    }
-    for (const dir of tempDirs) {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    // Restore projects and localStorage to pre-suite state
+    await restoreState(initialState, { deleteTempDirs: tempDirs });
   });
 
   // ── Scenario A: Active project is persisted to localStorage ──────────────
@@ -89,7 +80,7 @@ describe('RCode Tauri MRU project persistence', () => {
     const project2 = await createProject(projectPath2, projectName2);
     createdProjects.push(project2);
 
-    // Navigate to the app and wait for project rail
+    // Reload and wait for the project rail to show both buttons
     await browser.reloadSession();
     await waitForBackend();
 
@@ -105,10 +96,7 @@ describe('RCode Tauri MRU project persistence', () => {
     // Select the first project by clicking its avatar in the project rail
     await browser.execute((projectName) => {
       const buttons = Array.from(document.querySelectorAll('[data-component="project-rail"] button'));
-      const match = buttons.find((btn) => {
-        const title = btn.getAttribute('title');
-        return title === projectName;
-      });
+      const match = buttons.find((btn) => btn.getAttribute('title') === projectName);
       if (match) match.click();
     }, projectName1);
 
@@ -116,12 +104,14 @@ describe('RCode Tauri MRU project persistence', () => {
     await new Promise((r) => setTimeout(r, 500));
 
     // Read localStorage for the MRU key
-    const mruValue = await browser.execute(() => {
-      return localStorage.getItem('rcode:active-project');
-    });
+    const mruValue = await browser.execute(() => localStorage.getItem('rcode:active-project'));
 
     assert.ok(mruValue !== null, `localStorage['${MRU_KEY}'] should not be null after selecting a project`);
-    assert.equal(mruValue, project1.id, `localStorage should contain the first project's ID, got "${mruValue}" instead of "${project1.id}"`);
+    assert.equal(
+      mruValue,
+      project1.id,
+      `localStorage should contain the first project's ID, got "${mruValue}" instead of "${project1.id}"`,
+    );
   });
 
   // ── Scenario B: After reload, MRU project is auto-selected ──────────────
@@ -134,7 +124,7 @@ describe('RCode Tauri MRU project persistence', () => {
     const project = await createProject(projectPath, projectName);
     createdProjects.push(project);
 
-    // Select the project in the UI
+    // Reload and wait for the project rail
     await browser.reloadSession();
     await waitForBackend();
 
@@ -147,26 +137,23 @@ describe('RCode Tauri MRU project persistence', () => {
       500,
     );
 
+    // Select the project
     await browser.execute((projName) => {
       const buttons = Array.from(document.querySelectorAll('[data-component="project-rail"] button'));
-      const match = buttons.find((btn) => {
-        const title = btn.getAttribute('title');
-        return title === projName;
-      });
+      const match = buttons.find((btn) => btn.getAttribute('title') === projName);
       if (match) match.click();
     }, projectName);
 
     await new Promise((r) => setTimeout(r, 500));
 
-    // Verify it's written to localStorage
+    // Verify it's written to localStorage before reload
     const mruBefore = await browser.execute(() => localStorage.getItem('rcode:active-project'));
     assert.equal(mruBefore, project.id, 'Project should be written to localStorage before reload');
 
-    // Reload the session
+    // Reload and verify auto-selection
     await browser.reloadSession();
     await waitForBackend();
 
-    // The project should be auto-selected (active project name visible in left rail header)
     const headerText = await waitFor(
       () =>
         browser.execute(() => {
@@ -184,12 +171,21 @@ describe('RCode Tauri MRU project persistence', () => {
   });
 
   // ── Scenario C: Single project is auto-selected on load ─────────────────
+  //
+  // Temporarily removes all pre-existing projects and creates one.
+  // restoreState() in after() will delete the test project and put
+  // back any pre-existing ones.
 
   it('Scenario C — with a single project, it is auto-selected on load without user interaction', async () => {
-    // Ensure only ONE project exists — delete all others first
-    await deleteAllProjects();
+    // Delete all current projects (restoreState will put them back)
+    const allProjects = await fetchJson(`${API_BASE}/projects`).catch(() => []);
+    for (const p of allProjects) {
+      await deleteProject(p.id);
+    }
+    // Clear our tracking list — those are gone now too
     createdProjects.length = 0;
 
+    // Create exactly one project
     const projectName = `Z MRU C ${Date.now()}`;
     const projectPath = setupTempGitProject(projectName);
     tempDirs.push(projectPath);
