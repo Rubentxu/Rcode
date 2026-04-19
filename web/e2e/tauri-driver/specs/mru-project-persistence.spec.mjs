@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import {
   API_BASE,
   waitForBackend,
   waitFor,
   fetchJson,
+  setupTempGitProject,
+  createProject,
+  deleteProject,
   captureState,
   restoreState,
 } from '../helpers/e2e-helpers.mjs';
@@ -15,34 +14,6 @@ import {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const MRU_KEY = 'rcode:active-project';
-
-// ─── Temp project helpers ──────────────────────────────────────────────────────
-
-function setupTempGitProject(projectName) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rcode-mru-'));
-  fs.writeFileSync(path.join(root, 'README.md'), `# ${projectName}\n`, 'utf8');
-  execFileSync('git', ['init', '-b', 'main'], { cwd: root, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'e2e@example.com'], { cwd: root, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'RCode E2E'], { cwd: root, stdio: 'ignore' });
-  execFileSync('git', ['add', 'README.md'], { cwd: root, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-m', 'init'], { cwd: root, stdio: 'ignore' });
-  return root;
-}
-
-async function createProject(projectPath, name) {
-  return fetchJson(`${API_BASE}/projects`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: projectPath, name }),
-  });
-}
-
-async function deleteProject(projectId) {
-  const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' });
-  if (!response.ok && response.status !== 404) {
-    throw new Error(`Failed to delete project ${projectId}: ${response.status}`);
-  }
-}
 
 // ─── MRU project persistence spec ──────────────────────────────────────────────
 
@@ -154,16 +125,22 @@ describe('RCode Tauri MRU project persistence', () => {
     await browser.reloadSession();
     await waitForBackend();
 
-    const headerText = await waitFor(
+    await waitFor(
       () =>
         browser.execute(() => {
           const rail = document.querySelector('[data-component="workbench-left-rail"]');
-          return rail?.textContent || '';
-        }),
+          const text = rail?.textContent || '';
+          return text.includes(arguments[0]);
+        }, projectName),
       30_000,
       500,
     );
 
+    // Verify the text now that we know it's present
+    const headerText = await browser.execute(() => {
+      const rail = document.querySelector('[data-component="workbench-left-rail"]');
+      return rail?.textContent || '';
+    });
     assert.ok(
       headerText.includes(projectName),
       `Left rail header should contain the project name "${projectName}" after auto-selection, got: "${headerText}"`,
@@ -200,16 +177,22 @@ describe('RCode Tauri MRU project persistence', () => {
     await waitForBackend();
 
     // The project name should appear in the left rail header without any clicks
-    const headerText = await waitFor(
+    await waitFor(
       () =>
         browser.execute(() => {
           const rail = document.querySelector('[data-component="workbench-left-rail"]');
-          return rail?.textContent || '';
-        }),
+          const text = rail?.textContent || '';
+          return text.includes(arguments[0]);
+        }, projectName),
       30_000,
       500,
     );
 
+    // Verify the text now that we know it's present
+    const headerText = await browser.execute(() => {
+      const rail = document.querySelector('[data-component="workbench-left-rail"]');
+      return rail?.textContent || '';
+    });
     assert.ok(
       headerText.includes(projectName),
       `With single project, it should auto-select on load. Left rail header should contain "${projectName}", got: "${headerText}"`,

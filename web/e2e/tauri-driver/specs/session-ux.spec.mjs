@@ -1,56 +1,27 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import {
   API_BASE,
   E2E_MODEL,
   waitForBackend,
   waitFor,
   fetchJson,
+  setupTempGitProject,
+  createProject,
+  captureState,
+  restoreState,
 } from '../helpers/e2e-helpers.mjs';
 
-async function sleep(ms) {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function setupTempGitProject(projectName) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rcode-session-ux-'));
-  fs.writeFileSync(path.join(root, 'README.md'), `# ${projectName}\n`, 'utf8');
-  execFileSync('git', ['init', '-b', 'main'], { cwd: root, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'e2e@example.com'], { cwd: root, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'RCode E2E'], { cwd: root, stdio: 'ignore' });
-  execFileSync('git', ['add', 'README.md'], { cwd: root, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-m', 'init'], { cwd: root, stdio: 'ignore' });
-  return root;
-}
-
-async function createProject(projectPath, name) {
-  return fetchJson(`${API_BASE}/projects`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: projectPath, name }),
-  });
-}
-
-async function createSession(projectId, title = null) {
-  const session = await fetchJson(`${API_BASE}/session`, {
+/** Create a session for a specific project via API (uses project_id, not project_path). */
+async function createSession(projectId) {
+  return fetchJson(`${API_BASE}/session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ project_id: projectId, agent_id: 'build', model_id: E2E_MODEL }),
   });
+}
 
-  if (title) {
-    await fetchJson(`${API_BASE}/session/${session.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title }),
-    });
-    session.title = title;
-  }
-
-  return session;
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function listProjectSessions(projectId) {
@@ -263,14 +234,18 @@ async function latestProjectSession(projectId) {
 }
 
 describe('RCode Tauri session UX', () => {
+  let initialState;
   const projectName = `Z Session UX ${Date.now()}`;
   let project;
   let projectPath;
   const createdSessionIds = [];
+  const tempDirs = [];
 
   before(async () => {
     await waitForBackend();
+    initialState = await captureState();
     projectPath = setupTempGitProject(projectName);
+    tempDirs.push(projectPath);
     project = await createProject(projectPath, projectName);
   });
 
@@ -279,15 +254,7 @@ describe('RCode Tauri session UX', () => {
   });
 
   after(async () => {
-    for (const sessionId of createdSessionIds) {
-      await deleteSession(sessionId);
-    }
-    if (project?.id) {
-      await deleteProject(project.id);
-    }
-    if (projectPath) {
-      fs.rmSync(projectPath, { recursive: true, force: true });
-    }
+    await restoreState(initialState, { deleteTempDirs: tempDirs });
   });
 
   it('shows active project name and git branch in the left rail header', async () => {

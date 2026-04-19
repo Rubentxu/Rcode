@@ -1,63 +1,31 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import {
   API_BASE,
   E2E_MODEL,
   waitForBackend,
   waitFor,
   fetchJson,
+  setupTempGitProject,
+  createProject,
+  deleteProject,
   captureState,
   restoreState,
 } from '../helpers/e2e-helpers.mjs';
-
-// ─── Temp project helpers ──────────────────────────────────────────────────────
-
-function setupTempGitProject(projectName) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rcode-onboarding-'));
-  fs.writeFileSync(path.join(root, 'README.md'), `# ${projectName}\n`, 'utf8');
-  execFileSync('git', ['init', '-b', 'main'], { cwd: root, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.email', 'e2e@example.com'], { cwd: root, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'RCode E2E'], { cwd: root, stdio: 'ignore' });
-  execFileSync('git', ['add', 'README.md'], { cwd: root, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-m', 'init'], { cwd: root, stdio: 'ignore' });
-  return root;
-}
-
-async function createProject(projectPath, name) {
-  return fetchJson(`${API_BASE}/projects`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: projectPath, name }),
-  });
-}
-
-async function deleteProject(projectId) {
-  const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' });
-  if (!response.ok && response.status !== 404) {
-    throw new Error(`Failed to delete project ${projectId}: ${response.status}`);
-  }
-}
-
-async function createSession(projectId) {
-  return fetchJson(`${API_BASE}/session`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ project_id: projectId, agent_id: 'build', model_id: E2E_MODEL }),
-  });
-}
 
 async function listSessions() {
   return fetchJson(`${API_BASE}/session`);
 }
 
-async function deleteSession(sessionId) {
-  const response = await fetch(`${API_BASE}/session/${sessionId}`, { method: 'DELETE' });
-  if (!response.ok && response.status !== 404) {
-    throw new Error(`Failed to delete session ${sessionId}: ${response.status}`);
-  }
+/**
+ * Create a session for a specific project using project_id.
+ * This is different from createSessionWithModel which uses project_path.
+ */
+async function createSessionForProject(projectId) {
+  return fetchJson(`${API_BASE}/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project_id: projectId, agent_id: 'build', model_id: E2E_MODEL }),
+  });
 }
 
 // ─── Project onboarding spec ───────────────────────────────────────────────────
@@ -78,11 +46,7 @@ describe('RCode Tauri project onboarding', () => {
   });
 
   after(async () => {
-    // Delete sessions created in this suite first
-    for (const sessionId of createdSessions) {
-      await deleteSession(sessionId);
-    }
-    // Restore projects and localStorage to pre-suite state
+    // Restore projects, sessions, and localStorage to pre-suite state
     await restoreState(initialState, { deleteTempDirs: tempDirs });
   });
 
@@ -160,7 +124,7 @@ describe('RCode Tauri project onboarding', () => {
     const project = await createProject(projectPath, projectName);
     createdProjects.push(project);
 
-    const session = await createSession(project.id);
+    const session = await createSessionForProject(project.id);
     createdSessions.push(session.id);
 
     // Reload and wait for RecentProjectsView

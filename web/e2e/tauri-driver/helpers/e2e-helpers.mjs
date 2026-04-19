@@ -5,6 +5,11 @@
  * a predictable, cost-effective model is used for every test run.
  */
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 export const API_BASE = 'http://127.0.0.1:4098';
@@ -53,6 +58,52 @@ export async function fetchJson(url, options = {}) {
   return res.json();
 }
 
+// ─── Temp project helpers ─────────────────────────────────────────────────────
+
+/**
+ * Create a temporary git project directory.
+ * Returns the path. Caller is responsible for cleanup via restoreState({ deleteTempDirs: [...] }).
+ */
+export function setupTempGitProject(prefix = 'rcode-e2e') {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
+  fs.writeFileSync(path.join(root, 'README.md'), '# E2E Test Project\n', 'utf8');
+  execFileSync('git', ['init', '-b', 'main'], { cwd: root, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'e2e@example.com'], { cwd: root, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.name', 'RCode E2E'], { cwd: root, stdio: 'ignore' });
+  execFileSync('git', ['add', 'README.md'], { cwd: root, stdio: 'ignore' });
+  execFileSync('git', ['commit', '-m', 'init'], { cwd: root, stdio: 'ignore' });
+  return root;
+}
+
+export async function createProject(projectPath, name) {
+  return fetchJson(`${API_BASE}/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: projectPath, name }),
+  });
+}
+
+export async function deleteProject(projectId) {
+  const response = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' });
+  if (!response.ok && response.status !== 404) {
+    throw new Error(`Failed to delete project ${projectId}: ${response.status}`);
+  }
+}
+
+export async function deleteSession(sessionId) {
+  const response = await fetch(`${API_BASE}/session/${sessionId}`, { method: 'DELETE' });
+  if (!response.ok && response.status !== 404) {
+    throw new Error(`Failed to delete session ${sessionId}: ${response.status}`);
+  }
+}
+
+export async function deleteAllSessions() {
+  const sessions = await fetchJson(`${API_BASE}/session`).catch(() => []);
+  for (const s of sessions) {
+    await fetch(`${API_BASE}/session/${s.id}`, { method: 'DELETE' }).catch(() => {});
+  }
+}
+
 // ─── Session helpers ───────────────────────────────────────────────────────────
 
 /**
@@ -71,16 +122,31 @@ export async function fetchJson(url, options = {}) {
 export async function createSessionWithModel(projectPath = '/tmp') {
   // 1. Resolve a valid project from the backend (or use first available project)
   let resolvedProjectPath = projectPath;
+  let resolvedProjectId = null;
   try {
     const projects = await fetchJson(`${API_BASE}/projects`);
     if (Array.isArray(projects) && projects.length > 0) {
       resolvedProjectPath = projects[0].canonical_path || projects[0].path || projectPath;
+      resolvedProjectId = projects[0].id;
     }
   } catch (_) {
     // fallback to provided projectPath
   }
 
-  // 2. Create session with the target model
+  // 2. Ensure the active project is set in localStorage so the Workbench loads sessions
+  if (resolvedProjectId) {
+    await browser.execute(
+      (id) => {
+        const current = localStorage.getItem('rcode:active-project');
+        if (current !== id) {
+          localStorage.setItem('rcode:active-project', id);
+        }
+      },
+      resolvedProjectId,
+    );
+  }
+
+  // 3. Create session with the target model
   const session = await fetchJson(`${API_BASE}/session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -92,10 +158,10 @@ export async function createSessionWithModel(projectPath = '/tmp') {
 
   const sessionId = session.id;
 
-  // 3. Navigate to the session in the UI
+  // 4. Navigate to the session in the UI
   await navigateToSession(sessionId);
 
-  // 4. Wait for the textarea to be ready
+  // 5. Wait for the textarea to be ready
   const textarea = await $('[data-component="textarea"]');
   await textarea.waitForExist({ timeout: 30_000 });
 
@@ -104,9 +170,38 @@ export async function createSessionWithModel(projectPath = '/tmp') {
 
 /**
  * Click on a session item in the UI sessions list by its ID.
+ *
+ * The sessions list is populated by workspace.loadSessions() which is called
+ * when the active project changes. After setting localStorage and refreshing,
+ * the app re-initializes and loads sessions for the active project.
  */
 export async function navigateToSession(sessionId) {
-  const sessionItem = await $(`[data-session-id="${sessionId}"]`);
+  // Click sessions tab
+  const sessionsTab = await $('[data-tab="sessions"]');
+  await sessionsTab.waitForExist({ timeout: 15_000 });
+  await sessionsTab.click();
+  await new Promise((r) => setTimeout(r, 800));
+
+  // Check if session already exists in the list
+  let sessionItem = await $(`[data-session-id="${sessionId}"]`);
+  if (await sessionItem.isExisting()) {
+    await sessionItem.click();
+    return;
+  }
+
+  // Session not found — refresh to reload sessions from API
+  await browser.refresh();
+  await waitForBackend();
+  await new Promise((r) => setTimeout(r, 4000));
+
+  // Click sessions tab again after refresh
+  const sessionsTab2 = await $('[data-tab="sessions"]');
+  await sessionsTab2.waitForExist({ timeout: 30_000 });
+  await sessionsTab2.click();
+  await new Promise((r) => setTimeout(r, 1000));
+
+  // Wait for session to appear
+  sessionItem = await $(`[data-session-id="${sessionId}"]`);
   await sessionItem.waitForExist({ timeout: 30_000 });
   await sessionItem.click();
 }
@@ -121,8 +216,13 @@ export async function navigateToSession(sessionId) {
  */
 export async function captureState() {
   const projects = await fetchJson(`${API_BASE}/projects`).catch(() => []);
+  const sessions = await fetchJson(`${API_BASE}/session`).catch(() => []);
   const mruValue = await browser.execute(() => localStorage.getItem('rcode:active-project'));
-  return { projects: Array.isArray(projects) ? projects : [], mruValue };
+  return {
+    projects: Array.isArray(projects) ? projects : [],
+    sessions: Array.isArray(sessions) ? sessions : [],
+    mruValue,
+  };
 }
 
 /**
@@ -131,6 +231,7 @@ export async function captureState() {
  * - Deletes any project whose ID was NOT present in the snapshot.
  * - Does NOT recreate projects that were deleted during the test (backend
  *   cannot recreate arbitrary projects — use temp dirs and the API instead).
+ * - Deletes any session whose ID was NOT present in the snapshot.
  * - Restores localStorage['rcode:active-project'] to the original value.
  *
  * Call in after().
@@ -159,17 +260,25 @@ export async function restoreState(snapshot, { deleteTempDirs = [] } = {}) {
     }
   }
 
-  // 3. Restore localStorage
+  // 3. Delete sessions that weren't in the snapshot
+  const snapshotSessionIds = new Set((snapshot.sessions || []).map((s) => s.id));
+  const currentSessions = await fetchJson(`${API_BASE}/session`).catch(() => []);
+  for (const s of currentSessions) {
+    if (!snapshotSessionIds.has(s.id)) {
+      await fetch(`${API_BASE}/session/${s.id}`, { method: 'DELETE' }).catch(() => {});
+    }
+  }
+
+  // 4. Restore localStorage
   if (snapshot.mruValue === null) {
     await browser.execute(() => localStorage.removeItem('rcode:active-project'));
   } else {
     await browser.execute((v) => localStorage.setItem('rcode:active-project', v), snapshot.mruValue);
   }
 
-  // 4. Clean up temp dirs
-  const { rmSync } = await import('node:fs');
+  // 5. Clean up temp dirs
   for (const dir of deleteTempDirs) {
-    rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
