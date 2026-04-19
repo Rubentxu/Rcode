@@ -12,6 +12,12 @@ import { useProjectContext } from "./context/ProjectContext";
 import { useWorkspace } from "./context/WorkspaceContext";
 import type { Session, SSEStatus } from "./stores";
 
+// Debug inspector — only loads in Tauri builds (dev, debug, or production)
+// The inspector is read-only and无害 (exposes no dangerous operations)
+if (typeof window !== "undefined" && Boolean((window as any).__TAURI__)) {
+  import("./debug/index");
+}
+
 interface PromptResponse {
   message_id: string;
   request_id: string;
@@ -452,6 +458,18 @@ export default function App() {
     void loadPreferredModel();
     // Load sessions for the current project on mount
     void workspace.loadSessions();
+
+    // Debug inspector event listeners — only used by E2E tests
+    // These allow tests to trigger state changes programmatically
+    window.addEventListener("rcode:debug-refresh-sessions", () => {
+      void workspace.loadSessions();
+    });
+    window.addEventListener("rcode:debug-switch-project", ((e: CustomEvent) => {
+      const { projectId } = e.detail;
+      if (projectId) {
+        projectContext.setActiveProject(projectId);
+      }
+    }) as EventListener);
   });
 
   // Only reset session when the active project changes

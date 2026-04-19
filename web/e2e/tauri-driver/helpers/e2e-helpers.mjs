@@ -314,3 +314,69 @@ export async function waitForInputEnabled(timeoutMs = 60_000) {
     timeoutMs,
   );
 }
+
+// ─── Debug Inspector helpers ────────────────────────────────────────────────
+
+/**
+ * Get a full app snapshot from the debug inspector.
+ * Returns null if the inspector is not available.
+ */
+export async function debugSnapshot() {
+  return browser.execute(() => {
+    if (!window.__RCODE_DEBUG__) return null;
+    return window.__RCODE_DEBUG__.getSnapshot();
+  });
+}
+
+/**
+ * Get info about a specific component by selector.
+ */
+export async function debugComponent(selector) {
+  return browser.execute(
+    (sel) => {
+      if (!window.__RCODE_DEBUG__) return null;
+      return window.__RCODE_DEBUG__.getComponent(sel);
+    },
+    selector,
+  );
+}
+
+/**
+ * Get all elements matching a data attribute query.
+ * Query format: "data-component=explorer-tree" or "data-tab=sessions"
+ */
+export async function debugFindElements(query) {
+  return browser.execute(
+    (q) => {
+      if (!window.__RCODE_DEBUG__) return [];
+      return window.__RCODE_DEBUG__.findElements(q);
+    },
+    query,
+  );
+}
+
+/**
+ * Trigger a session reload from the debug inspector.
+ * This dispatches an event that the app can listen to.
+ */
+export async function debugRefreshSessions() {
+  return browser.execute(() => {
+    if (!window.__RCODE_DEBUG__) return false;
+    window.__RCODE_DEBUG__.triggerRefreshSessions();
+    return true;
+  });
+}
+
+/**
+ * Trigger a project switch from the debug inspector.
+ */
+export async function debugSwitchProject(projectId) {
+  return browser.execute(
+    (id) => {
+      if (!window.__RCODE_DEBUG__) return false;
+      window.__RCODE_DEBUG__.triggerProjectSwitch(id);
+      return true;
+    },
+    projectId,
+  );
+}
