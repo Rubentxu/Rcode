@@ -72,6 +72,10 @@ pub struct AppState {
     pub privacy: PrivacyService,
     /// Project health registry (cargo check results)
     pub project_health: Arc<ProjectHealthRegistry>,
+    /// CogniCode intelligence snapshot for proactive context injection (empty if unavailable)
+    pub cognicode_snapshot: rcode_cognicode::snapshot::SharedSnapshot,
+    /// CogniCode service handle — kept alive so Drop fires on shutdown (aborting background tasks)
+    pub cognicode_service: Arc<std::sync::Mutex<Option<rcode_cognicode::service::CogniCodeService>>>,
 }
 
 fn create_storage_path() -> std::path::PathBuf {
@@ -262,6 +266,8 @@ impl AppState {
                     explorer_service: Arc::new(ExplorerService::new()),
                     privacy,
                     project_health: Arc::new(ProjectHealthRegistry::new()),
+                    cognicode_snapshot: rcode_cognicode::snapshot::shared_snapshot(),
+                    cognicode_service: Arc::new(std::sync::Mutex::new(None)),
                 };
             }
         };
@@ -293,6 +299,8 @@ impl AppState {
                     explorer_service: Arc::new(ExplorerService::new()),
                     privacy,
                     project_health: Arc::new(ProjectHealthRegistry::new()),
+                    cognicode_snapshot: rcode_cognicode::snapshot::shared_snapshot(),
+                    cognicode_service: Arc::new(std::sync::Mutex::new(None)),
                 };
         }
 
@@ -322,6 +330,8 @@ impl AppState {
                     explorer_service: Arc::new(ExplorerService::new()),
                     privacy,
                     project_health: Arc::new(ProjectHealthRegistry::new()),
+                    cognicode_snapshot: rcode_cognicode::snapshot::shared_snapshot(),
+                    cognicode_service: Arc::new(std::sync::Mutex::new(None)),
                 };
             }
         };
@@ -359,6 +369,8 @@ impl AppState {
                     explorer_service: Arc::new(ExplorerService::new()),
                     privacy,
                     project_health: Arc::new(ProjectHealthRegistry::new()),
+                    cognicode_snapshot: rcode_cognicode::snapshot::shared_snapshot(),
+                    cognicode_service: Arc::new(std::sync::Mutex::new(None)),
                 };
             }
         };
@@ -391,6 +403,40 @@ impl AppState {
         let tools =
             create_tools_with_runner(session_service.clone(), &config, Arc::clone(&lsp_registry));
 
+        // Register CogniCode intelligence tools (graceful: skip if unavailable)
+        // Spawn in background to avoid blocking the sync constructor.
+        let cognicode_snapshot = rcode_cognicode::snapshot::shared_snapshot();
+        let cognicode_service: Arc<std::sync::Mutex<Option<rcode_cognicode::service::CogniCodeService>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let tools_clone = Arc::clone(&tools);
+        let snapshot_clone = cognicode_snapshot.clone();
+        let service_holder = cognicode_service.clone();
+        tokio::spawn(async move {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            match rcode_cognicode::service::CogniCodeService::spawn(&cwd).await {
+                Ok(service) => {
+                    // Register tools
+                    let session = service.session().clone();
+                    rcode_cognicode::tools::register_all(&tools_clone, session);
+                    tracing::info!("CogniCode service spawned and tools registered");
+                    
+                    // Copy the service's snapshot into the shared snapshot for executor injection
+                    let snap = service.snapshot();
+                    {
+                        let mut shared = snapshot_clone.write();
+                        *shared = snap;
+                    }
+                    
+                    // Store service so it stays alive — Drop will fire when AppState drops,
+                    // which sends shutdown signal and aborts background tasks.
+                    *service_holder.lock().unwrap() = Some(service);
+                }
+                Err(e) => {
+                    tracing::warn!("CogniCode service unavailable (agent will work normally): {}", e);
+                }
+            }
+        });
+
         let tools_for_commands = Arc::clone(&tools);
         tokio::spawn(async move {
             if let Err(error) = tools_for_commands.register_slash_commands().await {
@@ -420,6 +466,8 @@ impl AppState {
             explorer_service: Arc::new(ExplorerService::new()),
             privacy,
             project_health: Arc::new(ProjectHealthRegistry::new()),
+            cognicode_snapshot,
+            cognicode_service,
         }
     }
 }

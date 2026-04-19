@@ -12,6 +12,7 @@ rcode-tools = { path = "../tools" }
 rcode-storage = { path = "../storage" }
 rcode-agent = { path = "../agent" }
 rcode-privacy = { path = "../privacy" }
+rcode-cognicode = { path = "../cognicode" }
 rcode-observability.workspace = true
 rcode-lsp.workspace = true
 tokio.workspace = true

@@ -23,7 +23,11 @@ const FLUSH_INTERVAL_SECS: u64 = 2;
 
 /// Build a workspace context header injected before the agent's system prompt.
 /// This gives the LLM structured information about the project, git state, and OS.
-async fn build_workspace_context(ctx: &AgentContext) -> String {
+/// Optionally includes CogniCode intelligence snapshot if available.
+fn build_workspace_context_sync(
+    ctx: &AgentContext,
+    intelligence_xml: &str,
+) -> String {
     let mut lines = vec![];
 
     lines.push("<env>".to_string());
@@ -41,16 +45,6 @@ async fn build_workspace_context(ctx: &AgentContext) -> String {
         lines.push(format!("  Project: {}", name));
     }
 
-    // Git branch
-    if let Some(branch) = get_git_branch(&ctx.project_path).await {
-        lines.push(format!("  Git branch: {}", branch));
-    }
-
-    // Git worktree info (if applicable)
-    if let Some(worktree) = get_git_worktree_info(&ctx.project_path).await {
-        lines.push(format!("  Git worktree: {}", worktree));
-    }
-
     // OS
     lines.push(format!("  OS: {}", std::env::consts::OS));
 
@@ -59,48 +53,13 @@ async fn build_workspace_context(ctx: &AgentContext) -> String {
 
     lines.push("</env>".to_string());
 
+    // Append code intelligence if available
+    if !intelligence_xml.is_empty() {
+        lines.push(String::new());
+        lines.push(intelligence_xml.to_string());
+    }
+
     lines.join("\n")
-}
-
-async fn get_git_branch(project_path: &std::path::PathBuf) -> Option<String> {
-    let output = tokio::process::Command::new("git")
-        .args(["branch", "--show-current"])
-        .current_dir(project_path)
-        .output()
-        .await
-        .ok()?;
-
-    if output.status.success() {
-        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !branch.is_empty() {
-            return Some(branch);
-        }
-    }
-    None
-}
-
-async fn get_git_worktree_info(project_path: &std::path::PathBuf) -> Option<String> {
-    let output = tokio::process::Command::new("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(project_path)
-        .output()
-        .await
-        .ok()?;
-
-    if output.status.success() {
-        let text = String::from_utf8_lossy(&output.stdout);
-        let worktrees: Vec<&str> = text.split("\n\n").filter(|s| !s.is_empty()).collect();
-        if worktrees.len() > 1 {
-            for wt in &worktrees {
-                if wt.contains(&project_path.display().to_string()) {
-                    let branch_line = wt.lines()
-                        .find(|l| l.starts_with("branch "))?;
-                    return Some(branch_line.trim_start_matches("branch refs/heads/").to_string());
-                }
-            }
-        }
-    }
-    None
 }
 
 /// Permission service that denies all tool executions.
@@ -158,6 +117,7 @@ pub struct AgentExecutorBuilder {
     max_messages_before_compact: usize,
     messages_to_keep_after_compact: usize,
     privacy: Option<rcode_privacy::service::PrivacyService>,
+    intelligence_snapshot: Option<Arc<parking_lot::RwLock<rcode_cognicode::snapshot::IntelligenceSnapshot>>>,
 }
 
 impl AgentExecutorBuilder {
@@ -177,6 +137,7 @@ impl AgentExecutorBuilder {
             max_messages_before_compact: 50,
             messages_to_keep_after_compact: 20,
             privacy: None,
+            intelligence_snapshot: None,
         }
     }
     
@@ -282,7 +243,14 @@ impl AgentExecutorBuilder {
             max_messages_before_compact: self.max_messages_before_compact,
             messages_to_keep_after_compact: self.messages_to_keep_after_compact,
             privacy: self.privacy,
+            intelligence_snapshot: self.intelligence_snapshot,
         }
+    }
+    
+    /// Set the CogniCode intelligence snapshot for proactive context injection
+    pub fn with_intelligence_snapshot(mut self, snapshot: Arc<parking_lot::RwLock<rcode_cognicode::snapshot::IntelligenceSnapshot>>) -> Self {
+        self.intelligence_snapshot = Some(snapshot);
+        self
     }
 }
 
@@ -301,6 +269,7 @@ pub struct AgentExecutor {
     max_messages_before_compact: usize,
     messages_to_keep_after_compact: usize,
     privacy: Option<rcode_privacy::service::PrivacyService>,
+    intelligence_snapshot: Option<Arc<parking_lot::RwLock<rcode_cognicode::snapshot::IntelligenceSnapshot>>>,
 }
 
 impl AgentExecutor {
@@ -330,6 +299,7 @@ impl AgentExecutor {
             max_messages_before_compact: 50,
             messages_to_keep_after_compact: 20,
             privacy: None,
+            intelligence_snapshot: None,
         }
     }
 
@@ -366,6 +336,12 @@ impl AgentExecutor {
     /// Set the privacy service for sanitizing sensitive data
     pub fn with_privacy_service(mut self, privacy: rcode_privacy::service::PrivacyService) -> Self {
         self.privacy = Some(privacy);
+        self
+    }
+
+    /// Set the CogniCode intelligence snapshot for proactive context injection
+    pub fn with_intelligence_snapshot(mut self, snapshot: Arc<parking_lot::RwLock<rcode_cognicode::snapshot::IntelligenceSnapshot>>) -> Self {
+        self.intelligence_snapshot = Some(snapshot);
         self
     }
 
@@ -572,7 +548,11 @@ impl AgentExecutor {
         };
 
         // Inject workspace context header before the agent's system prompt
-        let workspace_context = build_workspace_context(ctx).await;
+        let intelligence_xml = self.intelligence_snapshot
+            .as_ref()
+            .map(|snap| snap.read().to_xml())
+            .unwrap_or_default();
+        let workspace_context = build_workspace_context_sync(ctx, &intelligence_xml);
         let system_prompt = format!("{}\n\n{}", workspace_context, agent_prompt);
 
         let request = rcode_core::CompletionRequest {

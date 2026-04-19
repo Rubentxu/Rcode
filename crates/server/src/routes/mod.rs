@@ -896,7 +896,8 @@ pub async fn submit_prompt(
         Arc::clone(&state.tools),
     )
     .with_event_bus(Arc::clone(&state.event_bus))
-    .with_privacy_service(state.privacy.clone());
+    .with_privacy_service(state.privacy.clone())
+    .with_intelligence_snapshot(state.cognicode_snapshot.clone());
 
     if let Some(tools) = allowed_tools.clone() {
         executor = executor.with_allowed_tools(tools);
@@ -2081,6 +2082,8 @@ mod tests {
                 rcode_privacy::service::PrivacyConfig::default()
             ),
             project_health: Arc::new(ProjectHealthRegistry::new()),
+            cognicode_snapshot: rcode_cognicode::snapshot::shared_snapshot(),
+            cognicode_service: Arc::new(std::sync::Mutex::new(None)),
         });
 
         (state, dir)
