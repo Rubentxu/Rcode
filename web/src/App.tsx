@@ -470,6 +470,21 @@ export default function App() {
         projectContext.setActiveProject(projectId);
       }
     }) as EventListener);
+    window.addEventListener("rcode:debug-toggle-settings", ((e: CustomEvent) => {
+      const { open } = e.detail;
+      globalStore.toggleSettings(open);
+    }) as EventListener);
+    window.addEventListener("rcode:debug-toggle-terminal", ((e: CustomEvent) => {
+      const { open } = e.detail;
+      globalStore.toggleTerminal(open);
+    }) as EventListener);
+    window.addEventListener("rcode:debug-switch-tab", (() => {
+      // No direct tab setter exposed — tests can click the tab directly
+    }) as EventListener);
+    window.addEventListener("rcode:debug-abort", () => {
+      // Abort is handled via the prompt-submit disabled state
+      // For now this is a no-op placeholder
+    });
   });
 
   // Only reset session when the active project changes

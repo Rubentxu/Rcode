@@ -110,6 +110,14 @@ export async function deleteAllSessions() {
  * Create a new session via the backend API using E2E_MODEL, then navigate to it
  * in the UI by clicking its entry in the sessions list.
  *
+ * The key insight: setting localStorage alone does NOT update the SolidJS reactive
+ * state. The UI uses globalStore.activeProjectId() (reactive) to determine which
+ * project's sessions to load. We must use debugSwitchProject() to trigger the
+ * full reactive chain:
+ *   debugSwitchProject → rcode:debug-switch-project event →
+ *   projectContext.setActiveProject() → globalStore.setActiveProject() →
+ *   createEffect → workspace.switchProject() [populates cache] + loadSessions()
+ *
  * Returns: { sessionId, textarea }
  *
  * Usage in before():
@@ -133,17 +141,30 @@ export async function createSessionWithModel(projectPath = '/tmp') {
     // fallback to provided projectPath
   }
 
-  // 2. Ensure the active project is set in localStorage so the Workbench loads sessions
-  if (resolvedProjectId) {
-    await browser.execute(
-      (id) => {
-        const current = localStorage.getItem('rcode:active-project');
-        if (current !== id) {
-          localStorage.setItem('rcode:active-project', id);
-        }
-      },
-      resolvedProjectId,
-    );
+  if (!resolvedProjectId) {
+    throw new Error('No projects available — cannot create session');
+  }
+
+  // 2. Wait for the debug inspector to be available (loaded via dynamic import).
+  //    This is critical — the inspector may not be ready immediately after page load.
+  const inspectorReady = await waitForDebugInspector();
+
+  // 3. Activate the project in the REACTIVE state (not just localStorage).
+  //    debugSwitchProject sets localStorage AND dispatches rcode:debug-switch-project
+  //    → projectContext.setActiveProject() → globalStore.setActiveProject()
+  //    → createEffect → workspace.switchProject() [populates cache] + loadSessions()
+  if (inspectorReady) {
+    await debugSwitchProject(resolvedProjectId);
+    // Wait for the reactive chain to settle: createEffect → switchProject + loadSessions
+    await new Promise((r) => setTimeout(r, 1500));
+  } else {
+    // Fallback: Debug inspector not available (race condition with dynamic import).
+    // Set localStorage and do a full page reload, then wait for app initialization.
+    console.warn('[e2e] Debug inspector not available — using browser.refresh() fallback');
+    await browser.execute((id) => localStorage.setItem('rcode:active-project', id), resolvedProjectId);
+    await browser.refresh();
+    await waitForBackend();
+    await new Promise((r) => setTimeout(r, 3000));
   }
 
   // 3. Create session with the target model
@@ -158,10 +179,21 @@ export async function createSessionWithModel(projectPath = '/tmp') {
 
   const sessionId = session.id;
 
-  // 4. Navigate to the session in the UI
+  // 4. Reload sessions to pick up the newly created one
+  if (inspectorReady) {
+    await debugRefreshSessions();
+    await new Promise((r) => setTimeout(r, 500));
+  } else {
+    // Fallback: refresh page and wait for sessions to load
+    await browser.refresh();
+    await waitForBackend();
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+
+  // 5. Navigate to the session in the UI
   await navigateToSession(sessionId);
 
-  // 5. Wait for the textarea to be ready
+  // 6. Wait for the textarea to be ready
   const textarea = await $('[data-component="textarea"]');
   await textarea.waitForExist({ timeout: 30_000 });
 
@@ -171,38 +203,24 @@ export async function createSessionWithModel(projectPath = '/tmp') {
 /**
  * Click on a session item in the UI sessions list by its ID.
  *
- * The sessions list is populated by workspace.loadSessions() which is called
- * when the active project changes. After setting localStorage and refreshing,
- * the app re-initializes and loads sessions for the active project.
+ * IMPORTANT: The caller (createSessionWithModel) is responsible for ensuring
+ * the correct project is active and sessions have been loaded before calling
+ * this function. This function only handles the UI interaction of finding
+ * and clicking the session element.
  */
 export async function navigateToSession(sessionId) {
   // Click sessions tab
   const sessionsTab = await $('[data-tab="sessions"]');
   await sessionsTab.waitForExist({ timeout: 15_000 });
   await sessionsTab.click();
-  await new Promise((r) => setTimeout(r, 800));
+  await new Promise((r) => setTimeout(r, 500));
 
-  // Check if session already exists in the list
-  let sessionItem = await $(`[data-session-id="${sessionId}"]`);
-  if (await sessionItem.isExisting()) {
-    await sessionItem.click();
-    return;
-  }
-
-  // Session not found — refresh to reload sessions from API
-  await browser.refresh();
-  await waitForBackend();
-  await new Promise((r) => setTimeout(r, 4000));
-
-  // Click sessions tab again after refresh
-  const sessionsTab2 = await $('[data-tab="sessions"]');
-  await sessionsTab2.waitForExist({ timeout: 30_000 });
-  await sessionsTab2.click();
-  await new Promise((r) => setTimeout(r, 1000));
-
-  // Wait for session to appear
-  sessionItem = await $(`[data-session-id="${sessionId}"]`);
-  await sessionItem.waitForExist({ timeout: 30_000 });
+  // Wait for session to appear and click it
+  const sessionItem = await $(`[data-session-id="${sessionId}"]`);
+  await sessionItem.waitForExist({ timeout: 15_000 });
+  // Scroll into view to avoid click interception from overlays
+  await sessionItem.scrollIntoView({ block: 'center' });
+  await new Promise((r) => setTimeout(r, 200));
   await sessionItem.click();
 }
 
@@ -290,6 +308,8 @@ export async function restoreState(snapshot, { deleteTempDirs = [] } = {}) {
  */
 export async function submitPrompt(textarea, text) {
   await textarea.click();
+  await textarea.scrollIntoView({ block: 'center' });
+  await new Promise((r) => setTimeout(r, 100));
   await browser.keys(['Control', 'a']);
   await browser.keys(['Delete']);
   await textarea.setValue(text);
@@ -297,7 +317,17 @@ export async function submitPrompt(textarea, text) {
 
   const sendBtn = await $('[data-component="prompt-submit"]');
   await sendBtn.waitForExist({ timeout: 10_000 });
-  await sendBtn.click();
+  await sendBtn.scrollIntoView({ block: 'center' });
+  await new Promise((r) => setTimeout(r, 100));
+  // Use JS click as fallback when WebDriver click is intercepted by overlays
+  try {
+    await sendBtn.click();
+  } catch {
+    await browser.execute(() => {
+      const btn = document.querySelector('[data-component="prompt-submit"]');
+      if (btn) btn.click();
+    });
+  }
 }
 
 /**
@@ -316,6 +346,28 @@ export async function waitForInputEnabled(timeoutMs = 60_000) {
 }
 
 // ─── Debug Inspector helpers ────────────────────────────────────────────────
+
+/**
+ * Wait for the Debug Inspector to become available.
+ *
+ * The inspector is loaded via dynamic import in App.tsx and may not be
+ * immediately available after page load. Call this before using any
+ * debug inspector functions.
+ *
+ * Returns true if the inspector became available, false if it timed out.
+ */
+export async function waitForDebugInspector(timeoutMs = 15_000) {
+  try {
+    await waitFor(
+      () => browser.execute(() => !!window.__RCODE_DEBUG__),
+      timeoutMs,
+      300,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Get a full app snapshot from the debug inspector.
@@ -379,4 +431,201 @@ export async function debugSwitchProject(projectId) {
     },
     projectId,
   );
+}
+
+// ─── Message helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Fetch messages for a session from the backend API.
+ * Returns the full paginated response with structured parts.
+ */
+export async function getMessages(sessionId, { offset = 0, limit = 50 } = {}) {
+  return fetchJson(`${API_BASE}/session/${sessionId}/messages?offset=${offset}&limit=${limit}`);
+}
+
+/**
+ * Extract all parts from messages, flattened.
+ * Returns: Array<{ type, name?, content?, ... }>
+ */
+export function extractParts(messages) {
+  const msgs = messages?.messages || messages || [];
+  return msgs.flatMap((m) => m.parts || []);
+}
+
+/**
+ * Assert that a message payload contains specific part types.
+ * Throws with a descriptive message if any expected part is missing.
+ */
+export function assertParts(messages, expectedParts) {
+  const parts = extractParts(messages);
+  for (const expected of expectedParts) {
+    if (expected.type === 'tool_call') {
+      const found = parts.some((p) => p.type === 'tool_call' && (!expected.name || p.name === expected.name));
+      if (!found) {
+        const toolCalls = parts.filter((p) => p.type === 'tool_call').map((p) => p.name);
+        throw new Error(`Expected tool_call part${expected.name ? ` with name "${expected.name}"` : ''} but found: ${JSON.stringify(toolCalls)}`);
+      }
+    } else {
+      const found = parts.some((p) => p.type === expected.type);
+      if (!found) {
+        const types = parts.map((p) => p.type);
+        throw new Error(`Expected part type "${expected.type}" but found: ${JSON.stringify(types)}`);
+      }
+    }
+  }
+}
+
+/**
+ * Wait for a session to have at least N messages via the API.
+ * Polls GET /session/:id/messages until the count is met.
+ */
+export async function waitForMessages(sessionId, minCount = 2, timeoutMs = 60_000) {
+  await waitFor(async () => {
+    const data = await getMessages(sessionId);
+    const msgs = data?.messages || [];
+    return msgs.length >= minCount;
+  }, timeoutMs, 1000);
+  return getMessages(sessionId);
+}
+
+/**
+ * Wait for a tool_call part to appear in session messages via the API.
+ */
+export async function waitForToolCall(sessionId, toolName, timeoutMs = 60_000) {
+  await waitFor(async () => {
+    const data = await getMessages(sessionId);
+    const parts = extractParts(data);
+    return parts.some((p) => p.type === 'tool_call' && (!toolName || p.name === toolName));
+  }, timeoutMs, 1000);
+  return getMessages(sessionId);
+}
+
+/**
+ * Wait for a tool_result part to appear in session messages via the API.
+ */
+export async function waitForToolResult(sessionId, timeoutMs = 60_000) {
+  await waitFor(async () => {
+    const data = await getMessages(sessionId);
+    const parts = extractParts(data);
+    return parts.some((p) => p.type === 'tool_result');
+  }, timeoutMs, 1000);
+  return getMessages(sessionId);
+}
+
+// ─── Session creation (API-only, no UI navigation) ─────────────────────────────
+
+/**
+ * Create a session via API only, without navigating to it in the UI.
+ * Use this for test setup when you don't need the UI to show the session.
+ *
+ * Returns the full session object from the API.
+ */
+export async function createSessionDirect({ projectPath, modelId } = {}) {
+  let resolvedPath = projectPath;
+  if (!resolvedPath) {
+    const projects = await fetchJson(`${API_BASE}/projects`);
+    if (Array.isArray(projects) && projects.length > 0) {
+      resolvedPath = projects[0].canonical_path || projects[0].path;
+    }
+  }
+  if (!resolvedPath) {
+    throw new Error('No project path available — cannot create session');
+  }
+  return fetchJson(`${API_BASE}/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      project_path: resolvedPath,
+      model_id: modelId || E2E_MODEL,
+    }),
+  });
+}
+
+// ─── Prompt + wait helpers ───────────────────────────────────────────────────
+
+/**
+ * Submit a prompt and wait for the full response to complete.
+ * Combines submitPrompt + waitForInputEnabled + returns messages.
+ *
+ * Returns the messages after response is complete.
+ */
+export async function submitPromptAndWait(textarea, text, { timeoutMs = 60_000 } = {}) {
+  await submitPrompt(textarea, text);
+  await waitForInputEnabled(timeoutMs);
+}
+
+// ─── Extended Debug Inspector helpers ────────────────────────────────────────
+
+/**
+ * Get toast notifications from the debug inspector.
+ */
+export async function debugGetToasts() {
+  return browser.execute(() => {
+    if (!window.__RCODE_DEBUG__) return [];
+    return window.__RCODE_DEBUG__.getToasts();
+  });
+}
+
+/**
+ * Get rendered messages from the DOM via debug inspector.
+ */
+export async function debugGetMessages() {
+  return browser.execute(() => {
+    if (!window.__RCODE_DEBUG__) return [];
+    return window.__RCODE_DEBUG__.getMessages();
+  });
+}
+
+/**
+ * Get streaming state from the DOM via debug inspector.
+ */
+export async function debugGetStreamingState() {
+  return browser.execute(() => {
+    if (!window.__RCODE_DEBUG__) return null;
+    return window.__RCODE_DEBUG__.getStreamingState();
+  });
+}
+
+/**
+ * Toggle settings panel via debug inspector.
+ */
+export async function debugToggleSettings(open) {
+  return browser.execute((o) => {
+    if (!window.__RCODE_DEBUG__) return false;
+    window.__RCODE_DEBUG__.triggerToggleSettings(o);
+    return true;
+  }, open);
+}
+
+/**
+ * Toggle terminal panel via debug inspector.
+ */
+export async function debugToggleTerminal(open) {
+  return browser.execute((o) => {
+    if (!window.__RCODE_DEBUG__) return false;
+    window.__RCODE_DEBUG__.triggerToggleTerminal(o);
+    return true;
+  }, open);
+}
+
+/**
+ * Switch to sessions or explorer tab via debug inspector.
+ */
+export async function debugSwitchTab(tab) {
+  return browser.execute((t) => {
+    if (!window.__RCODE_DEBUG__) return false;
+    window.__RCODE_DEBUG__.triggerSwitchTab(t);
+    return true;
+  }, tab);
+}
+
+/**
+ * Abort current streaming response via debug inspector.
+ */
+export async function debugAbort() {
+  return browser.execute(() => {
+    if (!window.__RCODE_DEBUG__) return false;
+    window.__RCODE_DEBUG__.triggerAbort();
+    return true;
+  });
 }

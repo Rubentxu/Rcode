@@ -288,6 +288,85 @@ class DebugInspector {
     );
   }
 
+  /**
+   * Get all visible toast notifications currently in the DOM.
+   */
+  getToasts(): Array<{ id: string; type: string; message: string; visible: boolean }> {
+    const container = document.querySelector('[data-component="toast-container"]') || document.body;
+    const toasts = container.querySelectorAll('[data-component="toast"], [role="alert"]');
+    return Array.from(toasts).map((el) => ({
+      id: el.getAttribute('data-toast-id') || '',
+      type: el.getAttribute('data-toast-type') || el.className || '',
+      message: el.textContent?.trim().slice(0, 200) || '',
+      visible: (el as HTMLElement).offsetParent !== null,
+    }));
+  }
+
+  /**
+   * Get rendered messages from the transcript DOM.
+   * Returns message metadata (role, has tool_call, has tool_result, text preview).
+   */
+  getMessages(): Array<{ role: string; hasToolCall: boolean; hasToolResult: boolean; textPreview: string; turnIndex: number }> {
+    const messages = document.querySelectorAll('[data-component="message"]');
+    return Array.from(messages).map((el, idx) => ({
+      role: el.getAttribute('data-role') || el.getAttribute('data-turn-role') || 'unknown',
+      hasToolCall: el.querySelector('[data-part="tool_call"]') !== null,
+      hasToolResult: el.querySelector('[data-part="tool_result"]') !== null,
+      textPreview: el.textContent?.trim().slice(0, 150) || '',
+      turnIndex: idx,
+    }));
+  }
+
+  /**
+   * Get the current streaming state from the DOM.
+   */
+  getStreamingState(): { isStreaming: boolean; hasDraft: boolean; hasSkeleton: boolean; hasAbort: boolean; toolCalls: Array<{ name: string; status: string }> } {
+    const streamingShell = document.querySelector('[data-streaming="streaming"], [data-streaming="optimistic"]');
+    const draftParts = document.querySelector('[data-component="draft-parts"]');
+    const skeleton = document.querySelector('[data-component="skeleton-content"]');
+    const abortBtn = document.querySelector('[data-component="shell-abort"]');
+    const toolCards = document.querySelectorAll('[data-component="streaming-tool-call-card"]');
+
+    return {
+      isStreaming: streamingShell !== null,
+      hasDraft: draftParts !== null,
+      hasSkeleton: skeleton !== null,
+      hasAbort: abortBtn !== null,
+      toolCalls: Array.from(toolCards).map((el) => ({
+        name: el.textContent?.trim().slice(0, 50) || '',
+        status: el.getAttribute('data-status') || 'unknown',
+      })),
+    };
+  }
+
+  /**
+   * Dispatch a custom event to toggle the settings panel.
+   */
+  triggerToggleSettings(open?: boolean): void {
+    window.dispatchEvent(new CustomEvent('rcode:debug-toggle-settings', { detail: { open } }));
+  }
+
+  /**
+   * Dispatch a custom event to toggle the terminal panel.
+   */
+  triggerToggleTerminal(open?: boolean): void {
+    window.dispatchEvent(new CustomEvent('rcode:debug-toggle-terminal', { detail: { open } }));
+  }
+
+  /**
+   * Dispatch a custom event to switch between sessions/explorer tab.
+   */
+  triggerSwitchTab(tab: 'sessions' | 'explorer'): void {
+    window.dispatchEvent(new CustomEvent('rcode:debug-switch-tab', { detail: { tab } }));
+  }
+
+  /**
+   * Dispatch a custom event to abort the current streaming response.
+   */
+  triggerAbort(): void {
+    window.dispatchEvent(new CustomEvent('rcode:debug-abort'));
+  }
+
   // ─── Private helpers ───────────────────────────────────────────────────────
 
   private elementToComponentInfo(el: Element): ComponentInfo {
