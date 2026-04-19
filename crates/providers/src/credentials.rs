@@ -4,10 +4,14 @@
 //! 1. auth.json (rcode_core::auth::get_api_key) - PRIMARY
 //! 2. Environment variables ({PROVIDER}_API_KEY, {PROVIDER}_AUTH_TOKEN)
 //! 3. Config value (optional fallback)
+//!
+//! This module delegates to `resolve_auth()` from the resolution module for
+//! the authoritative credential resolution logic.
 
 use std::env;
 
 use rcode_core::error::{RCodeError, Result};
+use rcode_core::RcodeConfig;
 
 /// Load API key from environment variable
 /// Format: {PROVIDER}_API_KEY (e.g., ANTHROPIC_API_KEY, OPENAI_API_KEY)
@@ -43,21 +47,20 @@ pub fn get_auth_json_api_key(provider: &str) -> Option<String> {
 /// Load API key with fallback to config value
 ///
 /// Resolution order (OpenCode-compatible):
-/// 1. auth.json (via rcode_core::auth::get_api_key)
+/// 1. auth.json (via resolve_auth())
 /// 2. Environment variables ({PROVIDER}_API_KEY, {PROVIDER}_AUTH_TOKEN)
 /// 3. Config value (optional fallback)
 pub fn resolve_api_key(provider: &str, config_key: Option<&str>) -> Result<String> {
-    // First check auth.json (OpenCode's primary credential store)
-    if let Some(key) = rcode_core::auth::get_api_key(provider) {
+    // Use resolve_auth() as the single source of truth for credential resolution
+    let config = RcodeConfig::default();
+    let auth_state = crate::resolution::resolve_auth(provider, None, &config);
+
+    // If resolve_auth found an api_key, return it
+    if let Some(key) = auth_state.api_key {
         return Ok(key);
     }
 
-    // Then try environment variable
-    if let Ok(key) = load_api_key(provider) {
-        return Ok(key);
-    }
-
-    // Then try config value
+    // Then try config value (this is the additional fallback that resolve_auth doesn't use)
     if let Some(key) = config_key {
         if !key.is_empty() {
             return Ok(key.to_string());

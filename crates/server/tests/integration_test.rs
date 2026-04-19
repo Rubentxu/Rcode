@@ -1193,3 +1193,158 @@ async fn test_get_config_providers_partial_disabled() {
     assert!(!minimax["enabled"].as_bool().unwrap(), "MiniMax should be disabled");
     assert!(zai["enabled"].as_bool().unwrap(), "ZAI should remain enabled");
 }
+
+#[tokio::test]
+async fn test_get_config_providers_does_not_leak_api_key() {
+    // Test that GET /config/providers response does NOT contain api_key field in auth
+    // This is a security requirement - credentials must not be exposed via API
+    use rcode_core::RcodeConfig;
+
+    let config = RcodeConfig::default();
+    let app = TestApp::with_config(config).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/config/providers", app.base_url()))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+
+    let body: serde_json::Value = response.json().await.unwrap();
+    let providers = body["providers"].as_array().unwrap();
+
+    // Check that each provider's auth object does NOT contain api_key
+    for provider in providers {
+        let auth = &provider["auth"];
+        assert!(
+            auth.get("api_key").is_none(),
+            "Provider {} auth should NOT contain api_key field - this would leak credentials!",
+            provider["id"]
+        );
+        // Verify other expected fields are present
+        assert!(auth.get("connected").is_some(), "auth.connected should be present");
+        assert!(auth.get("source").is_some(), "auth.source should be present");
+        assert!(auth.get("kind").is_some(), "auth.kind should be present");
+        assert!(auth.get("label").is_some(), "auth.label should be present");
+        assert!(auth.get("can_disconnect").is_some(), "auth.can_disconnect should be present");
+    }
+}
+
+#[tokio::test]
+async fn test_delete_provider_credential_removes_credential() {
+    // Test that DELETE /config/providers/:id/credential removes the credential from auth.json
+    // First we need to set up a credential, then delete it
+    use rcode_core::RcodeConfig;
+    use rcode_core::auth::{save_credential, has_credential, delete_credential, Credential};
+
+    let provider_id = "testprovider";
+
+    // Clean up any existing credential first
+    let _ = delete_credential(provider_id);
+
+    // Set a test credential
+    save_credential(provider_id, Credential::Api { key: "test-api-key-12345".to_string() })
+        .expect("Failed to set test credential");
+
+    // Verify credential exists
+    assert!(has_credential(provider_id), "Credential should exist before deletion");
+
+    let config = RcodeConfig::default();
+    let app = TestApp::with_config(config).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .delete(format!("{}/config/providers/{}/credential", app.base_url(), provider_id))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200, "DELETE credential should return 200");
+
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert!(body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false),
+            "Response should have ok: true");
+
+    // Verify credential no longer exists
+    assert!(!has_credential(provider_id), "Credential should be deleted after DELETE");
+
+    // Clean up
+    let _ = delete_credential(provider_id);
+}
+
+#[tokio::test]
+async fn test_update_model_state_toggle_works() {
+    // Test that PATCH /config/models/:id/state toggles a model's enabled state
+    // and that the change persists and is reflected in subsequent reads
+    use rcode_core::RcodeConfig;
+    use serde_json::json;
+
+    let config = RcodeConfig::default();
+    let app = TestApp::with_config(config).await;
+
+    let client = reqwest::Client::new();
+    // Note: model_id contains "/" which needs to be URL-encoded for the path parameter
+    let model_id = "openai/gpt-4o";
+    let encoded_model_id = "openai%2Fgpt-4o";
+
+    // First, verify the initial state by listing models
+    let list_response = client
+        .get(format!("{}/models", app.base_url()))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(list_response.status(), 200);
+    let list_body: serde_json::Value = list_response.json().await.unwrap();
+    let models = list_body["models"].as_array().unwrap();
+
+    // Find the model we're testing
+    let initial_model = models.iter().find(|m| m["id"] == model_id);
+    let initial_enabled = initial_model.map(|m| m["enabled"].as_bool().unwrap_or(true));
+
+    // Toggle the model OFF
+    let toggle_response = client
+        .put(format!("{}/config/models/{}/state", app.base_url(), encoded_model_id))
+        .json(&json!({ "enabled": false }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(toggle_response.status(), 200, "Toggle OFF should return 200");
+    let toggle_body: serde_json::Value = toggle_response.json().await.unwrap();
+    assert_eq!(toggle_body["enabled"], false, "Response should confirm enabled=false");
+
+    // Read back the model list and verify the model is now disabled
+    let list_response2 = client
+        .get(format!("{}/models", app.base_url()))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(list_response2.status(), 200);
+    let list_body2: serde_json::Value = list_response2.json().await.unwrap();
+    let models2 = list_body2["models"].as_array().unwrap();
+    let updated_model = models2.iter().find(|m| m["id"] == model_id);
+    let updated_enabled = updated_model.map(|m| m["enabled"].as_bool().unwrap_or(true));
+
+    // The model should now be disabled (or if it was already disabled, stays disabled)
+    // This depends on whether the model was initially enabled
+    if initial_enabled == Some(true) {
+        assert_eq!(updated_enabled, Some(false),
+            "Model should be disabled after toggle OFF");
+    }
+
+    // Toggle the model back ON
+    let toggle_response2 = client
+        .put(format!("{}/config/models/{}/state", app.base_url(), encoded_model_id))
+        .json(&json!({ "enabled": true }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(toggle_response2.status(), 200, "Toggle ON should return 200");
+    let toggle_body2: serde_json::Value = toggle_response2.json().await.unwrap();
+    assert_eq!(toggle_body2["enabled"], true, "Response should confirm enabled=true");
+}

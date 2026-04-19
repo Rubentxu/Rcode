@@ -1,4 +1,5 @@
 import { createSignal, createEffect, For, Show, createMemo } from "solid-js";
+import { createVirtualizer } from "@tanstack/solid-virtual";
 import type { Session } from "../stores";
 import { fetchExplorerBootstrap, fetchExplorerTree, type ExplorerBootstrap, type TreeNode, type ExplorerFilter } from "../api/explorer";
 import { renameSession } from "../api/session";
@@ -6,7 +7,12 @@ import { useProjectContext } from "../context/ProjectContext";
 import { useWorkspace, type WorkspaceContextValue } from "../context/WorkspaceContext";
 import { formatTime, formatCompactDate, getSessionGroup, type SessionGroup } from "../lib/dateUtils";
 import { FilterBar, type FilterCounts } from "./left-rail/FilterBar";
-import { TreeNodeRow } from "./left-rail/TreeNodeRow";
+import { TreeNodeRow, buildFlatTree } from "./left-rail/TreeNodeRow";
+import { ExplorerContext } from "./left-rail/ExplorerContext";
+
+// SUPPORTS_VIRTUALIZATION: true only in real DOM (not jsdom test environment)
+// jsdom has window.matchMedia as a non-callable property, so we check typeof
+const SUPPORTS_VIRTUALIZATION = typeof window !== "undefined" && typeof window.matchMedia === "function";
 
 interface WorkbenchLeftRailProps {
   sessions: Session[];
@@ -30,7 +36,7 @@ interface SessionGrouped {
 export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
   const [activeTab, setActiveTab] = createSignal<RailTab>("sessions");
   const projectContext = useProjectContext();
-  
+
   // Try to use workspace context, fall back to no-op if not available (tests)
   let workspaceCtx: WorkspaceContextValue | undefined;
   try {
@@ -38,10 +44,9 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
   } catch {
     workspaceCtx = undefined;
   }
-  
-  // Create a safe workspace accessor that works with or without context
+
   const safeWorkspace = (): WorkspaceContextValue | undefined => workspaceCtx;
-  
+
   // Explorer state
   const [bootstrap, setBootstrap] = createSignal<ExplorerBootstrap | null>(null);
   const [rootChildren, setRootChildren] = createSignal<TreeNode[]>([]);
@@ -52,8 +57,11 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
   const [activeFilter, setActiveFilter] = createSignal<ExplorerFilter>("all");
   const [filterCounts, setFilterCounts] = createSignal<FilterCounts>({ changed: 0, staged: 0, untracked: 0, conflicted: 0 });
 
-  // T4.3: Keyboard navigation state - track focused node id
+  // T4.3: Keyboard navigation state
   const [focusedNodeId, setFocusedNodeId] = createSignal<string | null>(null);
+
+  // Normalize activeFilePath prop to accessor for context
+  const activeFilePath = () => props.activeFilePath ?? null;
 
   // Phase 2: Inline rename state
   const [renamingSessionId, setRenamingSessionId] = createSignal<string | null>(null);
@@ -84,18 +92,15 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
     const sessions = props.sessions;
     const activeId = props.currentSessionId;
 
-    // Filter sessions
     const filtered = query
       ? sessions.filter(s => s.title?.toLowerCase().includes(query))
       : sessions;
 
-    // Always include active session even if filtered out
     const activeSession = sessions.find(s => s.id === activeId);
     if (activeSession && !filtered.find(s => s.id === activeId)) {
       filtered.unshift(activeSession);
     }
 
-    // Group by recency
     const groups: Record<SessionGroup, Session[]> = {
       "Today": [],
       "Yesterday": [],
@@ -117,17 +122,14 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
     return result;
   });
 
-  // Total session count across all groups (for "show all" button label)
   const totalSessionCount = createMemo(() =>
     groupedSessions().reduce((sum, g) => sum + g.sessions.length, 0)
   );
 
-  // Sessions to display — limit to RECENT_LIMIT unless expanded or searching
   const visibleGroupedSessions = createMemo((): SessionGrouped[] => {
     const query = debouncedSearch().toLowerCase().trim();
     if (query || showAllSessions()) return groupedSessions();
 
-    // Show only the most recent RECENT_LIMIT sessions, preserving group structure
     let remaining = RECENT_LIMIT;
     const result: SessionGrouped[] = [];
     for (const { group, sessions } of groupedSessions()) {
@@ -139,15 +141,66 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
     return result;
   });
 
-  // Fetch ExplorerBootstrap when project changes to get git_branch
+  // ── Scroll container ref (declared early so virtualizer can capture it) ─────
+  let scrollContainerRef: HTMLDivElement | undefined;
+
+  // ── Flat visible node list (memoized) ─────────────────────────────────────
+  // Used for both keyboard navigation and the virtualizer.
+  const flatNodes = createMemo(() =>
+    buildFlatTree(rootChildren(), expandedPaths(), loadedPaths())
+  );
+
+  // ── Virtualizer (only active in real DOM) ─────────────────────────────────
+  const virtualizer = createVirtualizer({
+    get count() { return flatNodes().length; },
+    getScrollElement: () => scrollContainerRef ?? null,
+    estimateSize: () => 26,
+    overscan: 10,
+  });
+
+  // ── Filter counts derived from flatNodes (no extra fetch needed) ──────────
+  // We recompute when rootChildren / loadedPaths change.
+  // We iterate the FULL loaded tree regardless of the active filter because
+  // the backend always sends git status even when filter="all".
+  createEffect(() => {
+    const counts = { changed: 0, staged: 0, untracked: 0, conflicted: 0 };
+    // Walk all loaded nodes (not just visible), so counts stay accurate
+    function walk(nodes: TreeNode[]) {
+      for (const n of nodes) {
+        const g = n.git;
+        if (g) {
+          if (g.is_changed && !g.is_staged)  counts.changed++;
+          if (g.is_staged)                    counts.staged++;
+          if (g.is_untracked)                 counts.untracked++;
+          if (g.is_conflicted)                counts.conflicted++;
+        }
+        const ch = loadedPaths().get(n.id);
+        if (ch) walk(ch);
+      }
+    }
+    walk(rootChildren());
+    setFilterCounts({ ...counts });
+  });
+
+  function scrollNodeIntoView(nodeId: string) {
+    if (SUPPORTS_VIRTUALIZATION) {
+      const idx = flatNodes().findIndex(r => r.node.id === nodeId);
+      if (idx >= 0) virtualizer.scrollToIndex(idx, { align: "nearest" });
+    } else {
+      const el = scrollContainerRef?.querySelector(`[data-node-id="${nodeId}"]`);
+      if (el && typeof (el as HTMLElement).scrollIntoView === "function") {
+        (el as HTMLElement).scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    }
+  }
+
+  // Fetch ExplorerBootstrap when project changes (for git_branch in header)
   createEffect(() => {
     const projectId = projectContext.activeProject()?.id;
     if (!projectId) {
       setBootstrap(null);
       return;
     }
-
-    // Fetch bootstrap for project (not session) to get git_branch
     fetchExplorerBootstrap(undefined, projectId)
       .then(boot => setBootstrap(boot))
       .catch(() => setBootstrap(null));
@@ -179,11 +232,9 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
 
     try {
       await renameSession(sessionId, newTitle);
-      // Update local session title
       const updated = props.sessions.map(s =>
         s.id === sessionId ? { ...s, title: newTitle } : s
       );
-      // Propagate through workspace store
       safeWorkspace()?.workspace.setSessions?.(updated);
       cancelRename();
     } catch (err) {
@@ -201,60 +252,40 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
     }
   };
 
-  // Phase 3: Compact mode toggle
   const toggleCompactMode = () => {
     const newValue = !(safeWorkspace()?.workspace.compactMode ?? false);
     safeWorkspace()?.workspace.setCompactMode?.(newValue);
   };
 
-  // Phase 3: Toggle group collapse
   const toggleGroup = (group: SessionGroup) => {
     safeWorkspace()?.workspace.toggleCollapsedGroup?.(group);
   };
 
-  // Check if group is collapsed
-  const isGroupCollapsed = (group: SessionGroup) => {
-    return (safeWorkspace()?.workspace.collapsedGroups ?? new Set()).has(group);
-  };
+  const isGroupCollapsed = (group: SessionGroup) =>
+    (safeWorkspace()?.workspace.collapsedGroups ?? new Set()).has(group);
 
-  // Build a flat list of visible nodes for keyboard navigation
-  function getVisibleNodes(): TreeNode[] {
-    const nodes: TreeNode[] = [];
-    
-    function traverse(nodeList: TreeNode[]) {
-      for (const node of nodeList) {
-        nodes.push(node);
-        if (node.kind === "dir" && expandedPaths().has(node.id)) {
-          const children = loadedPaths().get(node.id) || [];
-          traverse(children);
-        }
-      }
-    }
-    
-    traverse(rootChildren());
-    return nodes;
-  }
-
-  // T4.3: Handle keyboard navigation
+  // T4.3: Handle keyboard navigation using the memoized flat list
   function handleExplorerKeyDown(e: KeyboardEvent) {
-    const visibleNodes = getVisibleNodes();
-    if (visibleNodes.length === 0) return;
+    const nodes = flatNodes();
+    if (nodes.length === 0) return;
 
     switch (e.key) {
       case "ArrowDown":
         e.preventDefault();
         {
-          const currentIdx = visibleNodes.findIndex(n => n.id === focusedNodeId());
-          const nextIdx = currentIdx < 0 ? 0 : Math.min(currentIdx + 1, visibleNodes.length - 1);
-          setFocusedNodeId(visibleNodes[nextIdx].id);
+          const idx = nodes.findIndex(r => r.node.id === focusedNodeId());
+          const next = idx < 0 ? 0 : Math.min(idx + 1, nodes.length - 1);
+          setFocusedNodeId(nodes[next].node.id);
+          scrollNodeIntoView(nodes[next].node.id);
         }
         break;
       case "ArrowUp":
         e.preventDefault();
         {
-          const currentIdx = visibleNodes.findIndex(n => n.id === focusedNodeId());
-          const prevIdx = currentIdx < 0 ? 0 : Math.max(currentIdx - 1, 0);
-          setFocusedNodeId(visibleNodes[prevIdx].id);
+          const idx = nodes.findIndex(r => r.node.id === focusedNodeId());
+          const prev = idx < 0 ? 0 : Math.max(idx - 1, 0);
+          setFocusedNodeId(nodes[prev].node.id);
+          scrollNodeIntoView(nodes[prev].node.id);
         }
         break;
       case "Enter":
@@ -264,19 +295,13 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
         {
           const focusedId = focusedNodeId();
           if (!focusedId) return;
-          const node = visibleNodes.find(n => n.id === focusedId);
-          if (!node) return;
-          if (node.kind === "dir") {
-            // Expand/load children
-            if (!expandedPaths().has(node.id)) {
-              loadChildren(node);
-              handleToggle(node);
-            }
+          const row = nodes.find(r => r.node.id === focusedId);
+          if (!row) return;
+          if (row.node.kind === "dir") {
+            if (!expandedPaths().has(row.node.id)) loadChildren(row.node);
+            handleToggle(row.node);
           } else {
-            // Select file
-            if (props.onSelectFile) {
-              props.onSelectFile(node.relative_path);
-            }
+            props.onSelectFile?.(row.node.relative_path);
           }
         }
         break;
@@ -285,37 +310,14 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
         {
           const focusedId = focusedNodeId();
           if (!focusedId) return;
-          const node = visibleNodes.find(n => n.id === focusedId);
-          if (!node) return;
-          if (node.kind === "dir" && expandedPaths().has(node.id)) {
-            // Collapse directory
-            handleToggle(node);
+          const row = nodes.find(r => r.node.id === focusedId);
+          if (!row) return;
+          if (row.node.kind === "dir" && expandedPaths().has(row.node.id)) {
+            handleToggle(row.node);
           }
         }
         break;
     }
-  }
-
-  // Compute filter counts from all loaded nodes
-  function computeFilterCounts(nodes: TreeNode[]) {
-    const counts = { changed: 0, staged: 0, untracked: 0, conflicted: 0 };
-    
-    function countNode(node: TreeNode) {
-      const git = node.git;
-      if (!git) return;
-      
-      if (git.is_changed && git.is_staged !== true) counts.changed++;
-      if (git.is_staged) counts.staged++;
-      if (git.is_untracked) counts.untracked++;
-      if (git.is_conflicted) counts.conflicted++;
-      
-      // Count in loaded children too
-      const children = loadedPaths().get(node.id) || [];
-      children.forEach(countNode);
-    }
-    
-    nodes.forEach(countNode);
-    setFilterCounts(counts);
   }
 
   // Fetch explorer data when tab is activated
@@ -327,129 +329,98 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
     }
   });
 
-  // T4.4: Auto-expand parent directories when activeFilePath changes to reveal the file
+  // T4.4: Auto-expand parent directories when activeFilePath changes
   createEffect(() => {
-    const filePath = props.activeFilePath;
+    // activeFilePath prop is string | null — access reactively via props proxy
+    const filePath = props.activeFilePath ?? null;
     if (!filePath || !props.currentSessionId) return;
 
-    // filePath is like "src/main.rs" - we need to expand "src" directory
     const parts = filePath.split('/');
-    if (parts.length < 2) return; // Top-level file, no expansion needed
+    if (parts.length < 2) return;
 
-    // Expand all parent directories (all parts except the last which is the filename)
-    const dirsToExpand = parts.slice(0, -1); // All parts except filename
+    const dirsToExpand = parts.slice(0, -1);
 
-    // Function to recursively find and expand directories
     function expandDirs(nodeList: TreeNode[], pathParts: string[]): boolean {
-      if (pathParts.length === 0) return true; // Done
-
+      if (pathParts.length === 0) return true;
       const [currentPart, ...remainingParts] = pathParts;
       const node = nodeList.find(n => n.name === currentPart);
       if (!node || node.kind !== "dir") return false;
 
-      // This is the directory we need to expand
-      // First load its children if not already loaded
       if (!loadedPaths().has(node.id)) {
         loadChildren(node);
       }
-
-      // Mark it as expanded
       setExpandedPaths((prev) => {
         const next = new Set(prev);
         next.add(node.id);
         return next;
       });
 
-      // Recursively expand children
       if (remainingParts.length > 0) {
-        // Wait a tick for children to be loaded, then recurse
-        const children = loadedPaths().get(node.id) || [];
+        const children = loadedPaths().get(node.id) ?? [];
         return expandDirs(children, remainingParts);
       }
       return true;
     }
 
-    // Start expansion from root
     expandDirs(rootChildren(), dirsToExpand);
   });
 
-  // REQ-4.5: Set focusedNodeId and scroll into view when activeFilePath changes
+  // REQ-4.5: Set focusedNodeId and scroll when activeFilePath changes
   createEffect(() => {
     const filePath = props.activeFilePath;
     if (!filePath) return;
 
-    // Find the tree node that matches the active file path
-    function findNodeByPath(nodeList: TreeNode[], path: string): TreeNode | null {
+    function findNode(nodeList: TreeNode[], path: string): TreeNode | null {
       for (const node of nodeList) {
-        // File nodes (not directories) have relative_path matching the path
-        if (node.kind !== "dir" && node.relative_path === path) {
-          return node;
-        }
-        // Recursively search in directory children
+        if (node.kind !== "dir" && node.relative_path === path) return node;
         if (node.kind === "dir") {
-          const children = loadedPaths().get(node.id) || [];
-          const found = findNodeByPath(children, path);
+          const ch = loadedPaths().get(node.id) ?? [];
+          const found = findNode(ch, path);
           if (found) return found;
         }
       }
       return null;
     }
 
-    // Find the matching node
-    const foundNode = findNodeByPath(rootChildren(), filePath);
-    
+    const foundNode = findNode(rootChildren(), filePath);
     if (foundNode) {
-      // Set focused node for keyboard navigation
       setFocusedNodeId(foundNode.id);
-      
-      // Queue scroll into view - either now or when Explorer tab becomes active
-      const scrollIntoView = () => {
-        const element = document.querySelector(`[data-node-id="${foundNode.id}"]`);
-        if (element && typeof element.scrollIntoView === "function") {
-          element.scrollIntoView({ behavior: "smooth", block: "nearest" });
-        }
-      };
-      
       if (activeTab() === "explorer") {
-        // Tab is active, scroll immediately after a brief delay for DOM to update
-        setTimeout(scrollIntoView, 50);
+        const idx = flatNodes().findIndex(r => r.node.id === foundNode.id);
+        if (idx >= 0) {
+          setTimeout(() => scrollNodeIntoView(foundNode.id), 50);
+        }
       }
-      // If tab is not active, the tab switch will handle scroll when it becomes active
     }
   });
 
-  // REQ-4.5: When Explorer tab becomes active, scroll to focusedNode if set
+  // REQ-4.5: Scroll to focusedNode when Explorer tab becomes active
   createEffect(() => {
     if (activeTab() === "explorer" && focusedNodeId()) {
       const nodeId = focusedNodeId();
       if (nodeId) {
-        setTimeout(() => {
-          const element = document.querySelector(`[data-node-id="${nodeId}"]`);
-          if (element && typeof element.scrollIntoView === "function") {
-            element.scrollIntoView({ behavior: "smooth", block: "nearest" });
-          }
-        }, 50);
+        const idx = flatNodes().findIndex(r => r.node.id === nodeId);
+        if (idx >= 0) {
+          setTimeout(() => scrollNodeIntoView(nodeId), 50);
+        }
       }
     }
   });
 
+  // ── loadExplorerData: single fetch (no more double request) ───────────────
   async function loadExplorerData(sessionId: string | undefined, filter: ExplorerFilter) {
     setIsLoading(true);
     setExplorerError(null);
     const projectId = projectContext.activeProject()?.id ?? null;
-    
+
     try {
-      // Fetch bootstrap
-      const boot = await fetchExplorerBootstrap(sessionId, projectId);
+      const [boot, tree] = await Promise.all([
+        fetchExplorerBootstrap(sessionId, projectId),
+        fetchExplorerTree(sessionId, ".", 1, filter, false, false, projectId),
+      ]);
       setBootstrap(boot);
-      
-      // Fetch root children with filter
-      const tree = await fetchExplorerTree(sessionId, ".", 1, filter, false, false, projectId);
       setRootChildren(tree.children);
-      
-      // Compute counts from all files (fetch without filter first for counts)
-      const allTree = await fetchExplorerTree(sessionId, ".", 1, "all", false, false, projectId);
-      computeFilterCounts(allTree.children);
+      // filterCounts are derived reactively via the createEffect above
     } catch (err) {
       console.error("Failed to load explorer:", err);
       setExplorerError(err instanceof Error ? err.message : "Failed to load explorer");
@@ -461,19 +432,14 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
   async function loadChildren(node: TreeNode) {
     const projectId = projectContext.activeProject()?.id ?? null;
     if (!props.currentSessionId && !projectId) return;
-    
+
     try {
-      // Fetch children with the current filter applied
       const tree = await fetchExplorerTree(props.currentSessionId, node.path, 1, activeFilter(), false, false, projectId);
       setLoadedPaths((prev) => {
         const next = new Map(prev);
         next.set(node.id, tree.children);
         return next;
       });
-      
-      // Note: We don't overwrite filtered children with "all" children.
-      // The computeFilterCounts function recursively counts from already-loaded children,
-      // so filtered counts will be accurate for the loaded subtree.
     } catch (err) {
       console.error("Failed to load children:", err);
     }
@@ -503,12 +469,12 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
   }
 
   return (
-    <aside 
+    <aside
       aria-label="Sessions and file explorer"
       data-component="workbench-left-rail"
       class="flex flex-col h-full shrink-0 border-r border-outline-variant/20"
-      style={{ 
-        width: `${props.width ?? 272}px`, 
+      style={{
+        width: `${props.width ?? 272}px`,
         "min-width": "200px",
         background: "var(--surface-container-low)",
       }}
@@ -523,7 +489,6 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
                 <span class="material-symbols-outlined" style={{ "font-size": "16px", color: "var(--outline)" }}>workspaces</span>
                 <span class="text-xs italic truncate" style={{ color: "var(--outline)" }}>No workspace</span>
               </div>
-              {/* Icon-only new session button */}
               <button
                 data-component="new-session-button"
                 onClick={props.onNewSession}
@@ -540,10 +505,7 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
         >
           {(project) => (
             <div class="px-3 pt-2.5 pb-2">
-              {/* Single row: avatar + name + icon button */}
               <div class="flex items-center gap-2">
-
-                {/* Project avatar — letter, skip leading dots/symbols */}
                 <div
                   class="w-7 h-7 rounded-lg shrink-0 flex items-center justify-center text-[12px] font-bold select-none"
                   style={{
@@ -553,8 +515,6 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
                 >
                   {project().name.replace(/^[^a-zA-Z0-9]+/, "").charAt(0).toUpperCase() || "P"}
                 </div>
-
-                {/* Project name only — no path below */}
                 <div class="flex-1 min-w-0">
                   <div
                     class="text-[13px] font-semibold leading-snug truncate"
@@ -563,7 +523,6 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
                   >
                     {project().name}
                   </div>
-                  {/* Git branch inline — only if available */}
                   <Show when={bootstrap()?.git_branch}>
                     <div class="flex items-center gap-0.5 mt-0.5">
                       <span class="material-symbols-outlined" style={{ "font-size": "9px", color: "var(--secondary)" }}>call_split</span>
@@ -577,8 +536,6 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
                     </div>
                   </Show>
                 </div>
-
-                {/* New session — icon only, clean */}
                 <button
                   data-component="new-session-button"
                   onClick={props.onNewSession}
@@ -638,7 +595,7 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
           </div>
         </Show>
 
-        {/* Tab switcher — underline style */}
+        {/* Tab switcher */}
         <div
           role="tablist"
           data-component="rail-tabs"
@@ -686,7 +643,7 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
       <div class="flex-1 overflow-hidden">
         {/* Sessions tab */}
         <Show when={activeTab() === "sessions"}>
-          <div 
+          <div
             role="tabpanel"
             id="sessions-panel"
             data-component="sessions-list"
@@ -735,7 +692,6 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
 
                 return (
                   <div class="mb-1">
-                    {/* Group header */}
                     <button
                       onClick={() => toggleGroup(group)}
                       aria-expanded={!isGroupCollapsed(group)}
@@ -751,7 +707,6 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
                       </span>
                     </button>
 
-                    {/* Sessions in group */}
                     <Show when={!isCollapsed()}>
                       <For each={sessions}>
                         {(session) => {
@@ -784,7 +739,7 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
                               }}
                             >
                               <span class="material-symbols-outlined text-[14px] shrink-0" style={{ color: isActive() ? "var(--secondary)" : "var(--outline)", opacity: isActive() ? "1" : "0.5" }}>chat</span>
-                              
+
                               <Show when={isRenaming()} fallback={
                                 <>
                                   <span class="truncate flex-1 text-[12px]">
@@ -854,17 +809,17 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
 
         {/* Explorer tab */}
         <Show when={activeTab() === "explorer"}>
-          <div 
+          <div
             role="tabpanel"
             id="explorer-panel"
             data-component="explorer-tree"
-            class="h-full overflow-y-auto py-2 px-2 custom-scrollbar flex flex-col"
+            class="h-full flex flex-col outline-none"
             onKeyDown={handleExplorerKeyDown}
             tabIndex={0}
           >
             {/* Loading state */}
             <Show when={isLoading()}>
-              <div class="flex flex-col items-center justify-center h-full p-4">
+              <div class="flex flex-col items-center justify-center flex-1 p-4">
                 <div class="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin mb-3" />
                 <p class="text-xs text-outline">Loading explorer...</p>
               </div>
@@ -872,7 +827,7 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
 
             {/* Error state */}
             <Show when={!isLoading() && explorerError()}>
-              <div class="flex flex-col items-center justify-center h-full p-4 text-center">
+              <div class="flex flex-col items-center justify-center flex-1 p-4 text-center">
                 <span class="material-symbols-outlined text-3xl text-error mb-2">error</span>
                 <p class="text-xs text-error mb-1">Failed to load explorer</p>
                 <p class="text-xs text-outline">{explorerError()}</p>
@@ -889,7 +844,7 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
 
             {/* No session selected */}
             <Show when={!isLoading() && !explorerError() && !props.currentSessionId && !projectContext.activeProject()}>
-              <div class="flex flex-col items-center justify-center h-full p-4 text-center">
+              <div class="flex flex-col items-center justify-center flex-1 p-4 text-center">
                 <span class="material-symbols-outlined text-3xl text-outline mb-2">folder_open</span>
                 <p class="text-xs text-outline">Select a session to view files</p>
               </div>
@@ -899,7 +854,7 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
             <Show when={!isLoading() && !explorerError() && (props.currentSessionId || projectContext.activeProject())}>
               {/* Git status bar */}
               <Show when={bootstrap()}>
-                <div class="flex items-center gap-2 px-2 py-1.5 text-[10px] text-outline border-b border-outline-variant/20 mb-1">
+                <div class="flex items-center gap-2 px-2 py-1.5 text-[10px] text-outline border-b border-outline-variant/20 shrink-0">
                   <Show when={bootstrap()?.git_available}>
                     <span class="flex items-center gap-1">
                       <span class="material-symbols-outlined text-xs text-secondary">code</span>
@@ -922,35 +877,70 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
               </Show>
 
               {/* Filter bar */}
-              <FilterBar
-                activeFilter={activeFilter()}
-                onFilterChange={handleFilterChange}
-                counts={filterCounts()}
-              />
+              <div class="shrink-0 px-2 pt-1">
+                <FilterBar
+                  activeFilter={activeFilter()}
+                  onFilterChange={handleFilterChange}
+                  counts={filterCounts()}
+                />
+              </div>
 
-              {/* Tree */}
-              <div class="flex-1 mt-1">
-                <Show when={rootChildren().length === 0 && !isLoading()}>
-                  <div class="flex flex-col items-center justify-center h-full p-4 text-center">
-                    <span class="material-symbols-outlined text-3xl text-outline mb-2">folder_open</span>
-                    <p class="text-xs text-outline">No files match this filter</p>
-                  </div>
-                </Show>
+              {/* Virtualized tree */}
+              <Show when={flatNodes().length === 0 && !isLoading()}>
+                <div class="flex flex-col items-center justify-center flex-1 p-4 text-center">
+                  <span class="material-symbols-outlined text-3xl text-outline mb-2">folder_open</span>
+                  <p class="text-xs text-outline">No files match this filter</p>
+                </div>
+              </Show>
 
-                <For each={rootChildren()}>
-                  {(node) => (
-                    <TreeNodeRow
-                      node={node}
-                      onToggle={handleToggle}
-                      expandedPaths={expandedPaths()}
-                      loadedPaths={loadedPaths()}
-                      onLoadChildren={loadChildren}
-                      onSelectFile={props.onSelectFile}
-                      focusedNodeId={focusedNodeId()}
-                      activeFilePath={props.activeFilePath}
-                    />
+              <div
+                ref={scrollContainerRef}
+                class="flex-1 overflow-y-auto custom-scrollbar px-1"
+              >
+                <ExplorerContext.Provider value={{ activeFilePath, focusedNodeId }}>
+                  {SUPPORTS_VIRTUALIZATION ? (
+                    <div style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative", width: "100%" }}>
+                      <For each={virtualizer.getVirtualItems()}>
+                        {(virtualItem) => {
+                          const row = () => flatNodes()[virtualItem.index];
+                          return (
+                            <div
+                              data-index={virtualItem.index}
+                              style={{
+                                position: "absolute",
+                                top: 0, left: 0, width: "100%",
+                                height: `${virtualItem.size}px`,
+                                transform: `translateY(${virtualItem.start}px)`,
+                              }}
+                            >
+                              <TreeNodeRow
+                                node={row().node}
+                                depth={row().depth}
+                                isExpanded={expandedPaths().has(row().node.id)}
+                                onToggle={handleToggle}
+                                onLoadChildren={loadChildren}
+                                onSelectFile={props.onSelectFile}
+                              />
+                            </div>
+                          );
+                        }}
+                      </For>
+                    </div>
+                  ) : (
+                    <For each={flatNodes()}>
+                      {(row) => (
+                        <TreeNodeRow
+                          node={row.node}
+                          depth={row.depth}
+                          isExpanded={expandedPaths().has(row.node.id)}
+                          onToggle={handleToggle}
+                          onLoadChildren={loadChildren}
+                          onSelectFile={props.onSelectFile}
+                        />
+                      )}
+                    </For>
                   )}
-                </For>
+                </ExplorerContext.Provider>
               </div>
             </Show>
           </div>

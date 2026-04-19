@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use rcode_providers::catalog::{CacheStore, CatalogModel, ModelSource};
 use rcode_providers::lookup_provider;
+use rcode_providers::resolution::{AuthKind, AuthSource, AuthStateDto};
 use rcode_storage::catalog_cache::{CachedCatalogEntry, CachedModel, CatalogCacheRepository};
 
 /// Adapter that implements `CacheStore` using `CatalogCacheRepository`.
@@ -34,11 +35,22 @@ impl ServerCacheStore {
         let protocol = lookup_provider(&cached.provider)
             .map(|def| def.protocol)
             .unwrap_or(rcode_core::ProviderProtocol::OpenAiCompat);
+        // Reconstruct AuthStateDto from cached has_credentials.
+        // Note: We lose the detailed auth info (source, kind, label, env_key, can_disconnect)
+        // since the cache only stores has_credentials. api_key is never cached.
+        let auth = AuthStateDto {
+            connected: cached.has_credentials,
+            source: AuthSource::None,
+            kind: AuthKind::None,
+            label: "Not cached",
+            env_key: None,
+            can_disconnect: false,
+        };
         CatalogModel {
             id: cached.id,
             provider: cached.provider,
             display_name: cached.display_name,
-            has_credentials: cached.has_credentials,
+            auth,
             source,
             enabled: cached.enabled,
             protocol,
@@ -56,7 +68,7 @@ impl ServerCacheStore {
             id: catalog.id.clone(),
             provider: catalog.provider.clone(),
             display_name: catalog.display_name.clone(),
-            has_credentials: catalog.has_credentials,
+            has_credentials: catalog.auth.connected,
             source,
             enabled: catalog.enabled,
         }
@@ -150,7 +162,14 @@ mod tests {
                 id: "anthropic/claude-1".to_string(),
                 provider: "anthropic".to_string(),
                 display_name: "Claude 1".to_string(),
-                has_credentials: true,
+                auth: AuthStateDto {
+                    connected: true,
+                    source: AuthSource::AuthJson,
+                    kind: AuthKind::ApiKey,
+                    label: "test",
+                    env_key: None,
+                    can_disconnect: false,
+                },
                 source: ModelSource::Api,
                 enabled: true,
                 protocol: rcode_core::ProviderProtocol::AnthropicCompat,
@@ -159,7 +178,14 @@ mod tests {
                 id: "anthropic/claude-2".to_string(),
                 provider: "anthropic".to_string(),
                 display_name: "Claude 2".to_string(),
-                has_credentials: true,
+                auth: AuthStateDto {
+                    connected: true,
+                    source: AuthSource::AuthJson,
+                    kind: AuthKind::ApiKey,
+                    label: "test",
+                    env_key: None,
+                    can_disconnect: false,
+                },
                 source: ModelSource::Api,
                 enabled: true,
                 protocol: rcode_core::ProviderProtocol::AnthropicCompat,
@@ -199,7 +225,14 @@ mod tests {
                 id: "test/model1".to_string(),
                 provider: "test".to_string(),
                 display_name: "Model 1".to_string(),
-                has_credentials: true,
+                auth: AuthStateDto {
+                    connected: true,
+                    source: AuthSource::AuthJson,
+                    kind: AuthKind::ApiKey,
+                    label: "test",
+                    env_key: None,
+                    can_disconnect: false,
+                },
                 source: ModelSource::Api,
                 enabled: true,
                 protocol: rcode_core::ProviderProtocol::OpenAiCompat,
@@ -208,7 +241,14 @@ mod tests {
                 id: "test/model2".to_string(),
                 provider: "test".to_string(),
                 display_name: "Model 2".to_string(),
-                has_credentials: false,
+                auth: AuthStateDto {
+                    connected: false,
+                    source: AuthSource::None,
+                    kind: AuthKind::None,
+                    label: "none",
+                    env_key: None,
+                    can_disconnect: false,
+                },
                 source: ModelSource::Fallback,
                 enabled: false,
                 protocol: rcode_core::ProviderProtocol::OpenAiCompat,
@@ -273,7 +313,14 @@ mod tests {
             id: "test/model1".to_string(),
             provider: "test".to_string(),
             display_name: "Model 1".to_string(),
-            has_credentials: true,
+            auth: AuthStateDto {
+                connected: true,
+                source: AuthSource::AuthJson,
+                kind: AuthKind::ApiKey,
+                label: "test",
+                env_key: None,
+                can_disconnect: false,
+            },
             source: ModelSource::Api,
             enabled: true,
             protocol: rcode_core::ProviderProtocol::OpenAiCompat,

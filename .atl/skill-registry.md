@@ -69,7 +69,7 @@ Central registry of all available agent skills for the rust-code project.
 - Rust Skills: 4
 - Browser Skills: 3
 - General Tools: 6
-- Last Updated: 2026-04-17
+- Last Updated: 2026-04-18
 
 ## Project Conventions
 - AGENTS.md: Engram persistent memory protocol + RCode agent contract
@@ -79,6 +79,24 @@ Central registry of all available agent skills for the rust-code project.
 - SDD persistence mode: engram
 - Strict TDD Mode: enabled
 - .gitignore: `*` (ignores everything by default) — use `git add -f` for new files
+
+## Stack Summary
+- **Backend**: Rust (edition 2024), Axum 0.7, Tokio 1.45, SQLite (rusqlite)
+- **Frontend**: SolidJS 1.9, Vite 6, Tailwind 3.4, TypeScript 5 (strict)
+- **Desktop**: Tauri v2
+- **Testing Backend**: cargo test, cargo tarpaulin, cargo clippy (-D warnings)
+- **Testing Frontend**: vitest 4.1.3, @solidjs/testing-library, Playwright 1.54.0
+- **E2E Tauri**: WebdriverIO + tauri-driver
+- **Type check**: tsc --noEmit, cargo check
+
+## Validation Gates (ordered by scope)
+1. `cargo test -p <crate>` — targeted crate tests
+2. `cargo test --workspace` — full workspace regression
+3. `cargo clippy --workspace --all-targets -- -D warnings` — lint gate
+4. `cd web && npx vitest run` — frontend unit tests
+5. `cd web && tsc --noEmit` — type check
+6. `cd web && npx playwright test` — web E2E
+7. `cd web/e2e/tauri-driver && npm test` — Tauri native E2E
 
 ## Scan Directories
 
@@ -90,6 +108,16 @@ Central registry of all available agent skills for the rust-code project.
 | ~/.opencode/skills/ | 0 |
 | .claude/skills/ (project) | Not found |
 | .agent/skills/ (project) | Not found |
+
+## Project Convention Files
+| File | Content |
+|------|---------|
+| AGENTS.md | Agent contract, validation matrix, production-readiness checklist |
+| web/package.json | Frontend deps (SolidJS, Vite, Tailwind, vitest, playwright, tauri) |
+| Cargo.toml | Workspace definition (19 crate members) |
+| web/vitest.config.ts | Vitest config (jsdom, globals, src/**/*.test.{ts,tsx}) |
+| web/playwright.config.ts | Playwright config (baseURL :1420, VITE_MOCK_MODE, e2e/*.spec.ts) |
+| web/tsconfig.json | TS strict mode, ESNext, solid-js JSX |
 
 ## Notes
 Auto-generated registry. Duplicates (same skill name across directories) are resolved by project-level > user-level priority. No project-level skill directories found.

@@ -34,6 +34,7 @@ pub use google::GoogleProvider;
 pub use minimax::MiniMaxProvider;
 pub use openrouter::OpenRouterProvider;
 pub use zai::ZaiProvider;
+pub use resolution::{resolve_auth, AuthSource, AuthKind, AuthState, AuthStateDto};
 
 use std::sync::Arc;
 use std::future::Future;

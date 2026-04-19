@@ -21,7 +21,7 @@ use crate::error::ServerError;
 use crate::explorer::{ExplorerBootstrap, TreeResponse, TreeFilter};
 use rcode_core::{
     Project, ProjectId, Session, SessionId, SessionStatus, Message, Part, MessageId,
-    PaginationParams, PaginatedMessages, AgentContext, save_config, ProviderConfig, AgentDefinition, DynamicAgent,
+    PaginationParams, PaginatedMessages, AgentContext, ProviderConfig, AgentDefinition, DynamicAgent,
 };
 use rcode_agent::{AgentExecutor, DefaultAgent};
 use rcode_providers::ProviderFactory;
@@ -1158,13 +1158,23 @@ pub struct ListModelsResponse {
     pub models: Vec<CatalogModelDto>,
 }
 
+/// Authentication info for a model in the models list
+#[derive(serde::Serialize)]
+pub struct ModelAuthDto {
+    pub connected: bool,
+    pub source: String,
+    pub badge: Option<String>,
+}
+
+/// DTO for a catalog model
 #[derive(serde::Serialize)]
 pub struct CatalogModelDto {
     pub id: String,
     pub provider: String,
     pub display_name: String,
-    pub has_credentials: bool,
-    pub source: String,
+    pub auth: ModelAuthDto,
+    /// Where the model definition came from: "api" | "fallback" | "configured"
+    pub catalog_source: String,
     pub enabled: bool,
     /// Wire protocol: "openai_compat" | "anthropic_compat" | "google"
     pub protocol: String,
@@ -1184,12 +1194,12 @@ fn protocol_to_string(protocol: rcode_core::ProviderProtocol) -> &'static str {
 /// Query parameters for GET /models
 #[derive(Debug, Deserialize)]
 pub struct ListModelsQuery {
-    /// If true, only include providers with credentials configured (default: true)
+    /// If true, only include providers with credentials configured (default: false)
     #[serde(default = "default_configured_only")]
     pub configured_only: bool,
 }
 
-fn default_configured_only() -> bool { true }
+fn default_configured_only() -> bool { false }
 
 /// GET /models - List all available models
 pub async fn list_models(
@@ -1211,12 +1221,25 @@ pub async fn list_models(
         // is_compatible is false for native providers, true for everything else
         let is_compatible = !NATIVE_PROVIDERS.contains(&m.provider.as_str());
         
+        // Derive badge from auth source
+        // badge: "configured" for auth_json or config, "fallback" for env, null for none
+        let badge = match m.auth.source {
+            rcode_providers::AuthSource::AuthJson => Some("configured".to_string()),
+            rcode_providers::AuthSource::Config => Some("configured".to_string()),
+            rcode_providers::AuthSource::Env => Some("fallback".to_string()),
+            rcode_providers::AuthSource::None => None,
+        };
+        
         CatalogModelDto {
             id: m.id,
             provider: m.provider,
             display_name: m.display_name,
-            has_credentials: m.has_credentials,
-            source: format!("{:?}", m.source).to_lowercase(),
+            auth: ModelAuthDto {
+                connected: m.auth.connected,
+                source: format!("{:?}", m.auth.source).to_lowercase(),
+                badge,
+            },
+            catalog_source: format!("{:?}", m.source).to_lowercase(),
             enabled: m.enabled,
             protocol: protocol_str.to_string(),
             is_compatible,
@@ -1312,8 +1335,10 @@ pub async fn update_config(
         config.model = Some(model);
     }
 
-    // Persist the clone to disk. If this fails, live state is untouched.
-    save_config(&config).map_err(|e| ServerError::internal(e))?;
+    // Persist the clone to the RCode overlay (NOT opencode.json).
+    // RCode never mutates OpenCode config files.
+    rcode_core::config_loader::save_rcode_overlay(&config)
+        .map_err(|e| ServerError::internal(e))?;
 
     // Only update live state AFTER successful disk write
     {
@@ -1329,78 +1354,6 @@ pub async fn get_providers(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
     let config = state.config.lock().unwrap();
-
-    // Check for credentials in auth.json (OpenCode's primary credential store)
-    // Note: In OpenCode, the user picks a provider ID via /connect which may
-    // differ from the canonical provider name (e.g. "zai-coding-plan" vs "zai").
-    // We check the provider_id first, then known model names as fallback.
-    let check_has_key = |provider_id: &str| -> bool {
-        // First check auth.json for the provider_id
-        if rcode_core::auth::has_credential(provider_id) {
-            return true;
-        }
-        // Also check known model names (e.g. "zai-coding-plan" for "zai")
-        let model_names: &[&str] = match provider_id {
-            "zai" => &["zai-coding-plan", "zai-coding-standard", "zai-coding-premium"],
-            _ => &[],
-        };
-        for name in model_names {
-            if rcode_core::auth::has_credential(name) {
-                return true;
-            }
-        }
-        // Then check env vars
-        let env_key = format!("{}_API_KEY", provider_id.to_uppercase().replace('-', "_"));
-        if std::env::var(&env_key).is_ok() {
-            return true;
-        }
-        let auth_key = format!("{}_AUTH_TOKEN", provider_id.to_uppercase().replace('-', "_"));
-        if std::env::var(&auth_key).is_ok() {
-            return true;
-        }
-        // Then check config (deprecated - api_key should be in auth.json)
-        config
-            .providers
-            .get(provider_id)
-            .and_then(|p| p.api_key.as_deref())
-            .map(|k| !k.is_empty())
-            .unwrap_or(false)
-    };
-
-    // Determine the source of the API key: "auth", "env", or "config"
-    let get_key_source = |provider_id: &str| -> &'static str {
-        if rcode_core::auth::has_credential(provider_id) {
-            return "auth";
-        }
-        // Also check model names for auth source
-        let model_names: &[&str] = match provider_id {
-            "zai" => &["zai-coding-plan", "zai-coding-standard", "zai-coding-premium"],
-            _ => &[],
-        };
-        for name in model_names {
-            if rcode_core::auth::has_credential(name) {
-                return "auth";
-            }
-        }
-        let env_key = format!("{}_API_KEY", provider_id.to_uppercase().replace('-', "_"));
-        if std::env::var(&env_key).is_ok() {
-            return "env";
-        }
-        let auth_key = format!("{}_AUTH_TOKEN", provider_id.to_uppercase().replace('-', "_"));
-        if std::env::var(&auth_key).is_ok() {
-            return "env";
-        }
-        if config
-            .providers
-            .get(provider_id)
-            .and_then(|p| p.api_key.as_deref())
-            .map(|k| !k.is_empty())
-            .unwrap_or(false)
-        {
-            return "config";
-        }
-        "none"
-    };
 
     let get_base_url = |provider_id: &str| -> serde_json::Value {
         if let Some(url) = config
@@ -1445,6 +1398,12 @@ pub async fn get_providers(
             rcode_core::ProviderProtocol::OpenAiCompat | rcode_core::ProviderProtocol::AnthropicCompat
         );
 
+        // Use resolve_auth() for unified auth state resolution
+        let auth_state = rcode_providers::resolve_auth(def.id, Some(def), &config);
+        // Use AuthStateDto to prevent api_key leakage in API response
+        let auth_dto = rcode_providers::AuthStateDto::from(&auth_state);
+        let auth_json = serde_json::to_value(&auth_dto).unwrap_or(serde_json::Value::Null);
+
         list.push(serde_json::json!({
             "id":                           def.id,
             "name":                         def.display_name,
@@ -1452,8 +1411,7 @@ pub async fn get_providers(
             "protocol":                     protocol_str,
             "native":                       is_native,
             "supports_custom_base_url":     supports_custom_base_url,
-            "has_key":                      check_has_key(def.id),
-            "key_source":                   get_key_source(def.id),
+            "auth":                         auth_json,
             "base_url":                     get_base_url(def.id),
             "enabled":                      is_provider_enabled(def.id),
             "models_count":                 def.fallback_models.len(),
@@ -1466,6 +1424,11 @@ pub async fn get_providers(
             continue;
         }
         // Unknown provider: assume openai_compat, non-native, supports custom base_url
+        let auth_state = rcode_providers::resolve_auth(id, None, &config);
+        // Use AuthStateDto to prevent api_key leakage in API response
+        let auth_dto = rcode_providers::AuthStateDto::from(&auth_state);
+        let auth_json = serde_json::to_value(&auth_dto).unwrap_or(serde_json::Value::Null);
+        
         list.push(serde_json::json!({
             "id":                           id,
             "name":                         id,
@@ -1473,8 +1436,7 @@ pub async fn get_providers(
             "protocol":                     "openai_compat",
             "native":                       false,
             "supports_custom_base_url":     true,
-            "has_key":                      check_has_key(id),
-            "key_source":                   get_key_source(id),
+            "auth":                         auth_json,
             "base_url":                     get_base_url(id),
             "enabled":                      is_provider_enabled(id),
             "models_count":                 0,
@@ -1535,8 +1497,10 @@ pub async fn update_provider(
 
     // Persist config changes (base_url and display_name only, not api_key) to disk.
     // Use strip_secrets_from_config to ensure api_key is never written to config.
-    let config_to_save = rcode_core::auth::strip_secrets_from_config(&config);
-    save_config(&config_to_save).map_err(|e| ServerError::internal(e))?;
+    // Persist config changes to RCode overlay (NOT opencode.json).
+    // This writes RCode-specific state (models, enabled_providers, disabled_providers).
+    rcode_core::config_loader::save_rcode_overlay(&config)
+        .map_err(|e| ServerError::internal(e))?;
 
     // Only update live state AFTER successful disk write
     {
@@ -1564,8 +1528,10 @@ pub async fn update_provider_state(
     }
     config.disabled_providers = if disabled.is_empty() { None } else { Some(disabled) };
 
-    let config_to_save = rcode_core::auth::strip_secrets_from_config(&config);
-    save_config(&config_to_save).map_err(ServerError::internal)?;
+    // Persist config changes to RCode overlay (NOT opencode.json).
+    // This writes RCode-specific state (models, enabled_providers, disabled_providers).
+    rcode_core::config_loader::save_rcode_overlay(&config)
+        .map_err(|e| ServerError::internal(e))?;
 
     {
         let mut guard = state.config.lock().map_err(|e| ServerError::internal(e.to_string()))?;
@@ -1585,6 +1551,26 @@ pub async fn update_model_state(
         (*guard).clone()
     };
 
+    // Parse model_id to get provider_id and model_name
+    let (provider_id, model_name) = rcode_providers::parse_model_id(&model_id);
+
+    // Update the new ProviderConfig.models path
+    // Key is just the model name (e.g., "gpt-4o"), not the full ID ("openai/gpt-4o")
+    // since the models HashMap is already inside the provider's config
+    let models = config.providers
+        .entry(provider_id.clone())
+        .or_insert_with(|| ProviderConfig::default());
+    
+    let model_configs = models.models
+        .get_or_insert_with(|| std::collections::HashMap::new());
+    
+    let model_config = model_configs
+        .entry(model_name.clone())
+        .or_insert_with(|| rcode_core::config::ProviderModelConfig::default());
+    
+    model_config.enabled = Some(req.enabled);
+
+    // Also update legacy disabled_models for backward compat during transition
     let mut disabled_models = config
         .extra
         .get("disabled_models")
@@ -1611,8 +1597,10 @@ pub async fn update_model_state(
         );
     }
 
-    let config_to_save = rcode_core::auth::strip_secrets_from_config(&config);
-    save_config(&config_to_save).map_err(ServerError::internal)?;
+    // Persist config changes to RCode overlay (NOT opencode.json).
+    // This writes RCode-specific state (models, enabled_providers, disabled_providers).
+    rcode_core::config_loader::save_rcode_overlay(&config)
+        .map_err(|e| ServerError::internal(e))?;
 
     {
         let mut guard = state.config.lock().map_err(|e| ServerError::internal(e.to_string()))?;
@@ -1620,6 +1608,19 @@ pub async fn update_model_state(
     }
 
     Ok(Json(serde_json::json!({ "ok": true, "enabled": req.enabled })))
+}
+
+/// DELETE /config/providers/:id/credential - Remove provider credential from auth.json
+pub async fn delete_provider_credential(
+    Path(provider_id): Path<String>,
+    State(_state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ServerError> {
+    use rcode_core::auth::delete_credential;
+    
+    delete_credential(&provider_id)
+        .map_err(|e| ServerError::internal(format!("Failed to delete credential: {}", e)))?;
+    
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 // ========== Permission Grant/Deny Endpoints ==========

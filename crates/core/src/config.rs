@@ -116,6 +116,14 @@ pub struct LspServerConfig {
     pub cwd: Option<String>,
 }
 
+/// Per-model configuration for a provider.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+pub struct ProviderModelConfig {
+    /// Whether this model is enabled. Defaults to true when absent.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct ProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -134,7 +142,11 @@ pub struct ProviderConfig {
     pub disabled: bool,
     /// Display name for this provider.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "name")]
     pub display_name: Option<String>,
+    /// Per-model configuration for this provider.
+    #[serde(default)]
+    pub models: Option<std::collections::HashMap<String, ProviderModelConfig>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
@@ -879,5 +891,114 @@ mod tests {
         // The result should be either minimax/minimax-01 or zai/zai-coding-standard
         let val = result.unwrap();
         assert!(val == "minimax/MiniMax-M2.7" || val == "zai/zai-coding-standard");
+    }
+
+    // =============================================================================
+    // ProviderModelConfig tests
+    // =============================================================================
+
+    #[test]
+    fn test_provider_model_config_enabled_defaults_to_none() {
+        // When enabled is None, it means "not explicitly set" - use provider default
+        let model_config = ProviderModelConfig::default();
+        assert!(model_config.enabled.is_none());
+    }
+
+    #[test]
+    fn test_provider_model_config_enabled_can_be_set_false() {
+        let model_config = ProviderModelConfig { enabled: Some(false) };
+        assert_eq!(model_config.enabled, Some(false));
+    }
+
+    #[test]
+    fn test_provider_model_config_enabled_can_be_set_true() {
+        let model_config = ProviderModelConfig { enabled: Some(true) };
+        assert_eq!(model_config.enabled, Some(true));
+    }
+
+    #[test]
+    fn test_provider_config_models_hashmap_works() {
+        use std::collections::HashMap;
+        
+        let mut providers = HashMap::new();
+        providers.insert("openai".to_string(), ProviderConfig::default());
+        
+        // Add a model config
+        let model_config = ProviderModelConfig {
+            enabled: Some(false),
+        };
+        
+        if let Some(provider) = providers.get_mut("openai") {
+            let mut models = HashMap::new();
+            models.insert("gpt-4o".to_string(), model_config);
+            provider.models = Some(models);
+        }
+        
+        // Verify the model config is stored correctly
+        let provider = providers.get("openai").unwrap();
+        let models = provider.models.as_ref().unwrap();
+        let model = models.get("gpt-4o").unwrap();
+        assert_eq!(model.enabled, Some(false));
+    }
+
+    #[test]
+    fn test_provider_config_models_multiple_models() {
+        use std::collections::HashMap;
+        
+        let mut provider = ProviderConfig::default();
+        
+        let mut models = HashMap::new();
+        models.insert("gpt-4o".to_string(), ProviderModelConfig { enabled: Some(true) });
+        models.insert("gpt-4o-mini".to_string(), ProviderModelConfig { enabled: Some(false) });
+        provider.models = Some(models);
+        
+        let models = provider.models.as_ref().unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models.get("gpt-4o").unwrap().enabled, Some(true));
+        assert_eq!(models.get("gpt-4o-mini").unwrap().enabled, Some(false));
+    }
+
+    #[test]
+    fn test_provider_config_serde_with_models() {
+        let json = r#"{
+            "providers": {
+                "openai": {
+                    "api_key": "sk-test",
+                    "models": {
+                        "gpt-4o": { "enabled": false },
+                        "gpt-4o-mini": { "enabled": true }
+                    }
+                }
+            }
+        }"#;
+
+        let config: RcodeConfig = serde_json::from_str(json).unwrap();
+        
+        let provider = config.providers.get("openai").unwrap();
+        let models = provider.models.as_ref().unwrap();
+        
+        assert_eq!(models.get("gpt-4o").unwrap().enabled, Some(false));
+        assert_eq!(models.get("gpt-4o-mini").unwrap().enabled, Some(true));
+    }
+
+    #[test]
+    fn test_provider_config_serde_models_defaults() {
+        // When models exist but enabled is not specified, it should be None
+        let json = r#"{
+            "providers": {
+                "openai": {
+                    "models": {
+                        "gpt-4o": {}
+                    }
+                }
+            }
+        }"#;
+
+        let config: RcodeConfig = serde_json::from_str(json).unwrap();
+        
+        let provider = config.providers.get("openai").unwrap();
+        let models = provider.models.as_ref().unwrap();
+        
+        assert!(models.get("gpt-4o").unwrap().enabled.is_none());
     }
 }

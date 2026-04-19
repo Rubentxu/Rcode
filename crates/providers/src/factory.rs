@@ -244,12 +244,20 @@ impl ProviderFactory {
         // Look up provider in registry
         let def = registry::lookup(&provider_id);
 
-        // Resolve api_key and base_url using shared helper
+        // Use resolve_auth() for unified auth resolution (single source of truth)
+        // resolve_auth needs &RcodeConfig, so we pass a default if config is None
+        let default_config = RcodeConfig::default();
+        let config_ref = config.as_ref().map_or(&default_config, |v| *v);
+        let auth_state = crate::resolution::resolve_auth(&provider_id, def, config_ref);
+
+        // Resolve base_url using ProviderResolution (separate from auth)
         let resolution = crate::resolution::ProviderResolution::for_provider(&provider_id, config);
+        let base_url = resolution.base_url;
 
         // Dispatch by protocol if provider is known
         if let Some(definition) = def {
-            let api_key = resolution.api_key.ok_or_else(|| {
+            // For known providers, we must have an api_key
+            let api_key = auth_state.api_key.ok_or_else(|| {
                 let env_var = format!("{}_API_KEY", definition.env_key_prefix);
                 let alt_token = format!("{}_AUTH_TOKEN", definition.env_key_prefix);
                 RCodeError::Config(format!(
@@ -257,9 +265,6 @@ impl ProviderFactory {
                     provider_id, env_var, alt_token
                 ))
             })?;
-
-            let base_url = resolution.base_url;
-
             return match definition.protocol {
                 ProviderProtocol::OpenAiCompat => {
                     Self::build_openai_compat(&provider_id, api_key, base_url, model_name)
@@ -277,16 +282,14 @@ impl ProviderFactory {
         if let Some(cfg) = config {
             if let Some(provider_config) = cfg.providers.get(&provider_id) {
                 if let Some(protocol) = &provider_config.protocol {
-                    let api_key = resolution.api_key.ok_or_else(|| {
+                    // For providers with explicit protocol, we must have an api_key
+                    let api_key = auth_state.api_key.ok_or_else(|| {
                         let env_provider_id = provider_id.to_uppercase().replace('-', "_");
                         RCodeError::Config(format!(
                             "No API key found for {}. Set the {}_API_KEY environment variable, or provide api_key in config.",
                             provider_id, env_provider_id
                         ))
                     })?;
-
-                    let base_url = resolution.base_url;
-
                     return match protocol {
                         ProviderProtocol::OpenAiCompat => {
                             Self::build_openai_compat(&provider_id, api_key, base_url, model_name)
@@ -304,7 +307,7 @@ impl ProviderFactory {
 
         // Unknown provider with no explicit protocol - check if we have both api_key and base_url
         // This is the fallback for custom providers that provide both credentials
-        if let (Some(api_key), Some(base_url)) = (resolution.api_key, resolution.base_url) {
+        if let (Some(api_key), Some(base_url)) = (auth_state.api_key, base_url) {
             return Self::build_openai_compat(&provider_id, api_key, Some(base_url), model_name);
         }
 
@@ -486,6 +489,7 @@ mod tests {
                     enabled: true,
                     disabled: false,
                     display_name: None,
+                    models: None,
                 },
             );
         }

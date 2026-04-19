@@ -15,9 +15,9 @@ pub struct CatalogModel {
     pub provider: String,
     /// Human-readable display name
     pub display_name: String,
-    /// Whether this provider has credentials configured
-    pub has_credentials: bool,
-    /// Where this model entry came from
+    /// Authentication state for this provider (uses AuthStateDto - no api_key)
+    pub auth: crate::resolution::AuthStateDto,
+    /// Where this model entry came from (api/fallback/configured)
     pub source: ModelSource,
     /// Whether the model is usable (has creds + not disabled)
     pub enabled: bool,
@@ -370,41 +370,20 @@ impl ModelCatalogService {
         configured_only: bool,
     ) -> Vec<CatalogModel> {
         let mut all = Vec::new();
-        let disabled_models = config
+
+        // Parse legacy disabled_models for backward compat
+        let disabled_models: std::collections::HashSet<String> = config
             .extra
             .get("disabled_models")
             .and_then(|value| value.as_array())
             .map(|items| {
                 items.iter()
                     .filter_map(|item| item.as_str().map(str::to_string))
-                    .collect::<std::collections::HashSet<_>>()
+                    .collect()
             })
             .unwrap_or_default();
 
-        // 1. Check if provider has credentials (auth.json → registry aliases → env var → config)
-        // Uses registry credential_aliases instead of model_ids for credential lookup.
-        let has_creds = |provider_id: &str| -> bool {
-            // Primary: auth.json (OpenCode's canonical credential store)
-            if rcode_core::auth::has_credential(provider_id) { return true; }
-            // Also try credential aliases from registry (e.g. "minimax-coding-plan" for "minimax")
-            if let Some(def) = crate::registry::lookup(provider_id) {
-                for alias in def.credential_aliases {
-                    if rcode_core::auth::has_credential(alias) { return true; }
-                }
-            }
-            // Fallback 1: environment variables
-            let env_key = format!("{}_API_KEY", provider_id.to_uppercase().replace('-', "_"));
-            if std::env::var(&env_key).is_ok() { return true; }
-            let auth_key = format!("{}_AUTH_TOKEN", provider_id.to_uppercase().replace('-', "_"));
-            if std::env::var(&auth_key).is_ok() { return true; }
-            // Fallback 2: config file (deprecated for secrets, but still supported)
-            config.providers.get(provider_id)
-                .and_then(|p| p.api_key.as_deref())
-                .map(|k| !k.is_empty())
-                .unwrap_or(false)
-        };
-
-        // 2. Check disabled/enabled providers
+        // Check disabled/enabled providers
         let is_enabled = |provider_id: &str| -> bool {
             if let Some(ref disabled) = config.disabled_providers {
                 if disabled.contains(&provider_id.to_string()) { return false; }
@@ -415,7 +394,33 @@ impl ModelCatalogService {
             true
         };
 
-        // 3. Inject configured models from {PROVIDER}_MODEL env vars
+        // Check if a model is enabled using the new ProviderConfig.models path,
+        // with backward-compat fallback to legacy disabled_models.
+        // 
+        // Resolution order:
+        // 1. providers.<id>.models.<model>.enabled (new path) - key is just model name
+        // 2. If not present, check if model is NOT in disabled_models (legacy fallback)
+        let is_model_enabled = |provider_id: &str, model_id: &str| -> bool {
+            let full_id = format!("{}/{}", provider_id, model_id);
+            
+            // First check new ProviderConfig.models path
+            // Key is just the model name (e.g., "gpt-4o"), not full ID
+            if let Some(provider_config) = config.providers.get(provider_id) {
+                if let Some(models) = &provider_config.models {
+                    if let Some(model_config) = models.get(model_id) {
+                        // If enabled field is present, use it directly
+                        if let Some(enabled) = model_config.enabled {
+                            return enabled;
+                        }
+                    }
+                }
+            }
+            
+            // Fall back to legacy disabled_models check (model is enabled if NOT disabled)
+            !disabled_models.contains(&full_id)
+        };
+
+        // 1. Inject configured models from {PROVIDER}_MODEL env vars
         // Generic loop: for each provider in registry, check if {PROVIDER}_MODEL is set
         for def in crate::registry::registry().values() {
             let provider_id = def.id;
@@ -425,10 +430,15 @@ impl ModelCatalogService {
             if let Ok(model_id) = std::env::var(&env_var) {
                 if !model_id.is_empty() {
                     let configured_id = format!("{}/{}", provider_id, model_id);
-                    let creds = has_creds(provider_id);
+                    let auth_state = crate::resolution::resolve_auth(
+                        provider_id,
+                        Some(def),
+                        config,
+                    );
+                    let is_connected = auth_state.connected;
 
                     // When configured_only=true, skip providers without credentials
-                    if configured_only && !creds {
+                    if configured_only && !is_connected {
                         continue;
                     }
 
@@ -436,24 +446,28 @@ impl ModelCatalogService {
                         id: configured_id.clone(),
                         provider: provider_id.to_string(),
                         display_name: model_id.clone(),
-                        has_credentials: creds,
+                        auth: crate::resolution::AuthStateDto::from(&auth_state),
                         source: ModelSource::Configured,
-                        enabled: creds && !disabled_models.contains(&configured_id),
+                        enabled: is_connected && is_model_enabled(provider_id, &model_id),
                         protocol: def.protocol,
                     });
                 }
             }
         }
 
-        // 4. For each provider in registry, check cache → fallback
+        // 2. For each provider in registry, check cache → fallback
         let cache = self.cache.lock().unwrap();
         for def in crate::registry::registry().values() {
             let provider_id = def.id;
             if !is_enabled(provider_id) { continue; }
-            let creds = has_creds(provider_id);
+            let auth_state = crate::resolution::resolve_auth(
+                provider_id,
+                Some(def),
+                config,
+            );
 
             // When configured_only=true, skip providers without credentials
-            if configured_only && !creds {
+            if configured_only && !auth_state.connected {
                 continue;
             }
 
@@ -474,9 +488,9 @@ impl ModelCatalogService {
                     id: full_id.clone(),
                     provider: provider_id.to_string(),
                     display_name: model_id.to_string(),
-                    has_credentials: creds,
+                    auth: crate::resolution::AuthStateDto::from(&auth_state),
                     source: ModelSource::Fallback,
-                    enabled: creds && !disabled_models.contains(&full_id),
+                    enabled: auth_state.connected && is_model_enabled(provider_id, model_id),
                     protocol: def.protocol,
                 });
             }
@@ -500,14 +514,36 @@ impl ModelCatalogService {
                 let protocol = crate::registry::lookup(provider_id)
                     .map(|def| def.protocol)
                     .unwrap_or(ProviderProtocol::OpenAiCompat);
-                let catalog_models: Vec<CatalogModel> = models.iter().map(|m| CatalogModel {
-                    id: format!("{}/{}", provider_id, m),
-                    provider: provider_id.to_string(),
-                    display_name: m.clone(),
-                    has_credentials: ctx.api_key.is_some(),
-                    source: ModelSource::Api,
-                    enabled: true,
-                    protocol,
+                
+                // Build AuthStateDto from DiscoveryContext (no api_key exposed)
+                let auth_source = ctx.auth_source;
+                let catalog_models: Vec<CatalogModel> = models.iter().map(|m| {
+                    let auth_dto = crate::resolution::AuthStateDto {
+                        connected: ctx.api_key.is_some(),
+                        source: auth_source,
+                        kind: if ctx.api_key.is_some() { 
+                            crate::resolution::AuthKind::ApiKey 
+                        } else { 
+                            crate::resolution::AuthKind::None 
+                        },
+                        label: match auth_source {
+                            crate::resolution::AuthSource::AuthJson => "auth.json",
+                            crate::resolution::AuthSource::Env => "Environment Variable",
+                            crate::resolution::AuthSource::Config => "Config file",
+                            crate::resolution::AuthSource::None => "Not configured",
+                        },
+                        env_key: None,
+                        can_disconnect: auth_source == crate::resolution::AuthSource::AuthJson,
+                    };
+                    CatalogModel {
+                        id: format!("{}/{}", provider_id, m),
+                        provider: provider_id.to_string(),
+                        display_name: m.clone(),
+                        auth: auth_dto,
+                        source: ModelSource::Api,
+                        enabled: true,
+                        protocol,
+                    }
                 }).collect();
                 let mut cache = self.cache.lock().unwrap();
                 cache.insert(provider_id.to_string(), (catalog_models.clone(), std::time::Instant::now()));
@@ -556,14 +592,35 @@ impl ModelCatalogService {
                             if let Some(adapter) = adapters.as_ref().get(&provider_id_clone) {
                                 let models: Vec<String> = adapter.discover(&ctx_clone).await;
                                 if !models.is_empty() {
-                                    let catalog_models: Vec<CatalogModel> = models.iter().map(|m: &String| CatalogModel {
-                                        id: format!("{}/{}", provider_id_clone, m),
-                                        provider: provider_id_clone.clone(),
-                                        display_name: m.clone(),
-                                        has_credentials: ctx_clone.api_key.is_some(),
-                                        source: ModelSource::Api,
-                                        enabled: true,
-                                        protocol,
+                                    // Build AuthStateDto from DiscoveryContext (no api_key exposed)
+                                    let auth_source = ctx_clone.auth_source;
+                                    let catalog_models: Vec<CatalogModel> = models.iter().map(|m: &String| {
+                                        let auth_dto = crate::resolution::AuthStateDto {
+                                            connected: ctx_clone.api_key.is_some(),
+                                            source: auth_source,
+                                            kind: if ctx_clone.api_key.is_some() { 
+                                                crate::resolution::AuthKind::ApiKey 
+                                            } else { 
+                                                crate::resolution::AuthKind::None 
+                                            },
+                                            label: match auth_source {
+                                                crate::resolution::AuthSource::AuthJson => "auth.json",
+                                                crate::resolution::AuthSource::Env => "Environment Variable",
+                                                crate::resolution::AuthSource::Config => "Config file",
+                                                crate::resolution::AuthSource::None => "Not configured",
+                                            },
+                                            env_key: None,
+                                            can_disconnect: auth_source == crate::resolution::AuthSource::AuthJson,
+                                        };
+                                        CatalogModel {
+                                            id: format!("{}/{}", provider_id_clone, m),
+                                            provider: provider_id_clone.clone(),
+                                            display_name: m.clone(),
+                                            auth: auth_dto,
+                                            source: ModelSource::Api,
+                                            enabled: true,
+                                            protocol,
+                                        }
                                     }).collect();
                                     let mut c = cache.lock().unwrap();
                                     c.insert(provider_id_clone.clone(), (catalog_models.clone(), std::time::Instant::now()));
@@ -609,6 +666,8 @@ pub struct DiscoveryContext {
     pub api_key: Option<String>,
     /// Custom base URL (optional)
     pub base_url: Option<String>,
+    /// Where the api_key came from (auth_json/env/config)
+    pub auth_source: crate::resolution::AuthSource,
 }
 
 impl DiscoveryContext {
@@ -620,10 +679,52 @@ impl DiscoveryContext {
     /// 3. Config file (providers.{provider_id}.api_key, providers.{provider_id}.base_url)
     /// 4. Provider-known default (for known providers only)
     pub fn for_provider(provider_id: &str, config: Option<&rcode_core::RcodeConfig>) -> Self {
+        use crate::resolution::AuthSource;
         let resolution = crate::resolution::ProviderResolution::for_provider(provider_id, config);
+        
+        // Determine auth_source by checking the same precedence as resolve_auth
+        // This avoids changing ProviderResolution's public API
+        let auth_source = if resolution.api_key.is_some() {
+            let env_provider_id = provider_id.to_uppercase().replace('-', "_");
+            
+            // 1. auth.json (including aliases) - checked via ProviderResolution resolution
+            if rcode_core::auth::has_credential(provider_id) {
+                AuthSource::AuthJson
+            } else if let Some(def) = crate::registry::lookup(provider_id) {
+                let found_alias = def.credential_aliases.iter()
+                    .any(|alias| rcode_core::auth::has_credential(alias));
+                if found_alias {
+                    AuthSource::AuthJson
+                } else {
+                    // 2. Environment variables
+                    let env_key = format!("{}_API_KEY", env_provider_id);
+                    let auth_key = format!("{}_AUTH_TOKEN", env_provider_id);
+                    if std::env::var(&env_key).is_ok() || std::env::var(&auth_key).is_ok() {
+                        AuthSource::Env
+                    } else {
+                        // 3. Config - api_key came from config
+                        AuthSource::Config
+                    }
+                }
+            } else {
+                // 2. Environment variables
+                let env_key = format!("{}_API_KEY", env_provider_id);
+                let auth_key = format!("{}_AUTH_TOKEN", env_provider_id);
+                if std::env::var(&env_key).is_ok() || std::env::var(&auth_key).is_ok() {
+                    AuthSource::Env
+                } else {
+                    // 3. Config - api_key came from config
+                    AuthSource::Config
+                }
+            }
+        } else {
+            AuthSource::None
+        };
+        
         Self {
             api_key: resolution.api_key,
             base_url: resolution.base_url,
+            auth_source,
         }
     }
 }
@@ -874,24 +975,22 @@ mod tests {
             std::env::set_var("ANTHROPIC_API_KEY", "test-key");
 
             let config = rcode_core::RcodeConfig::default();
-            let has_creds = |provider_id: &str| -> bool {
-                // auth.json first (won't have test creds, so falls through)
-                if rcode_core::auth::has_credential(provider_id) { return true; }
-                // env vars second
-                let env_key = format!("{}_API_KEY", provider_id.to_uppercase().replace('-', "_"));
-                if std::env::var(&env_key).is_ok() { return true; }
-                let auth_key = format!("{}_AUTH_TOKEN", provider_id.to_uppercase().replace('-', "_"));
-                if std::env::var(&auth_key).is_ok() { return true; }
-                // config fallback
-                config.providers.get(provider_id)
-                    .and_then(|p| p.api_key.as_deref())
-                    .map(|k| !k.is_empty())
-                    .unwrap_or(false)
-            };
+            let auth_state = crate::resolution::resolve_auth(
+                "anthropic",
+                crate::registry::lookup("anthropic"),
+                &config,
+            );
 
-            assert!(has_creds("anthropic"), "Anthropic should have creds with ANTHROPIC_API_KEY set");
+            assert!(auth_state.connected, "Anthropic should have creds with ANTHROPIC_API_KEY set");
+            assert_eq!(auth_state.source, crate::resolution::AuthSource::Env);
+            
             // Use a fake provider that won't exist in any environment
-            assert!(!has_creds("test_fake_provider_no_creds_xyz"), "Fake provider should never have creds");
+            let fake_auth_state = crate::resolution::resolve_auth(
+                "test_fake_provider_no_creds_xyz",
+                None,
+                &config,
+            );
+            assert!(!fake_auth_state.connected, "Fake provider should never have creds");
 
             // Clean up test env vars
             std::env::remove_var("ANTHROPIC_API_KEY");
@@ -1090,7 +1189,14 @@ mod tests {
                 id: "anthropic/claude-hydrated-1".to_string(),
                 provider: "anthropic".to_string(),
                 display_name: "Claude Hydrated 1".to_string(),
-                has_credentials: true,
+                auth: crate::resolution::AuthStateDto {
+                    connected: true,
+                    source: crate::resolution::AuthSource::AuthJson,
+                    kind: crate::resolution::AuthKind::ApiKey,
+                    label: "test",
+                    env_key: None,
+                    can_disconnect: false,
+                },
                 source: ModelSource::Api,
                 enabled: true,
                 protocol: ProviderProtocol::AnthropicCompat,
@@ -1099,7 +1205,14 @@ mod tests {
                 id: "anthropic/claude-hydrated-2".to_string(),
                 provider: "anthropic".to_string(),
                 display_name: "Claude Hydrated 2".to_string(),
-                has_credentials: true,
+                auth: crate::resolution::AuthStateDto {
+                    connected: true,
+                    source: crate::resolution::AuthSource::AuthJson,
+                    kind: crate::resolution::AuthKind::ApiKey,
+                    label: "test",
+                    env_key: None,
+                    can_disconnect: false,
+                },
                 source: ModelSource::Api,
                 enabled: true,
                 protocol: ProviderProtocol::AnthropicCompat,
@@ -1128,7 +1241,14 @@ mod tests {
                 id: "openai/gpt-cached".to_string(),
                 provider: "openai".to_string(),
                 display_name: "GPT Cached".to_string(),
-                has_credentials: false,
+                auth: crate::resolution::AuthStateDto {
+                    connected: false,
+                    source: crate::resolution::AuthSource::None,
+                    kind: crate::resolution::AuthKind::None,
+                    label: "none",
+                    env_key: None,
+                    can_disconnect: false,
+                },
                 source: ModelSource::Api,
                 enabled: false,
                 protocol: ProviderProtocol::OpenAiCompat,
@@ -1165,7 +1285,14 @@ mod tests {
             id: "anthropic/claude-test".to_string(),
             provider: "anthropic".to_string(),
             display_name: "Claude Test".to_string(),
-            has_credentials: true,
+            auth: crate::resolution::AuthStateDto {
+                connected: true,
+                source: crate::resolution::AuthSource::AuthJson,
+                kind: crate::resolution::AuthKind::ApiKey,
+                label: "test",
+                env_key: None,
+                can_disconnect: false,
+            },
             source: ModelSource::Api,
             enabled: true,
             protocol: ProviderProtocol::AnthropicCompat,
@@ -1371,7 +1498,14 @@ mod tests {
             id: "openai/gpt-survives".to_string(),
             provider: "openai".to_string(),
             display_name: "GPT Survives".to_string(),
-            has_credentials: true,
+            auth: crate::resolution::AuthStateDto {
+                connected: true,
+                source: crate::resolution::AuthSource::AuthJson,
+                kind: crate::resolution::AuthKind::ApiKey,
+                label: "test",
+                env_key: None,
+                can_disconnect: false,
+            },
             source: ModelSource::Api,
             enabled: true,
             protocol: ProviderProtocol::OpenAiCompat,
@@ -1501,7 +1635,14 @@ mod tests {
             id: "test/model".to_string(),
             provider: "test".to_string(),
             display_name: "Test Model".to_string(),
-            has_credentials: true,
+            auth: crate::resolution::AuthStateDto {
+                connected: true,
+                source: crate::resolution::AuthSource::AuthJson,
+                kind: crate::resolution::AuthKind::ApiKey,
+                label: "test",
+                env_key: None,
+                can_disconnect: false,
+            },
             source: ModelSource::Fallback,
             enabled: true,
             protocol: ProviderProtocol::OpenAiCompat,
@@ -1512,7 +1653,14 @@ mod tests {
             id: "anthropic/claude".to_string(),
             provider: "anthropic".to_string(),
             display_name: "Claude".to_string(),
-            has_credentials: true,
+            auth: crate::resolution::AuthStateDto {
+                connected: true,
+                source: crate::resolution::AuthSource::AuthJson,
+                kind: crate::resolution::AuthKind::ApiKey,
+                label: "test",
+                env_key: None,
+                can_disconnect: false,
+            },
             source: ModelSource::Fallback,
             enabled: true,
             protocol: ProviderProtocol::AnthropicCompat,

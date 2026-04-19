@@ -58,16 +58,18 @@ function detectSelectedPreset(providerId: string, url: string) {
 }
 
 function providerBadge(provider: ProviderInfo) {
-  if (!provider.has_key) return { label: "Not connected", bg: "var(--error-bg-subtle)", color: "var(--error)" };
-  if (provider.key_source === "env") return { label: "Environment", bg: "var(--info-bg-subtle)", color: "var(--info-color)" };
-  if (provider.key_source === "auth") return { label: "API Key", bg: "var(--success-bg-subtle)", color: "var(--secondary)" };
-  if (provider.key_source === "config") return { label: "Config", bg: "var(--info-bg-subtle)", color: "var(--info-color)" };
-  return { label: "Configured", bg: "var(--surface-container)", color: "var(--on-surface-variant)" };
+  if (!provider.auth.connected) return { label: "Not connected", bg: "var(--error-bg-subtle)", color: "var(--error)" };
+  return { label: provider.auth.label, bg: "var(--success-bg-subtle)", color: "var(--secondary)" };
 }
 
-function sourceBadge(source: ModelInfo["source"]) {
-  switch (source) {
+function modelSourceBadge(catalogSource: ModelInfo["catalog_source"], authBadge: string | null) {
+  // authBadge takes precedence - it's derived from auth source in backend
+  if (authBadge) {
+    return { label: authBadge, bg: "var(--success-bg-subtle)", color: "var(--secondary)" };
+  }
+  switch (catalogSource) {
     case "configured":
+    case "config":
       return { label: "configured", bg: "var(--success-bg-subtle)", color: "var(--secondary)" };
     case "api":
       return { label: "live", bg: "var(--info-bg-subtle)", color: "var(--info-color)" };
@@ -153,7 +155,7 @@ export function Settings(props: { onClose: () => void }) {
 
   async function loadModels() {
     try {
-      const res = await fetch(`${await getApiBase()}/models`);
+      const res = await fetch(`${await getApiBase()}/models?configured_only=false`);
       if (!res.ok) return;
       const data = await res.json();
       setModels(data.models || []);
@@ -210,6 +212,24 @@ export function Settings(props: { onClose: () => void }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
       });
+      await Promise.all([loadProviders(), loadModels()]);
+    } catch (error) {
+      setSaveError(`Network error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async function disconnectProvider(providerId: string) {
+    const confirmed = window.confirm("Are you sure you want to disconnect this provider? This will remove the credential from auth.json.");
+    if (!confirmed) return;
+    try {
+      const res = await fetch(`${await getApiBase()}/config/providers/${providerId}/credential`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "Unknown error");
+        setSaveError(`Server error ${res.status}: ${text}`);
+        return;
+      }
       await Promise.all([loadProviders(), loadModels()]);
     } catch (error) {
       setSaveError(`Network error: ${error instanceof Error ? error.message : String(error)}`);
@@ -303,14 +323,14 @@ export function Settings(props: { onClose: () => void }) {
     return providers();
   });
 
-  const connectedProviders = createMemo(() => allProviders().filter((provider) => provider.has_key));
+  const connectedProviders = createMemo(() => allProviders().filter((provider) => provider.auth.connected));
   const unconnectedProviders = createMemo(() => {
-    return allProviders().filter((provider) => !provider.has_key);
+    return allProviders().filter((provider) => !provider.auth.connected);
   });
 
   const filteredModels = createMemo(() => {
     const query = modelSearch().trim().toLowerCase();
-    // Use allModels from hook (already filtered to enabled/configured providers)
+    // Use allModels from hook (already filtered by mode)
     let visible = pm.allModels;
     if (query) {
       visible = visible.filter((model) =>
@@ -324,8 +344,8 @@ export function Settings(props: { onClose: () => void }) {
     const groups = new Map<string, { provider: ProviderInfo; models: ModelInfo[] }>();
     for (const model of visible) {
       const providerInfo = pm.modelsByProvider.get(model.provider);
-      // Only show models from configured providers
-      if (!providerInfo || !providerInfo.configured && !providerInfo.has_key) continue;
+      // Only show models from configured providers (auth.connected = true)
+      if (!providerInfo || !providerInfo.configured && !providerInfo.auth.connected) continue;
       const providerName = providerInfo.display_name || model.provider;
       if (!groups.has(providerName)) {
         groups.set(providerName, { provider: providerInfo, models: [] });
@@ -338,7 +358,7 @@ export function Settings(props: { onClose: () => void }) {
       providerInfo,
       models: [...items].sort((a, b) => {
         const rank = (model: ModelInfo) => {
-          if (model.source === "configured") return 0;
+          if (model.catalog_source === "configured" || model.catalog_source === "config") return 0;
           if (model.enabled) return 1;
           return 2;
         };
@@ -388,7 +408,7 @@ export function Settings(props: { onClose: () => void }) {
                     </div>
                   </div>
                   <button
-                    onClick={() => setProviderEnabled(provider.id, false)}
+                    onClick={() => void disconnectProvider(provider.id)}
                     style="padding: 8px 14px; border-radius: 10px; border: 1px solid var(--border); background: none; color: var(--text-primary); cursor: pointer; font-size: 14px;"
                   >
                     Disconnect
@@ -404,7 +424,7 @@ export function Settings(props: { onClose: () => void }) {
                           type="password"
                           value={apiKey()}
                           onInput={(e) => setApiKey(e.currentTarget.value)}
-                          placeholder={provider.has_key ? "Leave empty to keep current key" : "Enter API key"}
+                          placeholder={provider.auth.connected ? "Leave empty to keep current key" : "Enter API key"}
                           style={inputStyle}
                         />
                       </div>
@@ -579,7 +599,7 @@ export function Settings(props: { onClose: () => void }) {
               <div style={`${cardStyle}; display: flex; flex-direction: column; gap: 0;`}>
                 <For each={group.models}>
                   {(model, index) => {
-                    const badge = sourceBadge(model.source);
+                    const badge = modelSourceBadge(model.catalog_source, model.auth.badge);
                     return (
                       <div style={`padding: 14px 0; display: flex; justify-content: space-between; align-items: center; gap: 14px; ${index() > 0 ? "border-top: 1px solid var(--border);" : ""}`}>
                         <div style="min-width: 0;">

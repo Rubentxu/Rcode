@@ -122,6 +122,7 @@ pub async fn create_app(state: Arc<AppState>) -> Router {
         .route("/config/providers", get(routes::get_providers))
         .route("/config/providers/:id", put(routes::update_provider))
         .route("/config/providers/:id/state", put(routes::update_provider_state))
+        .route("/config/providers/:id/credential", delete(routes::delete_provider_credential))
         .route("/config/models/:id/state", put(routes::update_model_state))
         .route("/terminal/exec", post(routes::terminal::exec_terminal_command))
         .route("/session/:id/diffs", get(routes::diff::list_diffs))

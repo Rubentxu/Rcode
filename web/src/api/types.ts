@@ -173,6 +173,23 @@ export type SSEEventData = SSEMessageEvent | SSEDeltaEvent | SSEDoneEvent | SSEE
 // Provider protocol type
 export type ProviderProtocol = "openai_compat" | "anthropic_compat" | "google";
 
+// Auth state for providers - derived exclusively via resolve_auth()
+export interface AuthState {
+  connected: boolean;
+  source: 'auth_json' | 'env' | 'config' | 'none';
+  kind: 'api_key' | 'oauth' | 'env' | 'none';
+  label: string;
+  env_key?: string;
+  can_disconnect: boolean;
+}
+
+// Model auth info from GET /models
+export interface ModelAuthInfo {
+  connected: boolean;
+  source: 'auth_json' | 'env' | 'config' | 'none';
+  badge: string | null;
+}
+
 // Provider info from GET /config/providers
 export interface ProviderInfo {
   id: string;
@@ -181,8 +198,7 @@ export interface ProviderInfo {
   protocol: ProviderProtocol;
   native: boolean;
   supports_custom_base_url: boolean;
-  has_key: boolean;
-  key_source: string;
+  auth: AuthState;
   base_url: string | null;
   enabled: boolean;
   models_count: number;
@@ -196,8 +212,8 @@ export interface ModelInfo {
   display_name?: string;
   protocol?: ProviderProtocol;
   is_compatible?: boolean;
-  has_credentials: boolean;
-  source: "api" | "fallback" | "configured";
+  catalog_source: 'api' | 'fallback' | 'config';
+  auth: ModelAuthInfo;
   enabled: boolean;
 }
 

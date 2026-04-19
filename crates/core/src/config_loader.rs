@@ -376,6 +376,145 @@ mod config_path_tests {
     }
 }
 
+/// Recursively strip RCode-specific fields from a JSON value.
+/// Removes the `models` key from provider objects since models is RCode-specific
+/// and should be saved to the RCode overlay, not the OpenCode config.
+fn strip_rcode_specific_fields(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(mut map) => {
+            // Remove the `models` key if present (RCode-specific per-model enabled state)
+            map.remove("models");
+            
+            // Recursively strip from all remaining values
+            let stripped: std::collections::BTreeMap<String, serde_json::Value> = map
+                .into_iter()
+                .map(|(k, v)| (k, strip_rcode_specific_fields(v)))
+                .collect();
+            serde_json::Value::Object(stripped.into_iter().collect())
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.into_iter().map(strip_rcode_specific_fields).collect())
+        }
+        other => other,
+    }
+}
+
+/// Recursively strip secret fields (api_key) from a JSON value.
+/// API keys should never be written to disk - they belong in auth.json.
+fn strip_secrets_from_value(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(mut map) => {
+            // Remove secret fields
+            map.remove("api_key");
+            map.remove("key");
+            
+            // Recursively strip from all remaining values
+            let stripped: std::collections::BTreeMap<String, serde_json::Value> = map
+                .into_iter()
+                .map(|(k, v)| (k, strip_secrets_from_value(v)))
+                .collect();
+            serde_json::Value::Object(stripped.into_iter().collect())
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.into_iter().map(strip_secrets_from_value).collect())
+        }
+        other => other,
+    }
+}
+
+/// Save RCode-specific config to the RCode overlay (~/.config/rcode/config.json).
+/// This file is RCode's own config — writing here does NOT mutate OpenCode files.
+///
+/// Saves only RCode-specific fields:
+/// - providers (containing ProviderConfig.models per-model enabled state)
+/// - disabled_providers
+/// - enabled_providers
+///
+/// Does NOT write standard OpenCode fields (model, lsp, agent, etc.) — those
+/// are managed by save_config() which is only used in tests. Production code uses
+/// save_rcode_overlay() which writes to ~/.config/rcode/config.json.
+pub fn save_rcode_overlay(config: &RcodeConfig) -> Result<(), String> {
+    let rcode_config_path = dirs::config_dir()
+        .map(|p| p.join("rcode").join("config.json"))
+        .unwrap_or_else(|| PathBuf::from("~/.config/rcode/config.json"));
+
+    // Read existing overlay (or empty object)
+    let existing: serde_json::Value = if rcode_config_path.exists() {
+        let raw = std::fs::read_to_string(&rcode_config_path)
+            .map_err(|e| format!("Failed to read existing overlay {:?}: {}", rcode_config_path, e))?;
+        serde_json::from_str(&raw).unwrap_or(serde_json::Value::Object(Default::default()))
+    } else {
+        serde_json::Value::Object(Default::default())
+    };
+
+    let mut overlay = existing;
+    
+    // Build RCode-specific parts only
+    // providers — strip api_key (never write api_key to disk), but keep models
+    if !config.providers.is_empty() {
+        let providers_val = serde_json::to_value(&config.providers)
+            .map_err(|e| format!("Failed to serialize providers: {}", e))?;
+        // Strip api_key but keep models (RCode-specific state)
+        let providers_stripped = strip_secrets_from_value(providers_val);
+        if let Some(obj) = overlay.as_object_mut() {
+            obj.insert("providers".to_string(), providers_stripped);
+        }
+    }
+
+    if let Some(ref enabled) = config.enabled_providers {
+        let enabled_json = serde_json::to_value(enabled)
+            .map_err(|e| format!("Failed to serialize enabled_providers: {}", e))?;
+        if let Some(obj) = overlay.as_object_mut() {
+            obj.insert("enabled_providers".to_string(), enabled_json);
+        }
+    }
+
+    if let Some(ref disabled) = config.disabled_providers {
+        let disabled_json = serde_json::to_value(disabled)
+            .map_err(|e| format!("Failed to serialize disabled_providers: {}", e))?;
+        if let Some(obj) = overlay.as_object_mut() {
+            obj.insert("disabled_providers".to_string(), disabled_json);
+        }
+    }
+
+    // Model preference (standard field, but RCode manages it in its own overlay)
+    if let (Some(model), Some(obj)) = (&config.model, overlay.as_object_mut()) {
+        obj.insert("model".to_string(), serde_json::Value::String(model.clone()));
+    }
+
+    // Preserve extra top-level config data (RCode-specific extensions)
+    if !config.extra.is_null()
+        && config.extra != serde_json::json!({})
+        && let Some(obj) = overlay.as_object_mut()
+        && let Some(extra_obj) = config.extra.as_object()
+    {
+        for (key, value) in extra_obj {
+            obj.insert(key.clone(), value.clone());
+        }
+    }
+
+    // LSP config (if RCode manages it)
+    if let Some(ref lsp_config) = config.lsp {
+        let lsp_json = serde_json::to_value(lsp_config)
+            .map_err(|e| format!("Failed to serialize lsp: {}", e))?;
+        if let Some(obj) = overlay.as_object_mut() {
+            obj.insert("lsp".to_string(), lsp_json);
+        }
+    }
+
+    // Write to ~/.config/rcode/config.json (NOT opencode.json)
+    if let Some(parent) = rcode_config_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create dir: {}", e))?;
+    }
+    let json = serde_json::to_string_pretty(&overlay)
+        .map_err(|e| format!("Failed to serialize overlay: {}", e))?;
+    std::fs::write(&rcode_config_path, json)
+        .map_err(|e| format!("Failed to write overlay to {:?}: {}", rcode_config_path, e))?;
+    
+    tracing::info!("RCode overlay saved to {:?}", rcode_config_path);
+    Ok(())
+}
+
 /// Save config to disk at the resolved config path.
 ///
 /// Only writes the `providers` and `lsp` sections on top of the
@@ -384,6 +523,10 @@ mod config_path_tests {
 /// IMPORTANT: API keys are NEVER written to the config file.
 /// They live in ~/.local/share/opencode/auth.json instead.
 /// This function strips api_key fields from providers before saving.
+///
+/// IMPORTANT: RCode-specific fields (like `models` in ProviderConfig) are
+/// stripped before writing to opencode.json. These go to the RCode overlay
+/// via save_rcode_overlay() instead.
 pub fn save_config(config: &RcodeConfig) -> Result<(), String> {
     let config_path = resolve_config_path().unwrap_or_else(|| {
         // Default: create ~/.config/opencode/opencode.json
@@ -415,11 +558,13 @@ pub fn save_config(config: &RcodeConfig) -> Result<(), String> {
     let config_without_secrets = super::auth::strip_secrets_from_config(config);
 
     // Merge only the providers section from the in-memory config (secrets stripped)
+    // Strip RCode-specific `models` field — it goes to the RCode overlay instead.
     if !config_without_secrets.providers.is_empty() {
         let providers_json = serde_json::to_value(&config_without_secrets.providers)
             .map_err(|e| format!("Failed to serialize providers: {}", e))?;
+        let stripped_providers = strip_rcode_specific_fields(providers_json);
         if let Some(obj) = existing.as_object_mut() {
-            obj.insert("providers".to_string(), providers_json);
+            obj.insert("providers".to_string(), stripped_providers);
         }
     }
 
@@ -724,5 +869,183 @@ mod tests {
             loaded.model,
             Some("anthropic/claude-3-5-sonnet".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn test_save_rcode_overlay_writes_to_rcode_path() {
+        // Clean up any existing file first
+        let rcode_path = dirs::config_dir()
+            .unwrap()
+            .join("rcode")
+            .join("config.json");
+        let _ = std::fs::remove_file(&rcode_path);
+
+        // Create a config with RCode-specific state (models)
+        let mut config = RcodeConfig::default();
+
+        // Add a provider with models (RCode-specific)
+        let provider = crate::ProviderConfig {
+            models: Some({
+                let mut m = std::collections::HashMap::new();
+                m.insert("gpt-4o".to_string(), crate::config::ProviderModelConfig { enabled: Some(false) });
+                m
+            }),
+            ..Default::default()
+        };
+        config.providers.insert("openai".to_string(), provider);
+
+        // Save to RCode overlay
+        save_rcode_overlay(&config).unwrap();
+
+        // Verify the file was created in ~/.config/rcode/config.json
+        assert!(rcode_path.exists(), "RCode overlay should exist at {:?}", rcode_path);
+
+        // Read and verify content
+        let content = fs::read_to_string(&rcode_path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse saved JSON: {} - content: {}", e, content))
+            .unwrap();
+
+        // Verify providers.models is saved in the overlay
+        let providers = saved.get("providers").unwrap();
+        let openai = providers.get("openai").unwrap();
+        let models = openai.get("models").unwrap();
+        let gpt4o = models.get("gpt-4o").unwrap();
+        assert!(!gpt4o.get("enabled").unwrap().as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_save_rcode_overlay_does_not_write_api_key() {
+        // Clean up any existing file first
+        let rcode_path = dirs::config_dir()
+            .unwrap()
+            .join("rcode")
+            .join("config.json");
+        let _ = std::fs::remove_file(&rcode_path);
+
+        // Create a config with api_key (should NOT be written)
+        let mut providers = std::collections::HashMap::new();
+        providers.insert("openai".to_string(), crate::ProviderConfig {
+            api_key: Some("secret-api-key".to_string()),
+            ..Default::default()
+        });
+        let config = RcodeConfig {
+            providers,
+            ..Default::default()
+        };
+
+        // Save to RCode overlay
+        save_rcode_overlay(&config).unwrap();
+
+        // Verify the file was created
+        assert!(rcode_path.exists(), "RCode overlay should exist at {:?}", rcode_path);
+
+        // Read and verify api_key is NOT present
+        let content = fs::read_to_string(&rcode_path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse saved JSON: {} - content: {}", e, content))
+            .unwrap();
+
+        let providers = saved.get("providers").unwrap();
+        let openai = providers.get("openai").unwrap();
+        assert!(
+            openai.get("api_key").is_none(),
+            "api_key should NOT be written to overlay"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_save_config_strips_models_field() {
+        // Create a config with providers that have models (RCode-specific)
+        let mut models = std::collections::HashMap::new();
+        models.insert("gpt-4o".to_string(), crate::config::ProviderModelConfig { enabled: Some(false) });
+        
+        let mut providers = std::collections::HashMap::new();
+        providers.insert("openai".to_string(), crate::ProviderConfig {
+            base_url: Some("https://api.openai.com".to_string()),
+            models: Some(models),
+            ..Default::default()
+        });
+        let config = RcodeConfig {
+            providers,
+            ..Default::default()
+        };
+
+        // Save config (should strip models from providers before writing)
+        save_config(&config).unwrap();
+
+        // Get the path that was actually used
+        let config_path = resolve_config_path().unwrap();
+
+        // Verify file was created
+        assert!(config_path.exists());
+
+        // Read and parse saved config
+        let saved_content = fs::read_to_string(&config_path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&saved_content).unwrap();
+
+        // Verify base_url IS present (standard OpenCode field)
+        let providers = saved.get("providers").unwrap();
+        let openai = providers.get("openai").unwrap();
+        assert!(
+            openai.get("base_url").is_some(),
+            "base_url should be saved to opencode config"
+        );
+
+        // Verify models is NOT present (RCode-specific, should be stripped)
+        assert!(
+            openai.get("models").is_none(),
+            "models should NOT be saved to opencode config (RCode-specific)"
+        );
+    }
+
+    #[test]
+    fn test_strip_rcode_specific_fields_removes_models() {
+        let json = serde_json::json!({
+            "providers": {
+                "openai": {
+                    "api_key": "secret",
+                    "base_url": "https://api.openai.com",
+                    "models": {
+                        "gpt-4o": { "enabled": false }
+                    }
+                }
+            }
+        });
+
+        let stripped = strip_rcode_specific_fields(json);
+
+        let providers = stripped.get("providers").unwrap();
+        let openai = providers.get("openai").unwrap();
+
+        // api_key and base_url should remain
+        assert!(openai.get("api_key").is_some());
+        assert!(openai.get("base_url").is_some());
+
+        // models should be removed
+        assert!(
+            openai.get("models").is_none(),
+            "models should be stripped"
+        );
+    }
+
+    #[test]
+    fn test_strip_rcode_specific_fields_handles_nested() {
+        let json = serde_json::json!({
+            "level1": {
+                "models": { "key": "value" },
+                "level2": {
+                    "models": { "nested": true }
+                }
+            }
+        });
+
+        let stripped = strip_rcode_specific_fields(json);
+
+        let level1 = stripped.get("level1").unwrap();
+        assert!(level1.get("models").is_none());
+
+        let level2 = level1.get("level2").unwrap();
+        assert!(level2.get("models").is_none());
     }
 }

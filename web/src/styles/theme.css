@@ -126,6 +126,7 @@
 
   /* Status colors */
   --success: #4edea3;
+  --success-rgb: 78, 222, 163;
   --warning: #f59e0b;
   --info: #3b82f6;
 
@@ -384,6 +385,7 @@ html, body {
 
   /* Status colors */
   --success: #006b4e;
+  --success-rgb: 0, 107, 78;
   --warning: #7d4e00;
   --info: #1a3fa8;
 
