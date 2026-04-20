@@ -2750,22 +2750,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rcode-lsp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "parking_lot",
- "rcode-core",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "rcode-mcp"
 version = "0.1.0"
 dependencies = [

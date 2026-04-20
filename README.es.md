@@ -66,7 +66,6 @@ rcode/
 │   ├── tui/                  # Interfaz de terminal interactiva (Ratatui)
 │   ├── config/               # Carga y gestión de configuración
 │   ├── mcp/                  # Cliente MCP y registro de servidores
-│   ├── lsp/                  # Cliente LSP para inteligencia de código
 │   ├── engram/              # Sistema de memoria persistente
 │   ├── acp/                  # Protocolo de Comunicación de Agentes
 │   ├── privacy/              # Servicio de privacidad
@@ -254,8 +253,12 @@ El registro de herramientas por defecto de RCode incluye aproximadamente 20 herr
 | `applypatch` | Aplicar parches a archivos |
 | `session_navigation` | Navegar y consultar el historial de sesiones |
 
-Herramientas adicionales disponibles mediante integración:
-- **MCP** — Acceder a herramientas de servidores Model Context Protocol
+Integraciones de herramientas opcionales (disponibles cuando están configuradas):
+
+| Integración | Herramientas |
+|-------------|--------------|
+| **CogniCode** | 21 herramientas de inteligencia de código: `cognicode_build_graph`, `cognicode_call_hierarchy`, `cognicode_trace_path`, `cognicode_entry_points`, `cognicode_leaf_functions`, `cognicode_hot_paths`, `cognicode_export_mermaid`, `cognicode_impact_analysis`, `cognicode_complexity`, `cognicode_architecture_check`, `cognicode_semantic_search`, `cognicode_get_symbols`, `cognicode_get_outline`, `cognicode_find_usages`, `cognicode_go_to_definition`, `cognicode_hover`, `cognicode_find_references`, `cognicode_safe_refactor`, `cognicode_validate_syntax`, y más |
+| **MCP** | Herramientas dinámicas de servidores Model Context Protocol |
 
 ## Pruebas
 

@@ -15,7 +15,6 @@ members = [
     "crates/tui",
     "crates/engram",
     "crates/mcp",
-    "crates/lsp",
     "crates/acp",
     "crates/observability",
     "crates/gen-types",
@@ -52,5 +51,4 @@ tempfile = "3.27"
 dirs = "6.0"
 parking_lot = "0.12"
 glob = "0.3"
-rcode-lsp = { path = "crates/lsp" }
 rcode-observability = { path = "crates/observability" }
