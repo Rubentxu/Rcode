@@ -5,6 +5,7 @@ interface ToolResultCardProps {
   tool_call_id: string;
   content: string;
   is_error: boolean;
+  truncated?: boolean;
 }
 
 /**
@@ -54,6 +55,15 @@ export const ToolResultCard: Component<ToolResultCardProps> = (props) => {
         <span class={`text-xs font-semibold ${props.is_error ? "text-error" : "text-secondary"}`}>
           {props.is_error ? "Error" : "Result"}
         </span>
+
+        <Show when={props.truncated}>
+          <span
+            class="ml-2 px-1.5 py-0.5 text-[10px] font-semibold rounded bg-warning/20 text-warning"
+            title="Output was shortened to fit context limits"
+          >
+            ⚠ Truncated
+          </span>
+        </Show>
 
         <span class="material-symbols-outlined text-outline text-sm ml-auto">
           {isExpanded() ? "expand_less" : "expand_more"}

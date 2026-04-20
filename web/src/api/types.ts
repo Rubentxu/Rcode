@@ -45,13 +45,23 @@ export interface Session {
 // The Rust Part.tool_call.arguments is Box<serde_json::Value> which can't be
 // represented in TypeScript, so we use unknown
 // This is the type the frontend should use for received/sent messages
-export type MessagePart = 
+export type MessagePart =
   | { type: 'text'; content: string }
   | { type: 'reasoning'; content: string }
-  | { type: 'tool_call'; id: string; name: string; arguments?: unknown }
-  | { type: 'tool_result'; tool_call_id: string; content: string; is_error: boolean }
+  | { type: 'tool_call'; id: string; name: string; arguments?: unknown; source?: string }
+  | { type: 'tool_result'; tool_call_id: string; content: string; is_error: boolean; truncated?: boolean }
   | { type: 'task_checklist'; items: { id: string; content: string; status: string; priority: string }[] }
   | { type: 'attachment'; id: string; name: string; mime_type: string; content?: unknown };
+
+// Phase 2: Pending attachment for drag-drop/paste in PromptInput
+export interface PendingAttachment {
+  id: string;
+  file: File;
+  name: string;
+  size: number;
+  mime_type: string;
+  preview_url?: string;
+}
 
 // =============================================================================
 // SSE event types - these are defined in the server-side event system
@@ -104,6 +114,41 @@ export interface ProviderErrorEvent {
   type: "provider_error";
   provider_id: string;
   error: string;
+}
+
+// Phase 1: Permission prompt SSE event
+export interface SSEPermissionRequestedEvent {
+  type: "permission_requested";
+  request_id: string;
+  tool_name: string;
+  description: string;
+}
+
+// Phase 1: Compaction SSE event
+export interface SSECompactionPerformedEvent {
+  type: "compaction_performed";
+  session_id: string;
+  original_count: number;
+  new_count: number;
+  tokens_saved: number;
+}
+
+// Phase 1: Compaction record for local state
+export interface CompactionRecord {
+  session_id: string;
+  original_count: number;
+  new_count: number;
+  tokens_saved: number;
+  timestamp: number;
+}
+
+// Phase 3: Diff chunk SSE event
+export interface SSEDiffChunkEvent {
+  type: "diff_chunk";
+  session_id: string;
+  diff_id: string;
+  content: string;
+  done: boolean;
 }
 
 // Phase 3: New semantic SSE event types
@@ -168,7 +213,11 @@ export type SSEEventData = SSEMessageEvent | SSEDeltaEvent | SSEDoneEvent | SSEE
   | SSEStreamToolCallArg | SSEStreamToolCallEnd | SSEStreamToolResult
   | SSEStreamAssistantCommitted
   // T-03: Error event types
-  | ToolErrorEvent | ProviderErrorEvent;
+  | ToolErrorEvent | ProviderErrorEvent
+  // Phase 1: Permission and compaction events
+  | SSEPermissionRequestedEvent | SSECompactionPerformedEvent
+  // Phase 3: Diff chunk event
+  | SSEDiffChunkEvent;
 
 // Provider protocol type
 export type ProviderProtocol = "openai_compat" | "anthropic_compat" | "google";
@@ -240,4 +289,10 @@ export interface SSEConfig {
   // T-03: Error event callbacks
   onToolError?: (event: ToolErrorEvent) => void;
   onProviderError?: (event: ProviderErrorEvent) => void;
+  // Phase 1: Permission prompt callbacks
+  onPermissionRequested?: (event: SSEPermissionRequestedEvent) => void;
+  // Phase 1: Compaction callbacks
+  onCompactionPerformed?: (event: SSECompactionPerformedEvent) => void;
+  // Phase 3: Diff chunk callback
+  onDiffChunk?: (event: SSEDiffChunkEvent) => void;
 }

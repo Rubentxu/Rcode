@@ -68,6 +68,9 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
   const [renameValue, setRenameValue] = createSignal("");
   const [renameError, setRenameError] = createSignal<string | null>(null);
 
+  // Phase 2: Session tree collapse state (parent_id -> collapsed)
+  const [collapsedParents, setCollapsedParents] = createSignal<Set<string>>(new Set());
+
   // Session list — show limited recents by default, expand on demand
   const RECENT_LIMIT = 8;
   const [showAllSessions, setShowAllSessions] = createSignal(false);
@@ -92,10 +95,14 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
     const sessions = props.sessions;
     const activeId = props.currentSessionId;
 
-    const filtered = query
-      ? sessions.filter(s => s.title?.toLowerCase().includes(query))
-      : sessions;
+    // Phase 2: Get top-level sessions (no parent_id) for the main list
+    const topLevelSessions = sessions.filter(s => !s.parent_id);
 
+    const filtered = query
+      ? topLevelSessions.filter(s => s.title?.toLowerCase().includes(query))
+      : topLevelSessions;
+
+    // Always include the active session (even if it's a child session)
     const activeSession = sessions.find(s => s.id === activeId);
     if (activeSession && !filtered.find(s => s.id === activeId)) {
       filtered.unshift(activeSession);
@@ -122,9 +129,8 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
     return result;
   });
 
-  const totalSessionCount = createMemo(() =>
-    groupedSessions().reduce((sum, g) => sum + g.sessions.length, 0)
-  );
+  // Phase 2: Count ALL sessions (including children) for "N more sessions" footer
+  const totalSessionCount = createMemo(() => props.sessions.length);
 
   const visibleGroupedSessions = createMemo((): SessionGrouped[] => {
     const query = debouncedSearch().toLowerCase().trim();
@@ -218,6 +224,27 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
     setRenamingSessionId(null);
     setRenameValue("");
     setRenameError(null);
+  };
+
+  // Phase 2: Session tree helpers
+  const getChildSessions = (parentId: string): Session[] => {
+    return props.sessions.filter(s => s.parent_id === parentId);
+  };
+
+  const toggleParentCollapse = (parentId: string) => {
+    setCollapsedParents(prev => {
+      const next = new Set(prev);
+      if (next.has(parentId)) {
+        next.delete(parentId);
+      } else {
+        next.add(parentId);
+      }
+      return next;
+    });
+  };
+
+  const isParentCollapsed = (parentId: string): boolean => {
+    return collapsedParents().has(parentId);
   };
 
   const submitRename = async () => {
@@ -712,63 +739,155 @@ export default function WorkbenchLeftRail(props: WorkbenchLeftRailProps) {
                         {(session) => {
                           const isActive = () => session.id === props.currentSessionId;
                           const isRenaming = () => renamingSessionId() === session.id;
+                          // Phase 2: Check if this session has children
+                          const childSessions = () => getChildSessions(session.id);
+                          const hasChildren = () => childSessions().length > 0;
+                          const isCollapsed = () => isParentCollapsed(session.id);
 
                           return (
-                            <div
-                              onClick={() => !isRenaming() && props.onSelect(session)}
-                              onDblClick={(e) => !isRenaming() && startRename(session, e)}
-                              data-session-id={session.id}
-                              class={`rounded-lg text-xs font-medium flex items-center gap-2 cursor-pointer transition-all duration-200 mb-0.5 ${
-                                isCompact() ? "px-2 py-1" : "px-2.5 py-2"
-                              }`}
-                              style={{
-                                background: isActive() ? "var(--secondary-container)" : "transparent",
-                                color: isActive() ? "var(--on-secondary-container)" : "var(--on-surface-variant)",
-                              }}
-                              onMouseEnter={(e) => {
-                                if (!isActive() && !isRenaming()) {
-                                  (e.currentTarget as HTMLElement).style.background = "var(--surface-container)";
-                                  (e.currentTarget as HTMLElement).style.color = "var(--on-surface)";
-                                }
-                              }}
-                              onMouseLeave={(e) => {
-                                if (!isActive() && !isRenaming()) {
-                                  (e.currentTarget as HTMLElement).style.background = "transparent";
-                                  (e.currentTarget as HTMLElement).style.color = "var(--on-surface-variant)";
-                                }
-                              }}
-                            >
-                              <span class="material-symbols-outlined text-[14px] shrink-0" style={{ color: isActive() ? "var(--secondary)" : "var(--outline)", opacity: isActive() ? "1" : "0.5" }}>chat</span>
-
-                              <Show when={isRenaming()} fallback={
-                                <>
-                                  <span class="truncate flex-1 text-[12px]">
-                                    {session.title || "Untitled"}
+                            <>
+                              <div
+                                onClick={() => !isRenaming() && props.onSelect(session)}
+                                onDblClick={(e) => !isRenaming() && startRename(session, e)}
+                                data-session-id={session.id}
+                                class={`rounded-lg text-xs font-medium flex items-center gap-2 cursor-pointer transition-all duration-200 mb-0.5 ${
+                                  isCompact() ? "px-2 py-1" : "px-2.5 py-2"
+                                }`}
+                                style={{
+                                  background: isActive() ? "var(--secondary-container)" : "transparent",
+                                  color: isActive() ? "var(--on-secondary-container)" : "var(--on-surface-variant)",
+                                }}
+                                onMouseEnter={(e) => {
+                                  if (!isActive() && !isRenaming()) {
+                                    (e.currentTarget as HTMLElement).style.background = "var(--surface-container)";
+                                    (e.currentTarget as HTMLElement).style.color = "var(--on-surface)";
+                                  }
+                                }}
+                                onMouseLeave={(e) => {
+                                  if (!isActive() && !isRenaming()) {
+                                    (e.currentTarget as HTMLElement).style.background = "transparent";
+                                    (e.currentTarget as HTMLElement).style.color = "var(--on-surface-variant)";
+                                  }
+                                }}
+                              >
+                                <Show when={hasChildren()}>
+                                  <span
+                                    class="material-symbols-outlined text-[12px] shrink-0 transition-transform"
+                                    style={{ color: "var(--outline)", opacity: "0.5", transform: isCollapsed() ? "rotate(-90deg)" : "rotate(0deg)" }}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      toggleParentCollapse(session.id);
+                                    }}
+                                  >
+                                    chevron_right
                                   </span>
-                                  <Show when={!isCompact()}>
-                                    <span class="text-[10px] shrink-0" style={{ color: "var(--outline)", opacity: "0.5" }}>
-                                      {formatTime(session.updated_at)}
+                                </Show>
+                                <Show when={!hasChildren()}>
+                                  <span class="material-symbols-outlined text-[14px] shrink-0" style={{ color: "var(--outline)", opacity: "0.5" }} />
+                                </Show>
+
+                                <span class="material-symbols-outlined text-[14px] shrink-0" style={{ color: isActive() ? "var(--secondary)" : "var(--outline)", opacity: isActive() ? "1" : "0.5" }}>chat</span>
+
+                                <Show when={isRenaming()} fallback={
+                                  <>
+                                    <span class="truncate flex-1 text-[12px]">
+                                      {session.title || "Untitled"}
                                     </span>
-                                  </Show>
-                                  <Show when={isCompact()}>
-                                    <span class="text-[10px] shrink-0" style={{ color: "var(--outline)", opacity: "0.5" }}>
-                                      {formatCompactDate(session.updated_at)}
-                                    </span>
-                                  </Show>
-                                </>
-                              }>
-                                <input
-                                  type="text"
-                                  value={renameValue()}
-                                  onInput={(e) => setRenameValue(e.currentTarget.value)}
-                                  onKeyDown={handleRenameKeyDown}
-                                  onBlur={() => submitRename()}
-                                  autofocus
-                                  class="flex-1 bg-surface-container-low text-on-surface text-xs px-1 py-0.5 rounded border border-primary/50 focus:outline-none"
-                                  onClick={(e) => e.stopPropagation()}
-                                />
+                                    <Show when={!isCompact()}>
+                                      <span class="text-[10px] shrink-0" style={{ color: "var(--outline)", opacity: "0.5" }}>
+                                        {formatTime(session.updated_at)}
+                                      </span>
+                                    </Show>
+                                    <Show when={isCompact()}>
+                                      <span class="text-[10px] shrink-0" style={{ color: "var(--outline)", opacity: "0.5" }}>
+                                        {formatCompactDate(session.updated_at)}
+                                      </span>
+                                    </Show>
+                                  </>
+                                }>
+                                  <input
+                                    type="text"
+                                    value={renameValue()}
+                                    onInput={(e) => setRenameValue(e.currentTarget.value)}
+                                    onKeyDown={handleRenameKeyDown}
+                                    onBlur={() => submitRename()}
+                                    autofocus
+                                    class="flex-1 bg-surface-container-low text-on-surface text-xs px-1 py-0.5 rounded border border-primary/50 focus:outline-none"
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                </Show>
+                              </div>
+
+                              {/* Phase 2: Render child sessions indented */}
+                              <Show when={hasChildren() && !isCollapsed()}>
+                                <For each={childSessions()}>
+                                  {(child) => {
+                                    const isChildActive = () => child.id === props.currentSessionId;
+                                    const isChildRenaming = () => renamingSessionId() === child.id;
+
+                                    return (
+                                      <div
+                                        onClick={() => !isChildRenaming() && props.onSelect(child)}
+                                        onDblClick={(e) => !isChildRenaming() && startRename(child, e)}
+                                        data-session-id={child.id}
+                                        class={`rounded-lg text-xs font-medium flex items-center gap-2 cursor-pointer transition-all duration-200 mb-0.5 ${
+                                          isCompact() ? "px-2 py-1" : "px-2.5 py-2"
+                                        }`}
+                                        style={{
+                                          background: isChildActive() ? "var(--secondary-container)" : "transparent",
+                                          color: isChildActive() ? "var(--on-secondary-container)" : "var(--on-surface-variant)",
+                                          "padding-left": isCompact() ? "28px" : "36px",
+                                        }}
+                                        onMouseEnter={(e) => {
+                                          if (!isChildActive() && !isChildRenaming()) {
+                                            (e.currentTarget as HTMLElement).style.background = "var(--surface-container)";
+                                            (e.currentTarget as HTMLElement).style.color = "var(--on-surface)";
+                                          }
+                                        }}
+                                        onMouseLeave={(e) => {
+                                          if (!isChildActive() && !isChildRenaming()) {
+                                            (e.currentTarget as HTMLElement).style.background = "transparent";
+                                            (e.currentTarget as HTMLElement).style.color = "var(--on-surface-variant)";
+                                          }
+                                        }}
+                                      >
+                                        <span class="material-symbols-outlined text-[14px] shrink-0" style={{ color: isChildActive() ? "var(--secondary)" : "var(--outline)", opacity: isChildActive() ? "1" : "0.5" }}>subdirectory_arrow_right</span>
+                                        <span class="material-symbols-outlined text-[14px] shrink-0" style={{ color: isChildActive() ? "var(--secondary)" : "var(--outline)", opacity: isChildActive() ? "1" : "0.5" }}>chat</span>
+
+                                        <Show when={isChildRenaming()} fallback={
+                                          <>
+                                            <span class="truncate flex-1 text-[12px]">
+                                              {child.title || "Untitled"}
+                                            </span>
+                                            <Show when={!isCompact()}>
+                                              <span class="text-[10px] shrink-0" style={{ color: "var(--outline)", opacity: "0.5" }}>
+                                                {formatTime(child.updated_at)}
+                                              </span>
+                                            </Show>
+                                            <Show when={isCompact()}>
+                                              <span class="text-[10px] shrink-0" style={{ color: "var(--outline)", opacity: "0.5" }}>
+                                                {formatCompactDate(child.updated_at)}
+                                              </span>
+                                            </Show>
+                                          </>
+                                        }>
+                                          <input
+                                            type="text"
+                                            value={renameValue()}
+                                            onInput={(e) => setRenameValue(e.currentTarget.value)}
+                                            onKeyDown={handleRenameKeyDown}
+                                            onBlur={() => submitRename()}
+                                            autofocus
+                                            class="flex-1 bg-surface-container-low text-on-surface text-xs px-1 py-0.5 rounded border border-primary/50 focus:outline-none"
+                                            onClick={(e) => e.stopPropagation()}
+                                          />
+                                        </Show>
+                                      </div>
+                                    );
+                                  }}
+                                </For>
                               </Show>
-                            </div>
+                            </>
                           );
                         }}
                       </For>

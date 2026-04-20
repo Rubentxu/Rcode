@@ -5,3 +5,6 @@ export { ToolResultCard } from "./ToolResultCard";
 export { AttachmentPart } from "./AttachmentPart";
 export { TurnAvatar } from "./TurnAvatar";
 export { QuickActions } from "./QuickActions";
+export { PermissionPrompt } from "./PermissionPrompt";
+export { CompactionDivider } from "./CompactionDivider";
+export { IncrementalDiffViewer } from "./IncrementalDiffViewer";

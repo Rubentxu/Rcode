@@ -5,6 +5,7 @@ interface ToolCallCardProps {
   name: string;
   arguments: unknown;
   status?: "pending" | "running" | "success" | "error";
+  source?: string;
 }
 
 /**
@@ -21,6 +22,12 @@ export const ToolCallCard: Component<ToolCallCardProps> = (props) => {
       <span class="text-xs font-medium text-outline">
         {props.name}
       </span>
+
+      <Show when={props.source?.startsWith("mcp:")}>
+        <span class="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-violet-200/50 text-violet-700">
+          🔧 MCP: {props.source!.replace("mcp:", "")}
+        </span>
+      </Show>
 
       <Show when={status() === "running"}>
         <span class="material-symbols-outlined text-tertiary text-sm animate-spin" style={{ "font-size": "12px" }}>progress_activity</span>

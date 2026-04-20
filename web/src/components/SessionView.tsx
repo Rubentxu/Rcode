@@ -1,6 +1,6 @@
 import { For, Show, Switch, Match, createSignal, onCleanup, createEffect, createMemo } from "solid-js";
 import type { Session } from "../stores";
-import type { Message, MessagePart } from "../api/types";
+import type { Message, MessagePart, SSEPermissionRequestedEvent, SSECompactionPerformedEvent, CompactionRecord, SSEDiffChunkEvent } from "../api/types";
 import { createSSEClient, type SSEClient } from "../api/sse";
 import { getApiBase } from "../api/config";
 import { prepare, layout } from "@chenglou/pretext";
@@ -18,6 +18,9 @@ import { StreamingToolCallCard } from "./parts/StreamingToolCallCard";
 import { ReasoningStreamPanel } from "./parts/ReasoningStreamPanel";
 import { TurnAvatar } from "./parts/TurnAvatar";
 import { QuickActions } from "./parts/QuickActions";
+import { PermissionPrompt } from "./parts/PermissionPrompt";
+import { CompactionDivider } from "./parts/CompactionDivider";
+import { IncrementalDiffViewer } from "./parts/IncrementalDiffViewer";
 import TaskChecklistPanel from "./chat-workspace/TaskChecklistPanel";
 import { deriveChecklistItems } from "./chat-workspace/checklist";
 import { createDraftStore, type DraftPart } from "../composables/useStreamingDraft";
@@ -85,6 +88,15 @@ export default function SessionView(props: SessionViewProps) {
   
   // Phase 3: Draft store for streaming parts
   const { draft, dispatch, clear: clearDraft, initOptimisticShell } = createDraftStore();
+
+  // Phase 1: Permission request queue - multiple permissions can arrive while modal is open
+  const [permissionQueue, setPermissionQueue] = createSignal<SSEPermissionRequestedEvent[]>([]);
+
+  // Phase 1: Compaction records for the current session
+  const [compactionRecords, setCompactionRecords] = createSignal<CompactionRecord[]>([]);
+
+  // Phase 3: Ref to hold the diff chunk handler registered by IncrementalDiffViewer
+  let diffChunkHandlerRef: ((diffId: string, content: string, done: boolean) => void) | null = null;
   
   // Create a derived message list that includes persisted messages from workspace
   // T3.3: Must be defined BEFORE virtualizer since it references turns in its getter
@@ -270,6 +282,15 @@ export default function SessionView(props: SessionViewProps) {
     props.onBranch?.(messageId, messagesUpTo);
   };
 
+  // Phase 1: Permission queue handlers - called by PermissionPrompt modal
+  const handlePermissionGrant = (_request_id: string) => {
+    setPermissionQueue((prev) => prev.slice(1));
+  };
+
+  const handlePermissionDeny = (_request_id: string) => {
+    setPermissionQueue((prev) => prev.slice(1));
+  };
+
   // SS-3: Determine if skeleton should be shown (optimistic shell with no content yet)
   // Returns true when draft is optimistic AND has only the initial empty text part
   const showSkeleton = () => {
@@ -384,6 +405,34 @@ export default function SessionView(props: SessionViewProps) {
       onProviderError: (event: ProviderErrorEvent) => {
         showToast({ type: "error", message: `Provider error: ${event.error}` });
       },
+      // Phase 1: Permission prompt callback - enqueue incoming permission requests
+      onPermissionRequested: (event: SSEPermissionRequestedEvent) => {
+        console.info("Permission requested:", event);
+        setPermissionQueue((prev) => [...prev, event]);
+      },
+      // Phase 1: Compaction callback - record compaction events for the session
+      onCompactionPerformed: (event: SSECompactionPerformedEvent) => {
+        console.info("Compaction performed:", event);
+        if (event.session_id === sessionId) {
+          setCompactionRecords((prev) => [
+            ...prev,
+            {
+              session_id: event.session_id,
+              original_count: event.original_count,
+              new_count: event.new_count,
+              tokens_saved: event.tokens_saved,
+              timestamp: Date.now(),
+            },
+          ]);
+        }
+      },
+      // Phase 3: Diff chunk callback - forward to IncrementalDiffViewer via ref
+      onDiffChunk: (event: SSEDiffChunkEvent) => {
+        console.info("Diff chunk received:", event);
+        if (event.session_id === sessionId && diffChunkHandlerRef) {
+          diffChunkHandlerRef(event.diff_id, event.content, event.done);
+        }
+      },
     });
 
     connectedSessionId = sessionId;
@@ -439,7 +488,18 @@ export default function SessionView(props: SessionViewProps) {
   const checklistItems = () => deriveChecklistItems(workspaceContext.workspace.getMessages(props.session.id));
 
   return (
-    <div class="flex flex-col h-full">
+    <>
+      {/* Phase 1: Permission prompt modal - shown when there's a pending permission request */}
+      <Show when={permissionQueue().length > 0}>
+        <PermissionPrompt
+          request={permissionQueue()[0]}
+          onGrant={handlePermissionGrant}
+          onDeny={handlePermissionDeny}
+          onAutoDeny={handlePermissionDeny}
+        />
+      </Show>
+
+      <div class="flex flex-col h-full">
       {/* Chat context bar — sticky top inside center pane */}
       <div data-component="chat-context-bar">
         <span data-context-chip>
@@ -761,6 +821,26 @@ export default function SessionView(props: SessionViewProps) {
           </Show>
         </div>
 
+        {/* Phase 1: Compaction dividers - shown when there are compaction records */}
+        <Show when={compactionRecords().length > 0}>
+          <For each={compactionRecords()}>
+            {(record) => (
+              <CompactionDivider
+                originalCount={record.original_count}
+                newCount={record.new_count}
+                tokensSaved={record.tokens_saved}
+              />
+            )}
+          </For>
+        </Show>
+
+        {/* Phase 3: Incremental diff viewer for streaming diff chunks */}
+        <IncrementalDiffViewer
+          onRegisterChunkHandler={(handler) => {
+            diffChunkHandlerRef = handler;
+          }}
+        />
+
         <JumpToBottomButton
           isVisible={() => !autoScroll.isFollowing()}
           onClick={() => autoScroll.resume()}
@@ -780,6 +860,7 @@ export default function SessionView(props: SessionViewProps) {
         currentModel={props.currentModel}
       />
     </div>
+    </>
   );
 }
 
@@ -835,6 +916,7 @@ function PartRenderer(props: { part: MessagePart }) {
           id={props.part.id} 
           name={props.part.name} 
           arguments={props.part.arguments} 
+          source={props.part.source}
         />
       </div>
     );
@@ -845,6 +927,7 @@ function PartRenderer(props: { part: MessagePart }) {
       tool_call_id={props.part.tool_call_id} 
       content={props.part.content} 
       is_error={props.part.is_error} 
+      truncated={props.part.truncated}
     />;
   }
   
@@ -943,6 +1026,7 @@ function DraftPartRenderer(props: { part: DraftPart }) {
       tool_call_id={props.part.tool_call_id} 
       content={props.part.content} 
       is_error={props.part.is_error} 
+      truncated={props.part.truncated}
     />;
   }
   

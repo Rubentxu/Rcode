@@ -15,6 +15,9 @@ import type {
   SSEStreamAssistantCommitted,
   ToolErrorEvent,
   ProviderErrorEvent,
+  SSEPermissionRequestedEvent,
+  SSECompactionPerformedEvent,
+  SSEDiffChunkEvent,
 } from "./types";
 
 const RECONNECT_DELAY_MS = 1000;
@@ -109,6 +112,21 @@ export class SSEClient {
         this.handleEvent("provider_error", event.data);
       });
 
+      // Phase 1: Permission prompt events
+      this.eventSource.addEventListener("permission_requested", (event: MessageEvent) => {
+        this.handleEvent("permission_requested", event.data);
+      });
+
+      // Phase 1: Compaction events
+      this.eventSource.addEventListener("compaction_performed", (event: MessageEvent) => {
+        this.handleEvent("compaction_performed", event.data);
+      });
+
+      // Phase 3: Diff chunk event
+      this.eventSource.addEventListener("diff_chunk", (event: MessageEvent) => {
+        this.handleEvent("diff_chunk", event.data);
+      });
+
     } catch (error) {
       console.error("Failed to create EventSource:", error);
       this.handleError();
@@ -183,6 +201,18 @@ export class SSEClient {
           break;
         case "provider_error":
           this.config.onProviderError?.(data as ProviderErrorEvent);
+          break;
+        // Phase 1: Permission prompt events
+        case "permission_requested":
+          this.config.onPermissionRequested?.(data as SSEPermissionRequestedEvent);
+          break;
+        // Phase 1: Compaction events
+        case "compaction_performed":
+          this.config.onCompactionPerformed?.(data as SSECompactionPerformedEvent);
+          break;
+        // Phase 3: Diff chunk event
+        case "diff_chunk":
+          this.config.onDiffChunk?.(data as SSEDiffChunkEvent);
           break;
         default:
           console.warn("Unknown SSE event type:", type);

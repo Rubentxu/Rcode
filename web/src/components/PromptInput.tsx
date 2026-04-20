@@ -30,6 +30,8 @@ import {
   getPartialMentionAtCursor,
 } from "../mentions/index";
 import CommandPalette from "./CommandPalette";
+import { type PendingAttachment } from "../api/types";
+import { showToast } from "./Toast";
 
 interface PromptInputProps {
   onSubmit: (prompt: string) => void;
@@ -66,11 +68,21 @@ export default function PromptInput(props: PromptInputProps) {
     loading: false,
   });
 
+  // Phase 2: Pending attachments for drag-drop/paste
+  const [pendingAttachments, setPendingAttachments] = createSignal<PendingAttachment[]>([]);
+  const [isDragging, setIsDragging] = createSignal(false);
+
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
   let searchTimeout: number | undefined;
 
   // Cleanup
   onCleanup(() => {
     if (searchTimeout) clearTimeout(searchTimeout);
+    // Phase 2: Revoke object URLs for pending attachments
+    for (const att of pendingAttachments()) {
+      if (att.preview_url) URL.revokeObjectURL(att.preview_url);
+    }
   });
 
   // Update command matches when query changes
@@ -305,11 +317,123 @@ export default function PromptInput(props: PromptInputProps) {
     textareaRef?.focus();
   };
 
+  // Phase 2: Drag-drop handlers
+  const handleDragOver = (e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer?.types.includes("Files")) {
+      setIsDragging(true);
+    }
+  };
+
+  const handleDragLeave = (e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Only set to false if we're leaving the wrapper entirely
+    const rect = wrapperRef?.getBoundingClientRect();
+    if (rect) {
+      const { clientX, clientY } = e;
+      if (
+        clientX < rect.left ||
+        clientX > rect.right ||
+        clientY < rect.top ||
+        clientY > rect.bottom
+      ) {
+        setIsDragging(false);
+      }
+    }
+  };
+
+  const handleDrop = (e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const files = e.dataTransfer?.files;
+    if (files) {
+      addFiles(Array.from(files));
+    }
+  };
+
+  const handlePaste = (e: ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    for (const item of items) {
+      if (item.kind === "file") {
+        const file = item.getAsFile();
+        if (file) {
+          addFiles([file]);
+        }
+      }
+    }
+  };
+
+  const addFiles = (files: File[]) => {
+    for (const file of files) {
+      if (file.size > MAX_FILE_SIZE) {
+        showToast({
+          type: "error",
+          message: `File too large: ${file.name} (max 10MB)`,
+          duration: 4000,
+        });
+        continue;
+      }
+
+      const id = crypto.randomUUID();
+      const preview_url = file.type.startsWith("image/")
+        ? URL.createObjectURL(file)
+        : undefined;
+
+      const attachment: PendingAttachment = {
+        id,
+        file,
+        name: file.name,
+        size: file.size,
+        mime_type: file.type,
+        preview_url,
+      };
+
+      setPendingAttachments((prev) => [...prev, attachment]);
+    }
+  };
+
+  const removeAttachment = (id: string) => {
+    setPendingAttachments((prev) => {
+      const att = prev.find((a) => a.id === id);
+      if (att?.preview_url) {
+        URL.revokeObjectURL(att.preview_url);
+      }
+      return prev.filter((a) => a.id !== id);
+    });
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+  };
+
   return (
     <div
       ref={wrapperRef}
       class="px-4 md:px-8 py-4 bg-surface-container-lowest"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
     >
+      {/* Phase 2: Drop zone overlay */}
+      <Show when={isDragging()}>
+        <div class="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-primary/10 border-2 border-dashed border-primary pointer-events-none">
+          <div class="flex flex-col items-center gap-2 text-primary">
+            <span class="material-symbols-outlined text-4xl">file_download</span>
+            <span class="text-sm font-semibold">Drop to attach</span>
+          </div>
+        </div>
+      </Show>
+
       <div class="w-full max-w-[var(--transcript-max-width)] mx-auto relative">
         <div class="bg-surface-container rounded-xl p-4 focus-within:ring-2 focus-within:ring-primary/60 focus-within:shadow-[0_0_0_2px_rgba(46,91,255,0.15)] transition-all duration-200" style="border: 1px solid var(--outline-variant);"
           onFocusIn={(e) => {
@@ -333,6 +457,7 @@ export default function PromptInput(props: PromptInputProps) {
               value={inputValue()}
               onInput={handleInput}
               onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
             />
 
             <CommandPalette
@@ -353,6 +478,40 @@ export default function PromptInput(props: PromptInputProps) {
                 query={autocomplete().query}
                 onSelect={insertMention}
               />
+            </Show>
+
+            {/* Phase 2: Pending attachments chips */}
+            <Show when={pendingAttachments().length > 0}>
+              <div class="flex flex-wrap gap-2 mt-2">
+                <For each={pendingAttachments()}>
+                  {(attachment) => (
+                    <div class="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-surface-container-high text-xs">
+                      <Show when={attachment.preview_url} fallback={
+                        <span class="material-symbols-outlined text-[14px] text-outline">attach_file</span>
+                      }>
+                        <img
+                          src={attachment.preview_url}
+                          alt={attachment.name}
+                          class="w-6 h-6 object-cover rounded"
+                        />
+                      </Show>
+                      <span class="truncate max-w-[100px]" title={attachment.name}>
+                        {attachment.name}
+                      </span>
+                      <span class="text-outline shrink-0">
+                        {formatFileSize(attachment.size)}
+                      </span>
+                      <button
+                        onClick={() => removeAttachment(attachment.id)}
+                        class="shrink-0 hover:text-error transition-colors"
+                        title="Remove attachment"
+                      >
+                        <span class="material-symbols-outlined text-[12px]">close</span>
+                      </button>
+                    </div>
+                  )}
+                </For>
+              </div>
             </Show>
           </div>
 
