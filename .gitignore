@@ -1,0 +1,10 @@
+# Default gitignore for everything
+*
+
+# Explicitly excluded (tool caches, never track)
+.cognicode/
+
+# Add these back manually:
+# git add -f Cargo.toml Cargo.lock
+# git add -f crates/*/src/ crates/*/Cargo.toml
+# git add -f web/src/ web/Cargo.toml web/index.html web/build.rs
