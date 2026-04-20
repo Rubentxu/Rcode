@@ -14,7 +14,6 @@ rcode-agent = { path = "../agent" }
 rcode-privacy = { path = "../privacy" }
 rcode-cognicode = { path = "../cognicode" }
 rcode-observability.workspace = true
-rcode-lsp.workspace = true
 tokio.workspace = true
 rusqlite = { version = "0.33", features = ["bundled"] }
 serde.workspace = true

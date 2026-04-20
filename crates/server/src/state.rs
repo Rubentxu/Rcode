@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use rcode_agent::hooks::HookRegistry;
 use rcode_agent::permissions::InteractivePermissionService;
 use rcode_core::{RcodeConfig, SubagentRunner};
 use rcode_event::EventBus;
-use rcode_lsp::LanguageServerRegistry;
 use rcode_privacy::service::PrivacyService;
 use rcode_providers::catalog::ModelCatalogService;
 use rcode_providers::CacheStore;
@@ -62,8 +62,6 @@ pub struct AppState {
     pub cancellation: Arc<CancellationRegistry>,
     /// Map of session_id to InteractivePermissionService for interactive permission approval
     pub permission_services: Arc<TokioMutex<HashMap<String, Arc<InteractivePermissionService>>>>,
-    /// LSP language server registry for code intelligence
-    pub lsp_registry: Arc<LanguageServerRegistry>,
     /// Optional mock provider for testing (injected via TestApp)
     pub mock_provider: Arc<std::sync::Mutex<Option<Arc<dyn LlmProvider>>>>,
     /// Explorer service for workspace file tree
@@ -72,10 +70,10 @@ pub struct AppState {
     pub privacy: PrivacyService,
     /// Project health registry (cargo check results)
     pub project_health: Arc<ProjectHealthRegistry>,
-    /// CogniCode intelligence snapshot for proactive context injection (empty if unavailable)
-    pub cognicode_snapshot: rcode_cognicode::snapshot::SharedSnapshot,
     /// CogniCode service handle — kept alive so Drop fires on shutdown (aborting background tasks)
     pub cognicode_service: Arc<std::sync::Mutex<Option<rcode_cognicode::service::CogniCodeService>>>,
+    /// Hook registry for extending agent behavior at trigger points
+    pub hooks: Arc<HookRegistry>,
 }
 
 fn create_storage_path() -> std::path::PathBuf {
@@ -85,11 +83,10 @@ fn create_storage_path() -> std::path::PathBuf {
     data_dir.join("rcode.db")
 }
 
-/// Create a ToolRegistryService with SubagentRunner injected and LSP tools registered
+/// Create a ToolRegistryService with SubagentRunner injected
 fn create_tools_with_runner(
     session_service: Arc<SessionService>,
     config: &RcodeConfig,
-    lsp_registry: Arc<rcode_lsp::LanguageServerRegistry>,
 ) -> Arc<ToolRegistryService> {
     let tools = Arc::new(ToolRegistryService::with_session_service(
         session_service.clone(),
@@ -107,18 +104,6 @@ fn create_tools_with_runner(
     let task_tool =
         rcode_tools::task::TaskTool::with_session_service(session_service).with_runner(runner);
     tools.set_task_tool(task_tool);
-
-    // Register a single LSP tool that uses the registry to find the right client
-    // Note: The LspToolAdapter needs a client at creation time, so we use from_registry
-    // with a placeholder path. In a full implementation, we would modify LspToolAdapter
-    // to use the registry dynamically at execute time.
-    if let Some(lsp_tool) = rcode_lsp::LspToolAdapter::from_registry(
-        "/tmp", // placeholder path
-        Arc::clone(&lsp_registry),
-    ) {
-        tools.register(Arc::new(lsp_tool));
-        tracing::info!("Registered LSP tool adapter");
-    }
 
     tools
 }
@@ -246,7 +231,6 @@ impl AppState {
             Err(e) => {
                 tracing::warn!("Failed to open database, using in-memory storage: {}", e);
                 let session_service = Arc::new(SessionService::new(event_bus.clone()));
-                let lsp_registry = Arc::new(LanguageServerRegistry::new());
                 let catalog = Arc::new(ModelCatalogService::new());
                 catalog.refresh_all_in_background(config.clone());
                 return Self {
@@ -261,13 +245,12 @@ impl AppState {
                     catalog,
                     cancellation: Arc::new(CancellationRegistry::new()),
                     permission_services: Arc::new(TokioMutex::new(HashMap::new())),
-                    lsp_registry,
                     mock_provider: Arc::new(std::sync::Mutex::new(None)),
                     explorer_service: Arc::new(ExplorerService::new()),
                     privacy,
                     project_health: Arc::new(ProjectHealthRegistry::new()),
-                    cognicode_snapshot: rcode_cognicode::snapshot::shared_snapshot(),
                     cognicode_service: Arc::new(std::sync::Mutex::new(None)),
+                    hooks: Arc::new(HookRegistry::new()),
                 };
             }
         };
@@ -279,7 +262,6 @@ impl AppState {
                 e
             );
             let session_service = Arc::new(SessionService::new(event_bus.clone()));
-            let lsp_registry = Arc::new(LanguageServerRegistry::new());
             let catalog = Arc::new(ModelCatalogService::new());
             catalog.refresh_all_in_background(config.clone());
             return Self {
@@ -294,13 +276,12 @@ impl AppState {
                 catalog,
                 cancellation: Arc::new(CancellationRegistry::new()),
                 permission_services: Arc::new(TokioMutex::new(HashMap::new())),
-                lsp_registry,
                 mock_provider: Arc::new(std::sync::Mutex::new(None)),
                     explorer_service: Arc::new(ExplorerService::new()),
                     privacy,
                     project_health: Arc::new(ProjectHealthRegistry::new()),
-                    cognicode_snapshot: rcode_cognicode::snapshot::shared_snapshot(),
                     cognicode_service: Arc::new(std::sync::Mutex::new(None)),
+                    hooks: Arc::new(HookRegistry::new()),
                 };
         }
 
@@ -310,7 +291,6 @@ impl AppState {
             Err(e) => {
                 tracing::warn!("Failed to open second database connection: {}", e);
                 let session_service = Arc::new(SessionService::new(event_bus.clone()));
-                let lsp_registry = Arc::new(LanguageServerRegistry::new());
                 let catalog = Arc::new(ModelCatalogService::new());
                 catalog.refresh_all_in_background(config.clone());
                 return Self {
@@ -325,13 +305,12 @@ impl AppState {
                     catalog,
                     cancellation: Arc::new(CancellationRegistry::new()),
                     permission_services: Arc::new(TokioMutex::new(HashMap::new())),
-                    lsp_registry,
                     mock_provider: Arc::new(std::sync::Mutex::new(None)),
                     explorer_service: Arc::new(ExplorerService::new()),
                     privacy,
                     project_health: Arc::new(ProjectHealthRegistry::new()),
-                    cognicode_snapshot: rcode_cognicode::snapshot::shared_snapshot(),
                     cognicode_service: Arc::new(std::sync::Mutex::new(None)),
+                    hooks: Arc::new(HookRegistry::new()),
                 };
             }
         };
@@ -349,7 +328,6 @@ impl AppState {
                     session_repo,
                     message_repo,
                 ));
-                let lsp_registry = Arc::new(LanguageServerRegistry::new());
                 let catalog = Arc::new(ModelCatalogService::new());
                 catalog.refresh_all_in_background(config.clone());
                 return Self {
@@ -364,13 +342,12 @@ impl AppState {
                     catalog,
                     cancellation: Arc::new(CancellationRegistry::new()),
                     permission_services: Arc::new(TokioMutex::new(HashMap::new())),
-                    lsp_registry,
                     mock_provider: Arc::new(std::sync::Mutex::new(None)),
                     explorer_service: Arc::new(ExplorerService::new()),
                     privacy,
                     project_health: Arc::new(ProjectHealthRegistry::new()),
-                    cognicode_snapshot: rcode_cognicode::snapshot::shared_snapshot(),
                     cognicode_service: Arc::new(std::sync::Mutex::new(None)),
+                    hooks: Arc::new(HookRegistry::new()),
                 };
             }
         };
@@ -396,20 +373,15 @@ impl AppState {
             tracing::info!("Loaded {} sessions from storage", loaded.len());
         });
 
-        // Create LSP registry
-        let lsp_registry = Arc::new(LanguageServerRegistry::new());
-
         // Create tools with the runner injected
         let tools =
-            create_tools_with_runner(session_service.clone(), &config, Arc::clone(&lsp_registry));
+            create_tools_with_runner(session_service.clone(), &config);
 
         // Register CogniCode intelligence tools (graceful: skip if unavailable)
         // Spawn in background to avoid blocking the sync constructor.
-        let cognicode_snapshot = rcode_cognicode::snapshot::shared_snapshot();
         let cognicode_service: Arc<std::sync::Mutex<Option<rcode_cognicode::service::CogniCodeService>>> =
             Arc::new(std::sync::Mutex::new(None));
         let tools_clone = Arc::clone(&tools);
-        let snapshot_clone = cognicode_snapshot.clone();
         let service_holder = cognicode_service.clone();
         tokio::spawn(async move {
             let cwd = std::env::current_dir().unwrap_or_default();
@@ -419,13 +391,6 @@ impl AppState {
                     let session = service.session().clone();
                     rcode_cognicode::tools::register_all(&tools_clone, session);
                     tracing::info!("CogniCode service spawned and tools registered");
-                    
-                    // Copy the service's snapshot into the shared snapshot for executor injection
-                    let snap = service.snapshot();
-                    {
-                        let mut shared = snapshot_clone.write();
-                        *shared = snap;
-                    }
                     
                     // Store service so it stays alive — Drop will fire when AppState drops,
                     // which sends shutdown signal and aborts background tasks.
@@ -461,13 +426,12 @@ impl AppState {
             catalog,
             cancellation: Arc::new(CancellationRegistry::new()),
             permission_services: Arc::new(TokioMutex::new(HashMap::new())),
-            lsp_registry,
             mock_provider: Arc::new(std::sync::Mutex::new(None)),
             explorer_service: Arc::new(ExplorerService::new()),
             privacy,
             project_health: Arc::new(ProjectHealthRegistry::new()),
-            cognicode_snapshot,
             cognicode_service,
+            hooks: Arc::new(HookRegistry::new()),
         }
     }
 }
@@ -480,35 +444,8 @@ impl Default for AppState {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
 
-    #[tokio::test]
-    async fn test_app_state_has_lsp_registry() {
-        let state = AppState::new();
-        assert!(state.lsp_registry.get_server("nonexistent").is_none());
-    }
-
-    #[tokio::test]
-    async fn test_app_state_lsp_registry_is_shared() {
-        let state = AppState::new();
-        let registry1 = Arc::clone(&state.lsp_registry);
-        let registry2 = Arc::clone(&state.lsp_registry);
-        // Both references should point to the same registry
-        assert!(Arc::ptr_eq(&registry1, &registry2));
-    }
-
-    #[tokio::test]
-    async fn test_lsp_tool_not_registered_without_config() {
-        let config = RcodeConfig::default();
-        let state = AppState::with_config(config);
-        // Without LSP config, no tool should be registered
-        // The tool is only registered when LSP servers are configured
-        let tools = state.tools.list();
-        let lsp_tools: Vec<_> = tools.iter().filter(|t| t.id == "lsp").collect();
-        assert!(
-            lsp_tools.is_empty(),
-            "Expected no LSP tools without config, found: {:?}",
-            lsp_tools
-        );
-    }
+    // LSP-related tests removed as rcode-lsp dependency was eliminated
 }

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use parking_lot::RwLock;
 
-use rcode_core::{Tool, ToolContext, ToolResult, PermissionChecker, PermissionConfig, Permission, AgentRegistry, SubagentRunner, error::{Result as CoreResult, RCodeError}};
+use rcode_core::{Tool, ToolContext, ToolResult, PermissionChecker, PermissionConfig, Permission, AgentRegistry, SubagentRunner, SubagentResult, error::{Result as CoreResult, RCodeError}};
 use rcode_session::SessionService;
 use rcode_event::EventBus;
 use rcode_providers::ProviderRegistry;
@@ -456,14 +456,15 @@ impl Tool for TaskTool {
 
             // Delegate to the subagent runner
             match runner.run_subagent(&session_id, prompt, READONLY_TOOLS).await {
-                Ok(response) => {
+                Ok(result) => {
                     return Ok(ToolResult {
                         title: format!("Task: {}", description),
-                        content: response,
+                        content: result.response_text,
                         metadata: Some(serde_json::json!({
                             "agent_type": agent_type,
                             "task_id": task_id,
                             "delegated": true,
+                            "child_session_id": result.child_session_id,
                         })),
                         attachments: vec![],
                     });
@@ -911,20 +912,28 @@ mod tests {
     struct MockSubagentRunner {
         response_text: String,
         should_error: bool,
+        child_session_id: String,
     }
 
     #[async_trait::async_trait]
     impl SubagentRunner for MockSubagentRunner {
         async fn run_subagent(
             &self,
-            _parent_session_id: &str,
+            parent_session_id: &str,
             _prompt: &str,
             _allowed_tools: &[&str],
-        ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        ) -> Result<SubagentResult, Box<dyn std::error::Error + Send + Sync>> {
             if self.should_error {
                 Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "mock error")) as Box<dyn std::error::Error + Send + Sync>)
             } else {
-                Ok(self.response_text.clone())
+                Ok(SubagentResult {
+                    response_text: self.response_text.clone(),
+                    child_session_id: if self.child_session_id.is_empty() {
+                        parent_session_id.to_string()
+                    } else {
+                        self.child_session_id.clone()
+                    },
+                })
             }
         }
     }
@@ -934,6 +943,7 @@ mod tests {
         let runner: Arc<dyn SubagentRunner> = Arc::new(MockSubagentRunner {
             response_text: "delegated response".to_string(),
             should_error: false,
+            child_session_id: String::new(),
         });
         let tool = TaskTool::with_subagent_runner(runner);
         // The runner should be set
@@ -945,6 +955,7 @@ mod tests {
         let runner: Arc<dyn SubagentRunner> = Arc::new(MockSubagentRunner {
             response_text: "delegated response".to_string(),
             should_error: false,
+            child_session_id: String::new(),
         });
         
         let event_bus = Arc::new(rcode_event::EventBus::new(1));
@@ -980,6 +991,7 @@ mod tests {
         let runner: Arc<dyn SubagentRunner> = Arc::new(MockSubagentRunner {
             response_text: String::new(),
             should_error: true,
+            child_session_id: String::new(),
         });
         
         let event_bus = Arc::new(rcode_event::EventBus::new(1));
@@ -1016,6 +1028,7 @@ mod tests {
         let runner: Arc<dyn SubagentRunner> = Arc::new(MockSubagentRunner {
             response_text: "continuation response".to_string(),
             should_error: false,
+            child_session_id: String::new(),
         });
         
         let event_bus = Arc::new(rcode_event::EventBus::new(1));

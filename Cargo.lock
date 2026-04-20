@@ -340,6 +340,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "175812e0be2bccb6abe50bb8d566126198344f707e304f45c648fd8f2cc0365e"
 
 [[package]]
+name = "byteorder"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
+
+[[package]]
 name = "bytes"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -370,6 +376,16 @@ dependencies = [
  "jobserver",
  "libc",
  "shlex",
+]
+
+[[package]]
+name = "cfb"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca453e8624711b2f0f4eb47076a318feda166252a827ee25d067b43de83dcba0"
+dependencies = [
+ "byteorder",
+ "uuid 0.8.2",
 ]
 
 [[package]]
@@ -1534,6 +1550,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "infer"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea70330449622910e0edebab230734569516269fb32342fb0a8956340fa48c6c"
+dependencies = [
+ "cfb",
+]
+
+[[package]]
 name = "inotify"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2575,7 +2600,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "uuid",
+ "uuid 1.23.0",
 ]
 
 [[package]]
@@ -2598,7 +2623,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
- "uuid",
+ "uuid 1.23.0",
 ]
 
 [[package]]
@@ -2680,7 +2705,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "ts-rs",
- "uuid",
+ "uuid 1.23.0",
  "walkdir",
 ]
 
@@ -2713,7 +2738,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "uuid",
+ "uuid 1.23.0",
 ]
 
 [[package]]
@@ -2829,7 +2854,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
- "uuid",
+ "uuid 1.23.0",
 ]
 
 [[package]]
@@ -2871,7 +2896,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
- "uuid",
+ "uuid 1.23.0",
 ]
 
 [[package]]
@@ -2911,7 +2936,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "uuid",
+ "uuid 1.23.0",
 ]
 
 [[package]]
@@ -2923,6 +2948,7 @@ dependencies = [
  "dirs",
  "futures",
  "glob",
+ "infer",
  "jsonschema",
  "parking_lot",
  "patch",
@@ -2943,7 +2969,7 @@ dependencies = [
  "tokio",
  "tracing",
  "urlencoding",
- "uuid",
+ "uuid 1.23.0",
  "walkdir",
 ]
 
@@ -2969,7 +2995,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-subscriber",
- "uuid",
+ "uuid 1.23.0",
 ]
 
 [[package]]
@@ -4329,6 +4355,12 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc5cf98d8186244414c848017f0e2676b3fcb46807f6668a97dfe67359a3c4b7"
+
+[[package]]
+name = "uuid"
 version = "1.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5ac8b6f42ead25368cf5b098aeb3dc8a1a2c05a3eee8a9a1a68c640edbfc79d9"
@@ -4346,7 +4378,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b082222b4f6619906941c17eb2297fff4c2fb96cb60164170522942a200bd8"
 dependencies = [
  "outref",
- "uuid",
+ "uuid 1.23.0",
  "vsimd",
 ]
 

@@ -38,9 +38,15 @@ pub struct ToolResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolAttachment {
+    /// Absolute path to the attachment file
     pub path: String,
+    /// Detected or specified MIME type
     #[serde(rename = "type")]
     pub mime_type: String,
+    /// Human-readable file name
+    pub name: String,
+    /// File size in bytes
+    pub size: usize,
 }
 
 pub trait ToolRegistry: Send + Sync {

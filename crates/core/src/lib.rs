@@ -54,5 +54,5 @@ pub use project::*;
 pub use provider::*;
 pub use session::*;
 pub use skill::*;
-pub use subagent_runner::SubagentRunner;
+pub use subagent_runner::{SubagentRunner, SubagentResult};
 pub use tool::*;

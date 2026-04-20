@@ -9,6 +9,7 @@ use rcode_core::{
     Agent, AgentContext, AgentResult, Message, Part, TaskChecklistItem, ToolContext, error::Result,
     permission::{Permission, PermissionRequest},
 };
+use uuid::Uuid;
 use rcode_core::agent::StopReason;
 use rcode_core::provider::StreamingEvent;
 use rcode_providers::LlmProvider;
@@ -16,6 +17,7 @@ use rcode_tools::ToolRegistryService;
 use rcode_event::EventBus;
 use tracing::{debug, error, info, warn};
 
+use super::hooks::{HookRegistry};
 use super::permissions::{PermissionService, AutoPermissionService};
 
 const MAX_ACCUMULATED_TEXT: usize = 10_000;
@@ -118,6 +120,7 @@ pub struct AgentExecutorBuilder {
     messages_to_keep_after_compact: usize,
     privacy: Option<rcode_privacy::service::PrivacyService>,
     intelligence_xml_provider: Option<Arc<dyn Fn() -> String + Send + Sync>>,
+    hook_registry: Option<Arc<HookRegistry>>,
 }
 
 impl AgentExecutorBuilder {
@@ -138,6 +141,7 @@ impl AgentExecutorBuilder {
             messages_to_keep_after_compact: 20,
             privacy: None,
             intelligence_xml_provider: None,
+            hook_registry: None,
         }
     }
     
@@ -244,12 +248,19 @@ impl AgentExecutorBuilder {
             messages_to_keep_after_compact: self.messages_to_keep_after_compact,
             privacy: self.privacy,
             intelligence_xml_provider: self.intelligence_xml_provider,
+            hook_registry: self.hook_registry,
         }
     }
-    
+
     /// Set the CogniCode intelligence XML provider for proactive context injection
     pub fn with_intelligence_xml_provider(mut self, provider: Arc<dyn Fn() -> String + Send + Sync>) -> Self {
         self.intelligence_xml_provider = Some(provider);
+        self
+    }
+
+    /// Set the hook registry for extending agent behavior
+    pub fn with_hook_registry(mut self, registry: Arc<HookRegistry>) -> Self {
+        self.hook_registry = Some(registry);
         self
     }
 }
@@ -270,6 +281,7 @@ pub struct AgentExecutor {
     messages_to_keep_after_compact: usize,
     privacy: Option<rcode_privacy::service::PrivacyService>,
     intelligence_xml_provider: Option<Arc<dyn Fn() -> String + Send + Sync>>,
+    hook_registry: Option<Arc<HookRegistry>>,
 }
 
 impl AgentExecutor {
@@ -300,6 +312,7 @@ impl AgentExecutor {
             messages_to_keep_after_compact: 20,
             privacy: None,
             intelligence_xml_provider: None,
+            hook_registry: None,
         }
     }
 
@@ -357,6 +370,13 @@ impl AgentExecutor {
     pub fn with_compaction_thresholds(mut self, max_before: usize, keep_after: usize) -> Self {
         self.max_messages_before_compact = max_before;
         self.messages_to_keep_after_compact = keep_after;
+        self
+    }
+
+    /// Set the hook registry for extending agent behavior at trigger points.
+    /// Hooks can intercept and modify tool results and messages.
+    pub fn with_hook_registry(mut self, registry: Arc<HookRegistry>) -> Self {
+        self.hook_registry = Some(registry);
         self
     }
 
@@ -776,7 +796,7 @@ impl AgentExecutor {
 
         // Hook 2: Sanitize assistant message content before storing
         // This prevents sensitive data in the LLM response from being persisted
-        let assistant_parts = if let Some(ref privacy) = self.privacy {
+        let mut assistant_parts = if let Some(ref privacy) = self.privacy {
             let mut sanitized = Vec::new();
             for part in assistant_parts {
                 match part {
@@ -795,6 +815,20 @@ impl AgentExecutor {
         } else {
             assistant_parts
         };
+
+        // Run on_message hooks to allow plugins to inspect/modify the assistant message
+        // Errors are logged but do not block execution
+        if let Some(ref registry) = self.hook_registry {
+            for part in assistant_parts.iter_mut() {
+                if let Part::Text { content } = part {
+                    let mut content_clone = content.clone();
+                    if let Err(e) = registry.run_message_hooks("assistant", &mut content_clone).await {
+                        tracing::warn!(hook_error = %e, "hook error in message hook");
+                    }
+                    *content = content_clone;
+                }
+            }
+        }
 
         // Add assistant message to context
         let assistant_msg = Message::assistant(ctx.session_id.clone(), assistant_parts.clone());
@@ -829,6 +863,7 @@ impl AgentExecutor {
         
         // Check permissions before executing tools
         let permission_service = self.permission_service.clone();
+        let hook_registry = self.hook_registry.clone();
 
         for (id, name, arguments) in tool_calls {
             let tools = Arc::clone(&self.tools);
@@ -897,6 +932,22 @@ impl AgentExecutor {
                     if name == "todowrite" {
                         if let Some(items) = extract_task_checklist_items(r.metadata.as_ref()) {
                             tool_results.push(Part::TaskChecklist { items });
+                        }
+                    }
+                    // Wire attachments: convert ToolAttachment -> Part::Attachment
+                    for attachment in r.attachments {
+                        match tokio::fs::read(&attachment.path).await {
+                            Ok(bytes) => {
+                                tool_results.push(Part::Attachment {
+                                    id: Uuid::new_v4().to_string(),
+                                    name: attachment.name,
+                                    mime_type: attachment.mime_type,
+                                    content: bytes,
+                                });
+                            }
+                            Err(e) => {
+                                warn!("Failed to read attachment file '{}': {}", attachment.path, e);
+                            }
                         }
                     }
                     // Publish stream tool result event (use original r.content for real-time event)

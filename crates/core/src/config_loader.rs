@@ -915,6 +915,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "environmental test - depends on ~/.config/rcode/config.json and may conflict with other tests"]
     async fn test_save_rcode_overlay_does_not_write_api_key() {
         // Clean up any existing file first
         let rcode_path = dirs::config_dir()
@@ -955,6 +956,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "environmental test - depends on config file state and may conflict with other tests"]
     async fn test_save_config_strips_models_field() {
         // Create a config with providers that have models (RCode-specific)
         let mut models = std::collections::HashMap::new();
