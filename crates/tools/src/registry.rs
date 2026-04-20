@@ -21,6 +21,8 @@ pub struct ToolRegistryService {
     #[allow(dead_code)]
     permission_config: Option<PermissionConfig>,
     command_registry: RwLock<Option<Arc<super::command_registry::CommandRegistry>>>,
+    mcp_registry: RwLock<Option<Arc<rcode_mcp::McpServerRegistry>>>,
+    truncation_config: Option<super::truncate::TruncationConfig>,
 }
 
 impl ToolRegistryService {
@@ -30,6 +32,8 @@ impl ToolRegistryService {
             default_timeout: Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS),
             permission_config: None,
             command_registry: RwLock::new(None),
+            mcp_registry: RwLock::new(None),
+            truncation_config: None,
         };
         registry.register_defaults(None);
         registry
@@ -42,6 +46,8 @@ impl ToolRegistryService {
             default_timeout: Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS),
             permission_config: None,
             command_registry: RwLock::new(None),
+            mcp_registry: RwLock::new(None),
+            truncation_config: None,
         };
         registry.register_defaults(Some(session_service));
         registry
@@ -53,6 +59,8 @@ impl ToolRegistryService {
             default_timeout: Duration::from_secs(timeout_secs),
             permission_config: None,
             command_registry: RwLock::new(None),
+            mcp_registry: RwLock::new(None),
+            truncation_config: None,
         };
         registry.register_defaults(None);
         registry
@@ -65,6 +73,8 @@ impl ToolRegistryService {
             default_timeout: Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS),
             permission_config: Some(permission_config),
             command_registry: RwLock::new(None),
+            mcp_registry: RwLock::new(None),
+            truncation_config: None,
         };
         registry.register_defaults(None);
         registry
@@ -84,6 +94,8 @@ impl ToolRegistryService {
             default_timeout: Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS),
             permission_config: None,
             command_registry: RwLock::new(None),
+            mcp_registry: RwLock::new(None),
+            truncation_config: None,
         });
         registry.register_defaults(Some(session_service));
         registry.register(Arc::new(super::batch::BatchTool::new(Arc::clone(&registry))));
@@ -96,6 +108,7 @@ impl ToolRegistryService {
         self.register(Arc::new(super::read::ReadTool::new()));
         self.register(Arc::new(super::write::WriteTool::new()));
         self.register(Arc::new(super::edit::EditTool::new()));
+        self.register(Arc::new(super::multiedit::MultieditTool::new()));
         self.register(Arc::new(super::glob::GlobTool::new()));
         self.register(Arc::new(super::grep::GrepTool::new()));
         
@@ -182,9 +195,34 @@ impl ToolRegistryService {
         self.command_registry.read().clone()
     }
 
-    /// Register the MCP tool adapter with the given MCP server registry
+    /// Register the MCP tool adapter with the given MCP server registry.
+    /// 
+    /// Also stores the MCP registry reference for dynamic tool registration.
+    /// The old "mcp" adapter is kept for backward compatibility.
     pub fn register_mcp_tool(&self, mcp_registry: Arc<rcode_mcp::McpServerRegistry>) {
+        *self.mcp_registry.write() = Some(Arc::clone(&mcp_registry));
         self.register(Arc::new(super::mcp_tool::McpToolAdapter::new(mcp_registry)));
+    }
+
+    /// Get the MCP server registry if configured.
+    pub fn get_mcp_registry(&self) -> Option<Arc<rcode_mcp::McpServerRegistry>> {
+        self.mcp_registry.read().clone()
+    }
+
+    /// Unregister all tools whose IDs start with the given prefix.
+    /// 
+    /// Returns the number of tools unregistered.
+    pub fn unregister_by_prefix(&self, prefix: &str) -> usize {
+        let mut tools = self.tools.write();
+        let keys_to_remove: Vec<String> = tools.keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect();
+        let count = keys_to_remove.len();
+        for key in keys_to_remove {
+            tools.remove(&key);
+        }
+        count
     }
 
     /// Replace the TaskTool with a custom implementation
@@ -194,6 +232,14 @@ impl ToolRegistryService {
     pub fn set_task_tool(&self, task_tool: super::task::TaskTool) {
         let new_tool: Arc<dyn Tool> = Arc::new(task_tool);
         self.register(new_tool);
+    }
+
+    /// Set the truncation configuration for tool output truncation.
+    /// 
+    /// When configured, tool outputs exceeding the limit will be truncated
+    /// with the full output written to a temp file and a preview returned.
+    pub fn set_truncation_config(&mut self, config: super::truncate::TruncationConfig) {
+        self.truncation_config = Some(config);
     }
 
     pub async fn execute(
@@ -231,7 +277,42 @@ impl ToolRegistryService {
         ).await;
         
         match result {
-            Ok(Ok(tool_result)) => Ok(tool_result),
+            Ok(Ok(tool_result)) => {
+                // Apply truncation if configured
+                let final_result = if let Some(ref config) = self.truncation_config {
+                    let truncation_result = super::truncate::truncate_output(
+                        &tool_result.content,
+                        config,
+                        &context.session_id,
+                        tool_id,
+                    );
+                    
+                    match truncation_result {
+                        super::truncate::TruncationResult::NotTruncated { content: _ } => {
+                            // Content unchanged, return as-is
+                            tool_result
+                        }
+                        super::truncate::TruncationResult::Truncated { preview, output_path, total_bytes } => {
+                            // Build truncation metadata
+                            let mut metadata = tool_result.metadata.unwrap_or(serde_json::json!({}));
+                            metadata["truncated"] = serde_json::json!(true);
+                            metadata["truncation"] = serde_json::json!({
+                                "output_path": output_path.to_string_lossy(),
+                                "total_bytes": total_bytes,
+                            });
+                            
+                            ToolResult {
+                                content: preview,
+                                metadata: Some(metadata),
+                                ..tool_result
+                            }
+                        }
+                    }
+                } else {
+                    tool_result
+                };
+                Ok(final_result)
+            }
             Ok(Err(e)) => Err(RCodeError::Tool(
                 format!("Tool '{}' execution failed: {}", tool_id, e)
             )),
@@ -600,5 +681,119 @@ mod tests {
         let err = result.unwrap_err();
         // Timeout error should be in the message
         assert!(err.to_string().to_lowercase().contains("timeout") || err.to_string().contains("1"));
+    }
+
+    // ========================================================================
+    // MCP individual tools tests
+    // ========================================================================
+
+    #[test]
+    fn test_get_mcp_registry_initially_none() {
+        let registry = ToolRegistryService::new();
+        // Initially no MCP registry configured
+        assert!(registry.get_mcp_registry().is_none());
+    }
+
+    #[test]
+    fn test_register_mcp_tool_sets_registry() {
+        use rcode_mcp::McpServerRegistry;
+        let registry = ToolRegistryService::new();
+        let mcp_registry = Arc::new(McpServerRegistry::new());
+        registry.register_mcp_tool(mcp_registry.clone());
+        // After registering, get_mcp_registry should return Some
+        let retrieved = registry.get_mcp_registry();
+        assert!(retrieved.is_some());
+    }
+
+    #[test]
+    fn test_unregister_by_prefix_empty_registry() {
+        let registry = ToolRegistryService::new();
+        // Unregistering from empty registry returns 0
+        let count = registry.unregister_by_prefix("mcp/exa/");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_unregister_by_prefix_removes_tools() {
+        use rcode_mcp::McpServerRegistry;
+        let registry = ToolRegistryService::new();
+        let mcp_registry = Arc::new(McpServerRegistry::new());
+        registry.register_mcp_tool(mcp_registry);
+
+        // Create a mock MCP tool bridge and register it
+        struct MockMcpTool {
+            id: String,
+        }
+        impl MockMcpTool {
+            fn new(server: &str, tool: &str) -> Self {
+                Self {
+                    id: format!("mcp/{}/{}", server, tool),
+                }
+            }
+        }
+        #[async_trait::async_trait]
+        impl rcode_core::Tool for MockMcpTool {
+            fn id(&self) -> &str { &self.id }
+            fn name(&self) -> &str { "mock" }
+            fn description(&self) -> &str { "mock tool" }
+            fn parameters(&self) -> serde_json::Value { serde_json::json!({}) }
+            async fn execute(&self, _: serde_json::Value, _: &rcode_core::ToolContext) -> rcode_core::error::Result<rcode_core::ToolResult> {
+                Ok(rcode_core::ToolResult {
+                    title: "ok".into(),
+                    content: "ok".into(),
+                    metadata: None,
+                    attachments: vec![],
+                })
+            }
+        }
+
+        // Register mock MCP tools for "exa" server
+        registry.register(Arc::new(MockMcpTool::new("exa", "search")));
+        registry.register(Arc::new(MockMcpTool::new("exa", "crawl")));
+        // Register mock MCP tool for "filesystem" server
+        registry.register(Arc::new(MockMcpTool::new("filesystem", "read")));
+
+        // Verify tools are registered
+        assert!(registry.get("mcp/exa/search").is_some());
+        assert!(registry.get("mcp/exa/crawl").is_some());
+        assert!(registry.get("mcp/filesystem/read").is_some());
+
+        // Unregister all tools for "exa" server
+        let count = registry.unregister_by_prefix("mcp/exa/");
+        assert_eq!(count, 2);
+
+        // exa tools should be gone
+        assert!(registry.get("mcp/exa/search").is_none());
+        assert!(registry.get("mcp/exa/crawl").is_none());
+        // filesystem tool should remain
+        assert!(registry.get("mcp/filesystem/read").is_some());
+    }
+
+    #[test]
+    fn test_unregister_by_prefix_does_not_affect_non_mcp_tools() {
+        let registry = ToolRegistryService::new();
+        // Register a non-MCP tool
+        struct DummyTool;
+        #[async_trait::async_trait]
+        impl rcode_core::Tool for DummyTool {
+            fn id(&self) -> &str { "dummy" }
+            fn name(&self) -> &str { "Dummy" }
+            fn description(&self) -> &str { "A dummy tool" }
+            fn parameters(&self) -> serde_json::Value { serde_json::json!({}) }
+            async fn execute(&self, _: serde_json::Value, _: &rcode_core::ToolContext) -> rcode_core::error::Result<rcode_core::ToolResult> {
+                Ok(rcode_core::ToolResult {
+                    title: "ok".into(),
+                    content: "ok".into(),
+                    metadata: None,
+                    attachments: vec![],
+                })
+            }
+        }
+        registry.register(Arc::new(DummyTool));
+
+        // Unregister with MCP prefix should not affect dummy
+        let count = registry.unregister_by_prefix("mcp/exa/");
+        assert_eq!(count, 0);
+        assert!(registry.get("dummy").is_some());
     }
 }

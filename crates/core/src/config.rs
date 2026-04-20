@@ -107,7 +107,43 @@ pub struct RcodeConfig {
     /// Empty rules list means all tools are allowed (backward compatible).
     #[serde(rename = "permissions", default)]
     pub permissions: Option<crate::permission::PermissionRulesConfig>,
+
+    /// Tools configuration including truncation settings
+    #[serde(rename = "tools", default)]
+    pub tools: Option<ToolsConfig>,
 }
+
+/// Tools configuration including truncation settings
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+pub struct ToolsConfig {
+    /// Truncation configuration for tool outputs
+    #[serde(default)]
+    pub truncation: Option<TruncationConfig>,
+}
+
+/// Truncation configuration for tool outputs
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TruncationConfig {
+    /// Maximum bytes before truncating tool output (default 50KB)
+    #[serde(default = "default_max_output_bytes")]
+    pub max_bytes: usize,
+    
+    /// Number of characters to include in preview (default 2000)
+    #[serde(default = "default_preview_chars")]
+    pub preview_chars: usize,
+    
+    /// Directory to store truncated output files
+    /// Defaults to system temp dir / rcode-truncation
+    #[serde(default)]
+    pub truncation_dir: Option<String>,
+    
+    /// Per-tool truncation overrides (tool_id -> max_bytes)
+    #[serde(default)]
+    pub tool_overrides: Option<std::collections::HashMap<String, usize>>,
+}
+
+fn default_max_output_bytes() -> usize { 50 * 1024 }
+fn default_preview_chars() -> usize { 2000 }
 
 /// LSP server configuration for a specific language
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
