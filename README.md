@@ -145,11 +145,6 @@ RCode searches for configuration files in this order:
       "api_key": "${OPENAI_API_KEY}"
     }
   },
-  "lsp": {
-    "rust": {
-      "command": "rust-analyzer"
-    }
-  },
   "server": {
     "port": 4096
   }
@@ -261,7 +256,6 @@ RCode's default tool registry includes approximately 20 built-in tools:
 
 Additional tools are available via integration:
 - **MCP** — Access tools from Model Context Protocol servers
-- **LSP** — Language Server Protocol operations (configured via `lsp` in config)
 
 ## Testing
 

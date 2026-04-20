@@ -145,11 +145,6 @@ RCode busca archivos de configuración en este orden:
       "api_key": "${OPENAI_API_KEY}"
     }
   },
-  "lsp": {
-    "rust": {
-      "command": "rust-analyzer"
-    }
-  },
   "server": {
     "port": 4096
   }
@@ -261,7 +256,6 @@ El registro de herramientas por defecto de RCode incluye aproximadamente 20 herr
 
 Herramientas adicionales disponibles mediante integración:
 - **MCP** — Acceder a herramientas de servidores Model Context Protocol
-- **LSP** — Operaciones del Language Server Protocol (configurado vía `lsp` en la configuración)
 
 ## Pruebas
 
