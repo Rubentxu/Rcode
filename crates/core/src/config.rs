@@ -101,6 +101,12 @@ pub struct RcodeConfig {
 
     #[serde(default)]
     pub lsp: Option<HashMap<String, LspServerConfig>>,
+
+    /// Permission rules for declarative tool access control.
+    /// Rules are evaluated in order, last matching rule wins (iptables-style).
+    /// Empty rules list means all tools are allowed (backward compatible).
+    #[serde(rename = "permissions", default)]
+    pub permissions: Option<crate::permission::PermissionRulesConfig>,
 }
 
 /// LSP server configuration for a specific language
@@ -1000,5 +1006,58 @@ mod tests {
         let models = provider.models.as_ref().unwrap();
         
         assert!(models.get("gpt-4o").unwrap().enabled.is_none());
+    }
+
+    #[test]
+    fn test_rcode_config_permission_rules_default_to_none() {
+        let config = RcodeConfig::default();
+        assert!(config.permissions.is_none());
+    }
+
+    #[test]
+    fn test_rcode_config_permission_rules_deserialization() {
+        let json = r#"{
+            "permissions": {
+                "rules": [
+                    { "tool": "bash", "pattern": "git push", "action": "deny" },
+                    { "tool": "bash", "pattern": "rm -rf", "action": "ask" },
+                    { "tool": "bash", "pattern": "ls", "action": "allow" }
+                ]
+            }
+        }"#;
+
+        let config: RcodeConfig = serde_json::from_str(json).unwrap();
+        
+        let permissions = config.permissions.unwrap();
+        assert_eq!(permissions.rules.len(), 3);
+        
+        // Check first rule
+        assert_eq!(permissions.rules[0].tool, "bash");
+        assert_eq!(permissions.rules[0].pattern, "git push");
+        assert_eq!(permissions.rules[0].action, crate::permission::PermissionRuleAction::Deny);
+        
+        // Check second rule
+        assert_eq!(permissions.rules[1].tool, "bash");
+        assert_eq!(permissions.rules[1].pattern, "rm -rf");
+        assert_eq!(permissions.rules[1].action, crate::permission::PermissionRuleAction::Ask);
+        
+        // Check third rule
+        assert_eq!(permissions.rules[2].tool, "bash");
+        assert_eq!(permissions.rules[2].pattern, "ls");
+        assert_eq!(permissions.rules[2].action, crate::permission::PermissionRuleAction::Allow);
+    }
+
+    #[test]
+    fn test_rcode_config_permission_rules_empty_rules_is_allowed() {
+        let json = r#"{
+            "permissions": {
+                "rules": []
+            }
+        }"#;
+
+        let config: RcodeConfig = serde_json::from_str(json).unwrap();
+        
+        let permissions = config.permissions.unwrap();
+        assert!(permissions.rules.is_empty());
     }
 }

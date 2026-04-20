@@ -28,6 +28,8 @@ urlencoding = "2"
 walkdir = "2"
 patch = "0.7"
 futures = "0.3"
+strsim = "0.11"
+similar = "2"
 
 [dev-dependencies]
 tempfile.workspace = true

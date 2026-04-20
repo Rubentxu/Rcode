@@ -17,11 +17,14 @@
 )]
 
 pub mod bash;
+pub mod bash_arity;
 pub mod batch;
 pub mod question;
 pub mod read;
 pub mod write;
 pub mod edit;
+pub mod edit_fuzzy;
+pub mod file_lock;
 pub mod glob;
 pub mod grep;
 pub mod task;

@@ -308,6 +308,429 @@ impl PermissionChecker {
     }
 }
 
+// =============================================================================
+// Permission Rules for declarative tool access control
+// =============================================================================
+
+/// Action to take when a permission rule matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionRuleAction {
+    /// Allow the action without prompting
+    #[serde(rename = "allow")]
+    Allow,
+    /// Prompt the user for confirmation before proceeding
+    #[serde(rename = "ask")]
+    Ask,
+    /// Deny the action unconditionally
+    #[default]
+    #[serde(rename = "deny")]
+    Deny,
+}
+
+impl From<PermissionRuleAction> for Permission {
+    fn from(action: PermissionRuleAction) -> Self {
+        match action {
+            PermissionRuleAction::Allow => Permission::Allow,
+            PermissionRuleAction::Ask => Permission::Ask,
+            PermissionRuleAction::Deny => Permission::Deny,
+        }
+    }
+}
+
+impl From<Permission> for PermissionRuleAction {
+    fn from(perm: Permission) -> Self {
+        match perm {
+            Permission::Allow => PermissionRuleAction::Allow,
+            Permission::Ask => PermissionRuleAction::Ask,
+            Permission::Deny => PermissionRuleAction::Deny,
+        }
+    }
+}
+
+/// A single permission rule for declarative tool access control.
+///
+/// Rules are matched using last-matching-wins precedence (like iptables).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PermissionRule {
+    /// The tool this rule applies to (e.g., "bash", "write", "edit", "read")
+    pub tool: String,
+    /// The pattern to match against.
+    /// For bash: command pattern (e.g., "git push", "rm -rf")
+    /// For write/edit: file path pattern (e.g., "/etc/**", "*.tmp")
+    pub pattern: String,
+    /// The action to take when this rule matches.
+    pub action: PermissionRuleAction,
+}
+
+impl PermissionRule {
+    /// Creates a new permission rule.
+    pub fn new(tool: impl Into<String>, pattern: impl Into<String>, action: PermissionRuleAction) -> Self {
+        Self {
+            tool: tool.into(),
+            pattern: pattern.into(),
+            action,
+        }
+    }
+
+    /// Check if this rule matches the given tool and arguments.
+    ///
+    /// For bash commands: matches if the command starts with the pattern
+    /// For write/edit: matches if the path contains the pattern
+    pub fn matches(&self, tool_name: &str, args: &serde_json::Value) -> bool {
+        if self.tool != tool_name {
+            return false;
+        }
+
+        match tool_name {
+            "bash" => {
+                if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
+                    let cmd_lower = cmd.to_lowercase();
+                    let pattern_lower = self.pattern.to_lowercase();
+                    cmd_lower.starts_with(&pattern_lower)
+                } else {
+                    false
+                }
+            }
+            "write" | "edit" => {
+                if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
+                    // Simple path matching - pattern can be a substring or glob
+                    self.pattern_match_path(path)
+                } else {
+                    false
+                }
+            }
+            _ => {
+                // For other tools, just check if the tool name matches
+                true
+            }
+        }
+    }
+
+    /// Simple path pattern matching.
+    /// Supports:
+    /// - Substring matching: "src" matches "/project/src/main.rs"
+    /// - Glob patterns: "*.tmp", "**/*.log"
+    fn pattern_match_path(&self, path: &str) -> bool {
+        let pattern = &self.pattern;
+        
+        // Exact substring match (case-insensitive)
+        if path.to_lowercase().contains(&pattern.to_lowercase()) {
+            return true;
+        }
+        
+        // Simple glob patterns
+        if let Some(ext) = pattern.strip_prefix("*.") {
+            // *.ext pattern
+            return path.to_lowercase().ends_with(&format!(".{}", ext.to_lowercase()));
+        }
+        
+        if pattern.ends_with("/**") {
+            // dir/** pattern - matches dir and all subdirectories
+            let dir = &pattern[..pattern.len() - 3];
+            return path.to_lowercase().starts_with(&dir.to_lowercase());
+        }
+        
+        if pattern.contains("/**/") {
+            // /**/中间目录/** pattern
+            let parts: Vec<&str> = pattern.split("/**/").collect();
+            if parts.len() == 2 {
+                let prefix = parts[0];
+                let suffix = parts[1];
+                return path.to_lowercase().starts_with(&prefix.to_lowercase())
+                    && path.to_lowercase().contains(&suffix.to_lowercase());
+            }
+        }
+        
+        false
+    }
+}
+
+/// Permission rules configuration for declarative access control.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct PermissionRulesConfig {
+    /// List of permission rules. Rules are evaluated in order, last matching rule wins.
+    #[serde(default)]
+    pub rules: Vec<PermissionRule>,
+}
+
+impl PermissionRulesConfig {
+    /// Creates a new empty permission rules config.
+    pub fn new() -> Self {
+        Self { rules: Vec::new() }
+    }
+
+    /// Creates a new permission rules config with the given rules.
+    pub fn with_rules(rules: Vec<PermissionRule>) -> Self {
+        Self { rules }
+    }
+
+    /// Check if the rules list is empty.
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+}
+
+/// Result of evaluating permission rules.
+#[derive(Debug, Clone)]
+pub enum PermissionRuleResult {
+    /// Action is allowed
+    Allow,
+    /// Action should prompt the user
+    Ask { message: String },
+    /// Action is denied
+    Deny { reason: String },
+}
+
+impl PermissionRuleResult {
+    /// Returns true if this result allows the action.
+    pub fn is_allowed(&self) -> bool {
+        matches!(self, PermissionRuleResult::Allow)
+    }
+
+    /// Returns true if this result asks for confirmation.
+    pub fn is_ask(&self) -> bool {
+        matches!(self, PermissionRuleResult::Ask { .. })
+    }
+
+    /// Returns true if this result denies the action.
+    pub fn is_deny(&self) -> bool {
+        matches!(self, PermissionRuleResult::Deny { .. })
+    }
+
+    /// Converts to PermissionResult for the permission service.
+    pub fn to_permission_result(&self) -> Result<bool, String> {
+        match self {
+            PermissionRuleResult::Allow => Ok(true),
+            PermissionRuleResult::Ask { message } => Err(message.clone()),
+            PermissionRuleResult::Deny { reason } => Err(reason.clone()),
+        }
+    }
+}
+
+/// Evaluates permission rules to determine the action for a tool call.
+///
+/// Rules are evaluated in order, last matching rule wins (iptables-style).
+/// Empty rules list means Allow (backward compatible).
+///
+/// # Arguments
+/// * `tool_name` - The name of the tool being called
+/// * `args` - The tool arguments (JSON)
+/// * `rules` - The list of permission rules to evaluate
+///
+/// # Returns
+/// The action to take based on the first matching rule, or Allow if no rules match.
+pub fn evaluate_rules(tool_name: &str, args: &serde_json::Value, rules: &[PermissionRule]) -> PermissionRuleResult {
+    if rules.is_empty() {
+        // Backward compatible: no rules means allow
+        return PermissionRuleResult::Allow;
+    }
+
+    let mut result = PermissionRuleResult::Allow;
+
+    for rule in rules {
+        if rule.matches(tool_name, args) {
+            result = match rule.action {
+                PermissionRuleAction::Allow => PermissionRuleResult::Allow,
+                PermissionRuleAction::Ask => {
+                    let message = build_ask_message(tool_name, args, &rule.pattern);
+                    PermissionRuleResult::Ask { message }
+                }
+                PermissionRuleAction::Deny => {
+                    let reason = format!("Blocked by rule: {} {}", rule.tool, rule.pattern);
+                    PermissionRuleResult::Deny { reason }
+                }
+            };
+        }
+    }
+
+    result
+}
+
+/// Builds the confirmation message for Ask actions.
+fn build_ask_message(tool_name: &str, args: &serde_json::Value, pattern: &str) -> String {
+    match tool_name {
+        "bash" => {
+            if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
+                format!("Command '{}' requires confirmation. Pattern rule: '{}'. Allow?", cmd, pattern)
+            } else {
+                format!("Tool '{}' requires confirmation. Allow?", tool_name)
+            }
+        }
+        "write" | "edit" => {
+            if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
+                format!("Writing to '{}' requires confirmation. Pattern rule: '{}'. Allow?", path, pattern)
+            } else {
+                format!("Tool '{}' requires confirmation. Allow?", tool_name)
+            }
+        }
+        _ => format!("Tool '{}' requires confirmation. Allow?", tool_name),
+    }
+}
+
+#[cfg(test)]
+mod permission_rules_tests {
+    use super::*;
+
+    #[test]
+    fn test_evaluate_rules_empty_is_allow() {
+        let result = evaluate_rules("bash", &serde_json::json!({"command": "ls"}), &[]);
+        assert!(matches!(result, PermissionRuleResult::Allow));
+    }
+
+    #[test]
+    fn test_evaluate_rules_first_match_wins() {
+        // With last-match-wins, even though git push matches first rule (Allow),
+        // it also matches the second rule (Deny), and last match wins
+        let rules = vec![
+            PermissionRule::new("bash", "git push", PermissionRuleAction::Allow),
+            PermissionRule::new("bash", "git", PermissionRuleAction::Deny),
+        ];
+        
+        // git push matches BOTH rules (git push and git), last one wins (Deny)
+        let result = evaluate_rules("bash", &serde_json::json!({"command": "git push origin main"}), &rules);
+        assert!(matches!(result, PermissionRuleResult::Deny { .. }));
+    }
+
+    #[test]
+    fn test_evaluate_rules_last_match_wins() {
+        let rules = vec![
+            PermissionRule::new("bash", "git", PermissionRuleAction::Allow),
+            PermissionRule::new("bash", "git push", PermissionRuleAction::Deny),
+        ];
+        
+        // git push matches both rules, but last one wins (Deny)
+        let result = evaluate_rules("bash", &serde_json::json!({"command": "git push origin main"}), &rules);
+        assert!(matches!(result, PermissionRuleResult::Deny { .. }));
+    }
+
+    #[test]
+    fn test_evaluate_rules_no_match_is_allow() {
+        let rules = vec![
+            PermissionRule::new("bash", "git push", PermissionRuleAction::Deny),
+        ];
+        
+        // ls doesn't match any rule, so Allow
+        let result = evaluate_rules("bash", &serde_json::json!({"command": "ls -la"}), &rules);
+        assert!(matches!(result, PermissionRuleResult::Allow));
+    }
+
+    #[test]
+    fn test_evaluate_rules_deny_message() {
+        let rules = vec![
+            PermissionRule::new("bash", "rm -rf", PermissionRuleAction::Deny),
+        ];
+        
+        let result = evaluate_rules("bash", &serde_json::json!({"command": "rm -rf /tmp/build"}), &rules);
+        assert!(matches!(result, PermissionRuleResult::Deny { reason } if reason.contains("rm -rf")));
+    }
+
+    #[test]
+    fn test_evaluate_rules_ask_message() {
+        let rules = vec![
+            PermissionRule::new("bash", "docker rm", PermissionRuleAction::Ask),
+        ];
+        
+        let result = evaluate_rules("bash", &serde_json::json!({"command": "docker rm container_id"}), &rules);
+        match result {
+            PermissionRuleResult::Ask { message } => {
+                assert!(message.contains("docker rm"));
+            }
+            _ => panic!("Expected Ask result"),
+        }
+    }
+
+    #[test]
+    fn test_permission_rule_matches_bash() {
+        let rule = PermissionRule::new("bash", "git push", PermissionRuleAction::Deny);
+        
+        assert!(rule.matches("bash", &serde_json::json!({"command": "git push origin main"})));
+        assert!(rule.matches("bash", &serde_json::json!({"command": "GIT PUSH --force origin"})));
+        assert!(!rule.matches("bash", &serde_json::json!({"command": "git status"})));
+        assert!(!rule.matches("read", &serde_json::json!({"path": "/tmp/file"})));
+    }
+
+    #[test]
+    fn test_permission_rule_matches_write_path() {
+        let rule = PermissionRule::new("write", "/etc/**", PermissionRuleAction::Deny);
+        
+        assert!(rule.matches("write", &serde_json::json!({"path": "/etc/passwd"})));
+        assert!(rule.matches("write", &serde_json::json!({"path": "/etc/nginx/nginx.conf"})));
+        assert!(!rule.matches("write", &serde_json::json!({"path": "/home/user/file.txt"})));
+    }
+
+    #[test]
+    fn test_permission_rule_matches_edit_glob() {
+        let rule = PermissionRule::new("edit", "*.tmp", PermissionRuleAction::Deny);
+        
+        assert!(rule.matches("edit", &serde_json::json!({"path": "file.tmp"})));
+        assert!(rule.matches("edit", &serde_json::json!({"path": "/tmp/file.tmp"})));
+        assert!(!rule.matches("edit", &serde_json::json!({"path": "file.txt"})));
+    }
+
+    #[test]
+    fn test_permission_rule_action_conversion() {
+        assert_eq!(Permission::Allow, PermissionRuleAction::Allow.into());
+        assert_eq!(Permission::Ask, PermissionRuleAction::Ask.into());
+        assert_eq!(Permission::Deny, PermissionRuleAction::Deny.into());
+        
+        assert_eq!(PermissionRuleAction::Allow, Permission::Allow.into());
+        assert_eq!(PermissionRuleAction::Ask, Permission::Ask.into());
+        assert_eq!(PermissionRuleAction::Deny, Permission::Deny.into());
+    }
+
+    #[test]
+    fn test_permission_rules_config_is_empty() {
+        let empty = PermissionRulesConfig::new();
+        assert!(empty.is_empty());
+        
+        let with_rules = PermissionRulesConfig::with_rules(vec![
+            PermissionRule::new("bash", "ls", PermissionRuleAction::Allow),
+        ]);
+        assert!(!with_rules.is_empty());
+    }
+
+    #[test]
+    fn test_permission_rule_result_helpers() {
+        let allow = PermissionRuleResult::Allow;
+        assert!(allow.is_allowed());
+        assert!(!allow.is_ask());
+        assert!(!allow.is_deny());
+        
+        let ask = PermissionRuleResult::Ask { message: "test".to_string() };
+        assert!(!ask.is_allowed());
+        assert!(ask.is_ask());
+        assert!(!ask.is_deny());
+        
+        let deny = PermissionRuleResult::Deny { reason: "test".to_string() };
+        assert!(!deny.is_allowed());
+        assert!(!deny.is_ask());
+        assert!(deny.is_deny());
+    }
+
+    #[test]
+    fn test_permission_rule_result_to_permission_result() {
+        let allow = PermissionRuleResult::Allow;
+        assert_eq!(allow.to_permission_result(), Ok(true));
+        
+        let deny = PermissionRuleResult::Deny { reason: "blocked".to_string() };
+        assert_eq!(deny.to_permission_result(), Err("blocked".to_string()));
+        
+        let ask = PermissionRuleResult::Ask { message: "confirm?".to_string() };
+        assert_eq!(ask.to_permission_result(), Err("confirm?".to_string()));
+    }
+
+    #[test]
+    fn test_evaluate_rules_write_path_matching() {
+        let rules = vec![
+            PermissionRule::new("write", "/etc", PermissionRuleAction::Deny),
+        ];
+        
+        let result = evaluate_rules("write", &serde_json::json!({"path": "/etc/passwd"}), &rules);
+        assert!(matches!(result, PermissionRuleResult::Deny { .. }));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

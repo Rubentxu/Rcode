@@ -43,6 +43,7 @@ pub use agent_loader::AgentLoader;
 pub use agent_registry::AgentRegistry;
 pub use auth::*;
 pub use command::*;
+#[allow(ambiguous_glob_reexports)]
 pub use config::*;
 pub use config_loader::*;
 pub use dynamic_agent::DynamicAgent;

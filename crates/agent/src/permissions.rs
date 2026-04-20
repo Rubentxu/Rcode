@@ -7,8 +7,9 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
-use rcode_core::permission::{Permission, PermissionRequest, PermissionResponse};
+use rcode_core::permission::{Permission, PermissionRequest, PermissionResponse, PermissionRulesConfig, PermissionRule, PermissionRuleResult, evaluate_rules};
 use rcode_event::{Event, EventBus};
+use rcode_tools::bash_arity::resolve_command_with_arity;
 
 #[allow(dead_code)]
 const PERMISSION_TIMEOUT: Duration = Duration::from_secs(60); // 60 seconds default
@@ -68,6 +69,99 @@ impl PermissionService for AutoPermissionService {
                 // Ask mode without interactive service: always deny
                 // (Interactive service should be used for actual prompts)
                 Ok(false)
+            }
+        }
+    }
+}
+
+/// Rule-based permission service that evaluates permission rules.
+///
+/// This service:
+/// 1. Evaluates permission rules for tool calls
+/// 2. For bash commands: uses arity-resolved pattern matching
+/// 3. Returns Allow, Deny, or Ask based on matching rules
+/// 4. Falls back to InteractivePermissionService for Ask actions
+pub struct RuleBasedPermissionService {
+    /// Permission rules to evaluate
+    rules: Vec<PermissionRule>,
+    /// Fallback service for Ask actions (typically InteractivePermissionService)
+    fallback: Option<Arc<dyn PermissionService>>,
+}
+
+impl RuleBasedPermissionService {
+    /// Creates a new RuleBasedPermissionService with the given rules.
+    pub fn new(rules: Vec<PermissionRule>) -> Self {
+        Self {
+            rules,
+            fallback: None,
+        }
+    }
+
+    /// Creates a new RuleBasedPermissionService from a PermissionRulesConfig.
+    pub fn from_config(config: &PermissionRulesConfig) -> Self {
+        Self {
+            rules: config.rules.clone(),
+            fallback: None,
+        }
+    }
+
+    /// Sets the fallback service for Ask actions.
+    pub fn with_fallback(mut self, fallback: Arc<dyn PermissionService>) -> Self {
+        self.fallback = Some(fallback);
+        self
+    }
+
+    /// Gets the permission rules.
+    pub fn rules(&self) -> &[PermissionRule] {
+        &self.rules
+    }
+
+    /// Evaluates permission rules for a tool call, returning the rule result.
+    ///
+    /// This method handles arity resolution for bash commands.
+    fn evaluate_request(&self, request: &PermissionRequest) -> PermissionRuleResult {
+        let tool_name = &request.tool_name;
+        let args = &request.tool_input;
+
+        // For bash commands, resolve arity and use the resolved command for pattern matching
+        if tool_name == "bash" {
+            if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
+                let (arity, resolved_cmd) = resolve_command_with_arity(cmd);
+                
+                // Create a modified args with the arity-resolved command
+                let resolved_args = if arity > 1 {
+                    serde_json::json!({
+                        "command": resolved_cmd
+                    })
+                } else {
+                    args.clone()
+                };
+                
+                return evaluate_rules(tool_name, &resolved_args, &self.rules);
+            }
+        }
+
+        // For non-bash tools, evaluate directly
+        evaluate_rules(tool_name, args, &self.rules)
+    }
+}
+
+#[async_trait::async_trait]
+impl PermissionService for RuleBasedPermissionService {
+    async fn check(&self, request: &PermissionRequest) -> Result<bool, String> {
+        let result = self.evaluate_request(request);
+        
+        match result {
+            PermissionRuleResult::Allow => Ok(true),
+            PermissionRuleResult::Deny { reason } => Err(reason),
+            PermissionRuleResult::Ask { message } => {
+                // If we have a fallback service, use it for Ask actions
+                if let Some(ref fallback) = self.fallback {
+                    fallback.check(request).await
+                } else {
+                    // No fallback configured - deny the request
+                    Err(message)
+                }
             }
         }
     }
@@ -312,6 +406,7 @@ impl PermissionService for InteractivePermissionService {
 mod tests {
     use super::*;
     use rcode_core::permission::PermissionRequest;
+    use rcode_core::PermissionRuleAction;
     use rcode_event::EventBus;
 
     // Helper to create a permission request
@@ -652,5 +747,218 @@ mod tests {
         let result = service.check(&request).await;
         assert!(result.is_ok());
         assert!(result.unwrap());
+    }
+
+    // ========== RuleBasedPermissionService tests ==========
+
+    #[tokio::test]
+    async fn test_rule_based_permission_allow_safe_command() {
+        use rcode_core::permission::{PermissionRule, PermissionRuleAction, PermissionRulesConfig};
+        
+        let rules = vec![
+            PermissionRule::new("bash", "ls", PermissionRuleAction::Allow),
+        ];
+        let service = RuleBasedPermissionService::new(rules);
+        
+        let request = make_request("bash");
+        let result = service.check(&request).await;
+        
+        assert!(result.is_ok());
+        assert!(result.unwrap()); // ls is allowed by the rule
+    }
+
+    #[tokio::test]
+    async fn test_rule_based_permission_deny_dangerous_command() {
+        use rcode_core::permission::{PermissionRule, PermissionRuleAction};
+        
+        let rules = vec![
+            PermissionRule::new("bash", "rm -rf", PermissionRuleAction::Deny),
+        ];
+        let service = RuleBasedPermissionService::new(rules);
+        
+        let request = PermissionRequest {
+            tool_name: "bash".to_string(),
+            tool_input: serde_json::json!({"command": "rm -rf /tmp/build"}),
+            reason: None,
+        };
+        let result = service.check(&request).await;
+        
+        assert!(result.is_err(), "rm -rf should be denied");
+        let err = result.unwrap_err();
+        assert!(err.contains("rm -rf"), "Error should mention the blocked pattern");
+    }
+
+    #[tokio::test]
+    async fn test_rule_based_permission_ask_without_fallback() {
+        use rcode_core::permission::PermissionRule;
+        
+        let rules = vec![
+            PermissionRule::new("bash", "docker rm", PermissionRuleAction::Ask),
+        ];
+        let service = RuleBasedPermissionService::new(rules);
+        
+        let request = PermissionRequest {
+            tool_name: "bash".to_string(),
+            tool_input: serde_json::json!({"command": "docker rm container_id"}),
+            reason: None,
+        };
+        let result = service.check(&request).await;
+        
+        // Without fallback, Ask returns Err (denied)
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_rule_based_permission_ask_with_fallback() {
+        use rcode_core::permission::{PermissionRule, PermissionRuleAction};
+        
+        let rules = vec![
+            PermissionRule::new("bash", "docker rm", PermissionRuleAction::Ask),
+        ];
+        let service = RuleBasedPermissionService::new(rules);
+        
+        // Create a fallback that always allows
+        let fallback = Arc::new(AutoPermissionService::allow());
+        let service = service.with_fallback(fallback);
+        
+        let request = PermissionRequest {
+            tool_name: "bash".to_string(),
+            tool_input: serde_json::json!({"command": "docker rm container_id"}),
+            reason: None,
+        };
+        let result = service.check(&request).await;
+        
+        // With fallback that allows, Ask should be allowed
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_rule_based_permission_last_match_wins() {
+        use rcode_core::permission::{PermissionRule, PermissionRuleAction};
+        
+        let rules = vec![
+            PermissionRule::new("bash", "git", PermissionRuleAction::Allow),
+            PermissionRule::new("bash", "git push", PermissionRuleAction::Deny),
+        ];
+        let service = RuleBasedPermissionService::new(rules);
+        
+        let request = PermissionRequest {
+            tool_name: "bash".to_string(),
+            tool_input: serde_json::json!({"command": "git push origin main"}),
+            reason: None,
+        };
+        let result = service.check(&request).await;
+        
+        // git push matches both rules, last one wins (Deny)
+        assert!(result.is_err(), "git push should be denied by last-match-wins rule");
+        assert!(result.unwrap_err().contains("git push"));
+    }
+
+    #[tokio::test]
+    async fn test_rule_based_permission_no_match_allow() {
+        use rcode_core::permission::{PermissionRule, PermissionRuleAction};
+        
+        // Empty rules = allow by default (backward compatible)
+        let rules = vec![
+            PermissionRule::new("bash", "git push", PermissionRuleAction::Deny),
+        ];
+        let service = RuleBasedPermissionService::new(rules);
+        
+        let request = PermissionRequest {
+            tool_name: "bash".to_string(),
+            tool_input: serde_json::json!({"command": "ls -la"}),
+            reason: None,
+        };
+        let result = service.check(&request).await;
+        
+        // ls doesn't match any rule, so allowed
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_rule_based_permission_empty_rules_allow() {
+        let rules = vec![];
+        let service = RuleBasedPermissionService::new(rules);
+        
+        let request = make_request("bash");
+        let result = service.check(&request).await;
+        
+        // Empty rules = allow (backward compatible)
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_rule_based_permission_write_path_matching() {
+        use rcode_core::permission::{PermissionRule, PermissionRuleAction};
+        
+        let rules = vec![
+            PermissionRule::new("write", "/etc/**", PermissionRuleAction::Deny),
+        ];
+        let service = RuleBasedPermissionService::new(rules);
+        
+        let request = PermissionRequest {
+            tool_name: "write".to_string(),
+            tool_input: serde_json::json!({"path": "/etc/passwd"}),
+            reason: None,
+        };
+        let result = service.check(&request).await;
+        
+        assert!(result.is_err(), "/etc/** should deny write to /etc/passwd");
+        assert!(result.unwrap_err().contains("/etc/**"), "Error should mention the blocked pattern");
+    }
+
+    #[tokio::test]
+    async fn test_rule_based_permission_edit_glob_matching() {
+        use rcode_core::permission::{PermissionRule, PermissionRuleAction};
+        
+        let rules = vec![
+            PermissionRule::new("edit", "*.tmp", PermissionRuleAction::Deny),
+        ];
+        let service = RuleBasedPermissionService::new(rules);
+        
+        let request = PermissionRequest {
+            tool_name: "edit".to_string(),
+            tool_input: serde_json::json!({"path": "file.tmp"}),
+            reason: None,
+        };
+        let result = service.check(&request).await;
+        
+        assert!(result.is_err(), "*.tmp should deny edit to file.tmp");
+    }
+
+    #[test]
+    fn test_rule_based_permission_from_config() {
+        use rcode_core::permission::{PermissionRule, PermissionRuleAction, PermissionRulesConfig};
+        
+        let config = PermissionRulesConfig::with_rules(vec![
+            PermissionRule::new("bash", "git push", PermissionRuleAction::Deny),
+        ]);
+        let service = RuleBasedPermissionService::from_config(&config);
+        
+        assert_eq!(service.rules().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_rule_based_permission_non_bash_tool() {
+        use rcode_core::permission::PermissionRule;
+        
+        let rules = vec![
+            PermissionRule::new("read", "/etc/**", PermissionRuleAction::Deny),
+        ];
+        let service = RuleBasedPermissionService::new(rules);
+        
+        let request = PermissionRequest {
+            tool_name: "read".to_string(),
+            tool_input: serde_json::json!({"path": "/etc/passwd"}),
+            reason: None,
+        };
+        let result = service.check(&request).await;
+        
+        // Non-bash tools just check if rule.tool matches (no arity resolution)
+        assert!(result.is_err(), "/etc/** should deny read to /etc/passwd");
+        assert!(result.unwrap_err().contains("/etc/**"), "Error should mention the blocked pattern");
     }
 }

@@ -117,7 +117,7 @@ pub struct AgentExecutorBuilder {
     max_messages_before_compact: usize,
     messages_to_keep_after_compact: usize,
     privacy: Option<rcode_privacy::service::PrivacyService>,
-    intelligence_snapshot: Option<Arc<parking_lot::RwLock<rcode_cognicode::snapshot::IntelligenceSnapshot>>>,
+    intelligence_xml_provider: Option<Arc<dyn Fn() -> String + Send + Sync>>,
 }
 
 impl AgentExecutorBuilder {
@@ -137,7 +137,7 @@ impl AgentExecutorBuilder {
             max_messages_before_compact: 50,
             messages_to_keep_after_compact: 20,
             privacy: None,
-            intelligence_snapshot: None,
+            intelligence_xml_provider: None,
         }
     }
     
@@ -243,13 +243,13 @@ impl AgentExecutorBuilder {
             max_messages_before_compact: self.max_messages_before_compact,
             messages_to_keep_after_compact: self.messages_to_keep_after_compact,
             privacy: self.privacy,
-            intelligence_snapshot: self.intelligence_snapshot,
+            intelligence_xml_provider: self.intelligence_xml_provider,
         }
     }
     
-    /// Set the CogniCode intelligence snapshot for proactive context injection
-    pub fn with_intelligence_snapshot(mut self, snapshot: Arc<parking_lot::RwLock<rcode_cognicode::snapshot::IntelligenceSnapshot>>) -> Self {
-        self.intelligence_snapshot = Some(snapshot);
+    /// Set the CogniCode intelligence XML provider for proactive context injection
+    pub fn with_intelligence_xml_provider(mut self, provider: Arc<dyn Fn() -> String + Send + Sync>) -> Self {
+        self.intelligence_xml_provider = Some(provider);
         self
     }
 }
@@ -269,7 +269,7 @@ pub struct AgentExecutor {
     max_messages_before_compact: usize,
     messages_to_keep_after_compact: usize,
     privacy: Option<rcode_privacy::service::PrivacyService>,
-    intelligence_snapshot: Option<Arc<parking_lot::RwLock<rcode_cognicode::snapshot::IntelligenceSnapshot>>>,
+    intelligence_xml_provider: Option<Arc<dyn Fn() -> String + Send + Sync>>,
 }
 
 impl AgentExecutor {
@@ -299,7 +299,7 @@ impl AgentExecutor {
             max_messages_before_compact: 50,
             messages_to_keep_after_compact: 20,
             privacy: None,
-            intelligence_snapshot: None,
+            intelligence_xml_provider: None,
         }
     }
 
@@ -339,9 +339,9 @@ impl AgentExecutor {
         self
     }
 
-    /// Set the CogniCode intelligence snapshot for proactive context injection
-    pub fn with_intelligence_snapshot(mut self, snapshot: Arc<parking_lot::RwLock<rcode_cognicode::snapshot::IntelligenceSnapshot>>) -> Self {
-        self.intelligence_snapshot = Some(snapshot);
+    /// Set the CogniCode intelligence XML provider for proactive context injection
+    pub fn with_intelligence_xml_provider(mut self, provider: Arc<dyn Fn() -> String + Send + Sync>) -> Self {
+        self.intelligence_xml_provider = Some(provider);
         self
     }
 
@@ -548,9 +548,9 @@ impl AgentExecutor {
         };
 
         // Inject workspace context header before the agent's system prompt
-        let intelligence_xml = self.intelligence_snapshot
+        let intelligence_xml = self.intelligence_xml_provider
             .as_ref()
-            .map(|snap| snap.read().to_xml())
+            .map(|provider| provider())
             .unwrap_or_default();
         let workspace_context = build_workspace_context_sync(ctx, &intelligence_xml);
         let system_prompt = format!("{}\n\n{}", workspace_context, agent_prompt);
