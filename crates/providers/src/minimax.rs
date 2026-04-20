@@ -145,7 +145,8 @@ mod tests {
         // Verify message content
         assert_eq!(body.messages.len(), 1);
         assert_eq!(body.messages[0].role, "user");
-        assert_eq!(body.messages[0].content, Some("Hello".to_string()));
+        let json = serde_json::to_string(&body.messages[0]).unwrap();
+        assert!(json.contains(r#""content":"Hello""#));
     }
 
     /// Test that MiniMax provider correctly serializes tool-call requests.
@@ -338,7 +339,8 @@ mod tests {
 
         // Message 1: User text
         assert_eq!(body.messages[0].role, "user");
-        assert_eq!(body.messages[0].content, Some("Run pwd".to_string()));
+        let json0 = serde_json::to_string(&body.messages[0]).unwrap();
+        assert!(json0.contains(r#""content":"Run pwd""#));
         assert!(body.messages[0].tool_calls.is_none());
 
         // Message 2: Assistant with tool_call (should use tool_calls array, not content)
@@ -353,12 +355,14 @@ mod tests {
 
         // Message 3: Tool result (should have role="tool", tool_call_id)
         assert_eq!(body.messages[2].role, "tool");
-        assert_eq!(body.messages[2].content, Some("/home/rubentxu".to_string()));
+        let json2 = serde_json::to_string(&body.messages[2]).unwrap();
+        assert!(json2.contains(r#""content":"/home/rubentxu""#));
         assert_eq!(body.messages[2].tool_call_id, Some("call_1".to_string()));
 
         // Message 4: Assistant text
         assert_eq!(body.messages[3].role, "assistant");
-        assert_eq!(body.messages[3].content, Some("You're in /home/rubentxu".to_string()));
+        let json3 = serde_json::to_string(&body.messages[3]).unwrap();
+        assert!(json3.contains(r#""content":"You're in /home/rubentxu""#));
 
         // Verify tools are included
         assert!(body.tools.is_some());

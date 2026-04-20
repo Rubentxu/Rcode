@@ -171,7 +171,8 @@ mod tests {
         // Verify message content
         assert_eq!(body.messages.len(), 1);
         assert_eq!(body.messages[0].role, "user");
-        assert_eq!(body.messages[0].content, Some("Hello".to_string()));
+        let json = serde_json::to_string(&body.messages[0]).unwrap();
+        assert!(json.contains(r#""content":"Hello""#));
     }
 
     /// Test that ZAI provider correctly serializes tool-call requests.

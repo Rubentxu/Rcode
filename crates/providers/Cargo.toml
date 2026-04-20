@@ -18,3 +18,4 @@ async-trait = "0.1"
 uuid.workspace = true
 chrono.workspace = true
 tokio-util.workspace = true
+base64 = "0.22"
