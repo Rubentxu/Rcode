@@ -5,16 +5,19 @@ interface StreamingToolCallCardProps {
   name: string;
   arguments_delta: string;
   status: "running" | "completed";
+  // MEDIUM 2: MCP source badge - flows through streaming path
+  source?: string;
 }
 
 /**
- * Streaming tool call card - inline icon + name + status.
+ * Streaming tool call card - inline icon + name + status + optional MCP badge.
  */
 export const StreamingToolCallCard: Component<StreamingToolCallCardProps> = (props) => {
   return (
-    <div 
+    <div
       data-component="streaming-tool-call-card"
       data-status={props.status}
+      data-source={props.source}
       class="inline-flex items-center gap-1.5"
     >
       <Show
@@ -29,10 +32,20 @@ export const StreamingToolCallCard: Component<StreamingToolCallCardProps> = (pro
           </svg>
         </span>
       </Show>
-      
+
       <span class="text-xs font-medium text-outline">
         {props.name}
       </span>
+
+      {/* MEDIUM 2: MCP source badge - shows server name when tool is from MCP */}
+      <Show when={props.source}>
+        <span
+          class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-200/50 text-violet-700"
+          title={`Source: ${props.source}`}
+        >
+          {props.source}
+        </span>
+      </Show>
     </div>
   );
 };

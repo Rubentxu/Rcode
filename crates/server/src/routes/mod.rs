@@ -14,6 +14,7 @@ use rcode_session::ProjectService;
 use std::sync::Arc;
 use std::path::{Path as FsPath, PathBuf};
 use serde::{Deserialize, Serialize};
+use base64::{Engine as _,};
 use uuid::Uuid;
 
 use crate::state::AppState;
@@ -521,7 +522,7 @@ pub async fn submit_prompt(
     Json(req): Json<PromptRequest>,
 ) -> Result<Json<PromptResponse>, ServerError> {
     let request_id = Uuid::new_v4().to_string();
-    info!(session_id = %id, prompt_len = req.prompt.len(), requested_model = ?req.model_id, "submit prompt received");
+    info!(session_id = %id, prompt_len = req.prompt.len(), requested_model = ?req.model_id, attachment_count = req.attachments.len(), "submit prompt received");
     info!(session_id = %id, request_id = %request_id, "assigned prompt request id");
 
     // T4: Check for concurrent prompt — reject if session already has active executor run
@@ -804,9 +805,28 @@ pub async fn submit_prompt(
     info!(session_id = %id, request_id = %request_id, effective_model = %effective_model, pre_existing_count, "prompt accepted and provider configured");
 
     // safe_prompt was already computed before config was locked
-    let message = Message::user(id.clone(), vec![Part::Text {
+    // Build message parts: text part + attachment parts
+    let mut parts = vec![Part::Text {
         content: safe_prompt.clone(),
-    }]);
+    }];
+
+    // Decode base64 attachments into Part::Attachment
+    for attachment in &req.attachments {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&attachment.content)
+            .map_err(|e| {
+                error!(session_id = %id, request_id = %request_id, error = %e, "failed to decode attachment base64");
+                ServerError::bad_request(format!("invalid attachment content: {}", e))
+            })?;
+        parts.push(Part::Attachment {
+            id: attachment.id.clone(),
+            name: attachment.name.clone(),
+            mime_type: attachment.mime_type.clone(),
+            content: bytes,
+        });
+    }
+
+    let message = Message::user(id.clone(), parts);
     state.session_service.add_message(&id, message.clone());
     
     // T3: If this is the first message in the session, spawn async title generation
@@ -1073,11 +1093,26 @@ pub async fn submit_prompt(
     }))
 }
 
+/// Attachment included in a prompt request.
+/// The content field is base64-encoded bytes, matching the wire format used by the frontend.
+#[derive(Debug, Deserialize)]
+pub struct PromptAttachment {
+    pub id: String,
+    pub name: String,
+    pub mime_type: String,
+    /// Base64-encoded binary content
+    pub content: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PromptRequest {
     pub prompt: String,
     #[serde(default)]
     pub model_id: Option<String>,
+    /// Optional file attachments sent alongside the prompt.
+    /// Each attachment is decoded from base64 and stored as a Part::Attachment.
+    #[serde(default)]
+    pub attachments: Vec<PromptAttachment>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2439,5 +2474,50 @@ mod tests {
         .await;
 
         assert!(result.is_err(), "Should return error for nonexistent session");
+    }
+
+    // ========== PromptRequest / PromptAttachment Tests ==========
+
+    #[test]
+    fn prompt_request_deserializes_without_attachments() {
+        use super::PromptRequest;
+        let json = r#"{"prompt": "hello world"}"#;
+        let req: PromptRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.prompt, "hello world");
+        assert!(req.model_id.is_none());
+        assert!(req.attachments.is_empty());
+    }
+
+    #[test]
+    fn prompt_request_deserializes_with_model_id() {
+        use super::PromptRequest;
+        let json = r#"{"prompt": "hello", "model_id": "claude-sonnet-4-5"}"#;
+        let req: PromptRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.prompt, "hello");
+        assert_eq!(req.model_id, Some("claude-sonnet-4-5".to_string()));
+        assert!(req.attachments.is_empty());
+    }
+
+    #[test]
+    fn prompt_request_deserializes_with_attachments() {
+        use super::PromptRequest;
+        // "hello" in base64 is "aGVsbG8="
+        let json = r#"{"prompt": "hello", "attachments": [{"id": "att-1", "name": "test.png", "mime_type": "image/png", "content": "aGVsbG8="}]}"#;
+        let req: PromptRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.prompt, "hello");
+        assert_eq!(req.attachments.len(), 1);
+        assert_eq!(req.attachments[0].id, "att-1");
+        assert_eq!(req.attachments[0].name, "test.png");
+        assert_eq!(req.attachments[0].mime_type, "image/png");
+        assert_eq!(req.attachments[0].content, "aGVsbG8=");
+    }
+
+    #[test]
+    fn prompt_attachment_base64_decodes_correctly() {
+        use base64::Engine as _;
+        // "hello" in base64 is "aGVsbG8="
+        let encoded = "aGVsbG8=";
+        let decoded = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+        assert_eq!(decoded, b"hello");
     }
 }

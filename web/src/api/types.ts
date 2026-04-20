@@ -143,12 +143,15 @@ export interface CompactionRecord {
 }
 
 // Phase 3: Diff chunk SSE event
+// CRITICAL 3: Backend may send either `done` or `is_final` - we support both defensively
 export interface SSEDiffChunkEvent {
   type: "diff_chunk";
   session_id: string;
   diff_id: string;
   content: string;
-  done: boolean;
+  // Support both field names - spec says `is_final`, implementation uses `done`
+  done?: boolean;
+  is_final?: boolean;
 }
 
 // Phase 3: New semantic SSE event types

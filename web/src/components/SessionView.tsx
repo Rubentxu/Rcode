@@ -1,4 +1,4 @@
-import { For, Show, Switch, Match, createSignal, onCleanup, createEffect, createMemo } from "solid-js";
+import { For, Show, Switch, Match, createSignal, onCleanup, createEffect, createMemo, on } from "solid-js";
 import type { Session } from "../stores";
 import type { Message, MessagePart, SSEPermissionRequestedEvent, SSECompactionPerformedEvent, CompactionRecord, SSEDiffChunkEvent } from "../api/types";
 import { createSSEClient, type SSEClient } from "../api/sse";
@@ -94,6 +94,14 @@ export default function SessionView(props: SessionViewProps) {
 
   // Phase 1: Compaction records for the current session
   const [compactionRecords, setCompactionRecords] = createSignal<CompactionRecord[]>([]);
+
+  // MEDIUM 1 FIX: Clear permission queue when session changes to prevent stale permissions
+  createEffect(on(() => props.session.id, (_newId, _prevId) => {
+    if (_prevId !== undefined && _prevId !== _newId) {
+      console.debug("[SessionView] Session changed, clearing permission queue");
+      setPermissionQueue([]);
+    }
+  }));
 
   // Phase 3: Ref to hold the diff chunk handler registered by IncrementalDiffViewer
   let diffChunkHandlerRef: ((diffId: string, content: string, done: boolean) => void) | null = null;
@@ -427,10 +435,13 @@ export default function SessionView(props: SessionViewProps) {
         }
       },
       // Phase 3: Diff chunk callback - forward to IncrementalDiffViewer via ref
+      // CRITICAL 3: Handle both `done` (current impl) and `is_final` (spec) defensively
       onDiffChunk: (event: SSEDiffChunkEvent) => {
         console.info("Diff chunk received:", event);
         if (event.session_id === sessionId && diffChunkHandlerRef) {
-          diffChunkHandlerRef(event.diff_id, event.content, event.done);
+          // Support both done and is_final - prefer is_final if present, fall back to done
+          const isDone = event.is_final ?? event.done ?? false;
+          diffChunkHandlerRef(event.diff_id, event.content, isDone);
         }
       },
     });
@@ -836,6 +847,7 @@ export default function SessionView(props: SessionViewProps) {
 
         {/* Phase 3: Incremental diff viewer for streaming diff chunks */}
         <IncrementalDiffViewer
+          sessionId={props.session.id}
           onRegisterChunkHandler={(handler) => {
             diffChunkHandlerRef = handler;
           }}
@@ -1012,11 +1024,12 @@ function DraftPartRenderer(props: { part: DraftPart }) {
   
   if (partType === "tool_call") {
     return (
-      <StreamingToolCallCard 
+      <StreamingToolCallCard
         id={props.part.id}
         name={props.part.name}
         arguments_delta={props.part.arguments_delta}
         status={props.part.status}
+        source={props.part.source}
       />
     );
   }

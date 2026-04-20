@@ -229,29 +229,59 @@ export default function App() {
     }
   };
 
-  const submitPrompt = async (prompt: string) => {
+  const submitPrompt = async (prompt: string, _attachments?: import("./api/types").PendingAttachment[]) => {
     const sessionId = workspace.activeSessionId();
     if (!sessionId || !prompt.trim()) return;
 
     const session = workspace.sessions().find(s => s.id === sessionId);
     if (!session) return;
 
+    // Convert PendingAttachment File objects to base64 wire format
+    const attachments = await Promise.all((_attachments ?? []).map(async (att) => {
+      const buffer = await att.file.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      const binary = Array.from(bytes).map(b => String.fromCharCode(b)).join('');
+      const base64 = btoa(binary);
+      return {
+        id: att.id,
+        name: att.name,
+        mime_type: att.mime_type,
+        content: base64,
+      };
+    }));
+
+    if (attachments.length > 0) {
+      console.info(`[submitPrompt] sending ${attachments.length} attachment(s) with prompt`);
+    }
+
     workspace.setLoading(sessionId, true);
-    
-    // Add user message immediately
+
+    // Build message parts: text + attachments for local display
+    const messageParts: import("./api/types").MessagePart[] = [
+      { type: "text", content: prompt },
+      ...attachments.map(att => ({
+        type: "attachment" as const,
+        id: att.id,
+        name: att.name,
+        mime_type: att.mime_type,
+      })),
+    ];
+
+    // Add user message immediately with attachment parts
     const userMsg: Message = {
       id: crypto.randomUUID(),
       role: "user",
       content: prompt,
       created_at: new Date().toISOString(),
+      parts: messageParts,
     };
-    
+
     const currentMessages = workspace.workspace.getMessages(sessionId);
     workspace.setMessages(sessionId, [...currentMessages, userMsg]);
 
     if (MOCK_MODE) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      
+
       const assistantMsg: Message = {
         id: crypto.randomUUID(),
         role: "assistant",
@@ -268,7 +298,7 @@ export default function App() {
       const response = await fetch(`${await getApiBase()}/session/${sessionId}/prompt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, attachments }),
       });
       
       if (response.ok) {

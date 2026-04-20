@@ -1,9 +1,11 @@
-import { type Component, createSignal, Show, createEffect } from "solid-js";
+import { type Component, createSignal, Show, createEffect, on } from "solid-js";
 import { For } from "solid-js";
 import { parseUnifiedDiff, type DiffFile, type DiffHunk, type DiffLine } from "../../api/diff";
 
 // Props for the IncrementalDiffViewer component
 export interface IncrementalDiffViewerProps {
+  // Session ID to scope diff accumulation - diffs are cleared when session changes
+  sessionId: string;
   // Callback to register a chunk handler with the parent (SessionView)
   onRegisterChunkHandler: (handler: (diffId: string, content: string, done: boolean) => void) => void;
 }
@@ -12,10 +14,23 @@ export interface IncrementalDiffViewerProps {
  * IncrementalDiffViewer displays streaming diff chunks from SSE.
  * It shows a progress indicator while chunks are accumulating and
  * renders the complete diff once all chunks have been received.
+ *
+ * Diff accumulation is scoped by sessionId - the diffMap is cleared
+ * when the session changes to prevent stale chunks from persisting.
  */
 export const IncrementalDiffViewer: Component<IncrementalDiffViewerProps> = (props) => {
   // Track all active diffs by diff_id
   const [diffMap, setDiffMap] = createSignal<Map<string, { content: string; chunkCount: number; done: boolean }>>(new Map());
+
+  // CRITICAL 2 FIX: Clear diffMap when session changes to prevent stale diff content
+  // This uses `on()` to track sessionId changes and reset accumulation
+  createEffect(on(() => props.sessionId, (_newSessionId, _prevSessionId) => {
+    if (_prevSessionId !== undefined && _prevSessionId !== _newSessionId) {
+      // Session changed - clear accumulated diffs from previous session
+      console.debug("[IncrementalDiffViewer] Session changed, clearing diffMap");
+      setDiffMap(new Map());
+    }
+  }));
 
   // The first diff that has completed (done === true)
   const completedDiffId = () => {

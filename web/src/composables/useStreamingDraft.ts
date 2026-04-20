@@ -13,7 +13,7 @@ import type {
 export type DraftPart =
   | { type: "text"; content: string }
   | { type: "reasoning"; content: string }
-  | { type: "tool_call"; id: string; name: string; arguments_delta: string; status: "running" | "completed" }
+  | { type: "tool_call"; id: string; name: string; arguments_delta: string; status: "running" | "completed"; source?: string }
   | { type: "tool_result"; tool_call_id: string; content: string; is_error: boolean; truncated?: boolean };
 
 export interface DraftMessage {

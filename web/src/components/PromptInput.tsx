@@ -34,7 +34,7 @@ import { type PendingAttachment } from "../api/types";
 import { showToast } from "./Toast";
 
 interface PromptInputProps {
-  onSubmit: (prompt: string) => void;
+  onSubmit: (prompt: string, attachments?: PendingAttachment[]) => void;
   onCommand: (result: { success: boolean; message: string; data?: unknown }) => void;
   disabled?: boolean;
   context: CommandContext;
@@ -236,14 +236,21 @@ export default function PromptInput(props: PromptInputProps) {
         if (result.success) {
           // Clear input on successful command
           setInputValue("");
+          // Clear pending attachments on successful command
+          clearPendingAttachments();
         }
         return;
       }
     }
 
-    // Regular prompt submission
-    props.onSubmit(value);
+    // Regular prompt submission - pass current attachments
+    // NOTE: Backend currently doesn't support file attachments (PromptRequest only accepts { prompt, model_id })
+    // Attachments are captured here for future backend support
+    const attachments = pendingAttachments();
+    props.onSubmit(value, attachments);
     setInputValue("");
+    // Clear pending attachments after submit
+    clearPendingAttachments();
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -406,6 +413,17 @@ export default function PromptInput(props: PromptInputProps) {
       }
       return prev.filter((a) => a.id !== id);
     });
+  };
+
+  // Clear all pending attachments and revoke object URLs
+  const clearPendingAttachments = () => {
+    const attachments = pendingAttachments();
+    for (const att of attachments) {
+      if (att.preview_url) {
+        URL.revokeObjectURL(att.preview_url);
+      }
+    }
+    setPendingAttachments([]);
   };
 
   const formatFileSize = (bytes: number): string => {
