@@ -11,7 +11,7 @@ use async_trait::async_trait;
 
 use rcode_core::{
     SubagentRunner, SubagentResult, AgentContext, Message, Part, Role,
-    error::RCodeError,
+    error::RCodeError, AgentRegistry,
 };
 use rcode_agent::{AgentExecutor, DefaultAgent};
 use rcode_event::EventBus;
@@ -21,7 +21,7 @@ use rcode_tools::{ToolRegistryService, task::TASK_SYSTEM_PROMPT};
 use crate::state::AppState;
 
 /// Server implementation of SubagentRunner
-/// 
+///
 /// This delegates actual agent execution to the server's composition root,
 /// using the same provider building and execution patterns as submit_prompt().
 pub struct ServerSubagentRunner {
@@ -29,17 +29,22 @@ pub struct ServerSubagentRunner {
     event_bus: Arc<EventBus>,
     config: Arc<std::sync::Mutex<rcode_core::RcodeConfig>>,
     tools: Arc<ToolRegistryService>,
+    agent_registry: Option<Arc<AgentRegistry>>,
     cognicode_service: Option<Arc<std::sync::Mutex<Option<rcode_cognicode::service::CogniCodeService>>>>,
 }
 
 impl ServerSubagentRunner {
     /// Create a new ServerSubagentRunner from AppState
+    ///
+    /// Uses the agent_registry from AppState which is pre-populated with worker agents
+    /// from ~/.config/rcode/agents/ directory.
     pub fn new(state: &Arc<AppState>) -> Self {
         Self {
             session_service: Arc::clone(&state.session_service),
             event_bus: Arc::clone(&state.event_bus),
             config: Arc::clone(&state.config),
             tools: Arc::clone(&state.tools),
+            agent_registry: Some(Arc::clone(&state.agent_registry)),
             cognicode_service: Some(Arc::clone(&state.cognicode_service)),
         }
     }
@@ -56,6 +61,25 @@ impl ServerSubagentRunner {
             event_bus,
             config,
             tools,
+            agent_registry: None,
+            cognicode_service: None,
+        }
+    }
+
+    /// Create a new ServerSubagentRunner with agent registry
+    pub fn with_registry(
+        session_service: Arc<SessionService>,
+        event_bus: Arc<EventBus>,
+        config: Arc<std::sync::Mutex<rcode_core::RcodeConfig>>,
+        tools: Arc<ToolRegistryService>,
+        agent_registry: Arc<AgentRegistry>,
+    ) -> Self {
+        Self {
+            session_service,
+            event_bus,
+            config,
+            tools,
+            agent_registry: Some(agent_registry),
             cognicode_service: None,
         }
     }
@@ -66,6 +90,7 @@ impl SubagentRunner for ServerSubagentRunner {
     async fn run_subagent(
         &self,
         parent_session_id: &str,
+        agent_id: &str,
         prompt: &str,
         allowed_tools: &[&str],
     ) -> Result<SubagentResult, Box<dyn std::error::Error + Send + Sync>> {
@@ -84,9 +109,9 @@ impl SubagentRunner for ServerSubagentRunner {
                 Box::new(RCodeError::Config(format!("Config lock error: {}", e))) as Box<dyn std::error::Error + Send + Sync>
             })?;
 
-            // Use model_for_agent("task") or fall back to effective_small_model()
+            // Use model_for_agent(agent_id) or fall back to effective_small_model()
             let model_id = config_guard
-                .model_for_agent("task")
+                .model_for_agent(agent_id)
                 .map(|s| s.to_string())
                 .or_else(|| config_guard.effective_small_model().map(|s| s.to_string()))
                 .unwrap_or_else(|| "claude-sonnet-4-5".to_string());
@@ -98,10 +123,19 @@ impl SubagentRunner for ServerSubagentRunner {
                 })?
         }; // config_guard is dropped here, before any async operations
 
-        // Create agent with task system prompt
-        let agent: Arc<dyn rcode_core::Agent> = Arc::new(
-            DefaultAgent::with_system_prompt(TASK_SYSTEM_PROMPT.to_string())
-        );
+        // Create agent - try to load from registry first, fall back to DefaultAgent
+        let agent: Arc<dyn rcode_core::Agent> = if let Some(ref registry) = self.agent_registry {
+            if let Some(registered_agent) = registry.get(agent_id) {
+                tracing::debug!("Using agent '{}' from registry for subagent execution", agent_id);
+                registered_agent
+            } else {
+                tracing::debug!("Agent '{}' not found in registry, using DefaultAgent", agent_id);
+                Arc::new(DefaultAgent::with_system_prompt(TASK_SYSTEM_PROMPT.to_string()))
+            }
+        } else {
+            tracing::debug!("No agent registry available, using DefaultAgent");
+            Arc::new(DefaultAgent::with_system_prompt(TASK_SYSTEM_PROMPT.to_string()))
+        };
 
         // Create executor with allowed tools restriction
         let allowed_tools_vec: Vec<String> = allowed_tools.iter().map(|s| s.to_string()).collect();

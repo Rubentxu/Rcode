@@ -8,3 +8,4 @@
 # git add -f Cargo.toml Cargo.lock
 # git add -f crates/*/src/ crates/*/Cargo.toml
 # git add -f web/src/ web/Cargo.toml web/index.html web/build.rs
+rcode-sdd-report/

@@ -455,7 +455,7 @@ impl Tool for TaskTool {
             };
 
             // Delegate to the subagent runner
-            match runner.run_subagent(&session_id, prompt, READONLY_TOOLS).await {
+            match runner.run_subagent(&session_id, agent_type, prompt, READONLY_TOOLS).await {
                 Ok(result) => {
                     return Ok(ToolResult {
                         title: format!("Task: {}", description),
@@ -920,6 +920,7 @@ mod tests {
         async fn run_subagent(
             &self,
             parent_session_id: &str,
+            _agent_id: &str,
             _prompt: &str,
             _allowed_tools: &[&str],
         ) -> Result<SubagentResult, Box<dyn std::error::Error + Send + Sync>> {

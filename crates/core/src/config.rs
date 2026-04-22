@@ -303,6 +303,10 @@ pub struct AgentConfig {
     #[serde(default)]
     pub hidden: Option<bool>,
 
+    /// @deprecated Use 'permission' field instead
+    #[serde(default)]
+    pub disable: Option<bool>,
+
     #[serde(default)]
     pub steps: Option<u32>,
 
@@ -319,6 +323,14 @@ pub struct AgentConfig {
 
     #[serde(default)]
     pub permission: Option<AgentPermissionConfig>,
+
+    /// Free-form options object for agent-specific settings (OpenCode compatibility)
+    #[serde(default)]
+    pub options: Option<serde_json::Value>,
+
+    /// Hex color code (e.g., #FF5733) or theme color name for UI/telemetry
+    #[serde(default)]
+    pub color: Option<String>,
 
     #[serde(flatten, default)]
     pub extra: serde_json::Value,
@@ -1095,5 +1107,111 @@ mod tests {
         
         let permissions = config.permissions.unwrap();
         assert!(permissions.rules.is_empty());
+    }
+
+    // =============================================================================
+    // AgentConfig extension fields tests (disable, options, color)
+    // =============================================================================
+
+    #[test]
+    fn test_agent_config_disable_field_deserialization() {
+        let json = r#"{
+            "model": "openai/gpt-4o",
+            "disable": true
+        }"#;
+
+        let agent_config: AgentConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(agent_config.model, Some("openai/gpt-4o".to_string()));
+        assert_eq!(agent_config.disable, Some(true));
+    }
+
+    #[test]
+    fn test_agent_config_disable_field_defaults_to_none() {
+        let json = r#"{
+            "model": "openai/gpt-4o"
+        }"#;
+
+        let agent_config: AgentConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(agent_config.disable, None);
+    }
+
+    #[test]
+    fn test_agent_config_options_field_deserialization() {
+        let json = r#"{
+            "model": "openai/gpt-4o",
+            "options": {
+                "temperature": 0.9,
+                "custom_setting": "test"
+            }
+        }"#;
+
+        let agent_config: AgentConfig = serde_json::from_str(json).unwrap();
+        assert!(agent_config.options.is_some());
+        let options = agent_config.options.unwrap();
+        assert_eq!(options.get("temperature").unwrap().as_f64().unwrap(), 0.9);
+        assert_eq!(options.get("custom_setting").unwrap().as_str().unwrap(), "test");
+    }
+
+    #[test]
+    fn test_agent_config_options_field_defaults_to_none() {
+        let json = r#"{
+            "model": "openai/gpt-4o"
+        }"#;
+
+        let agent_config: AgentConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(agent_config.options, None);
+    }
+
+    #[test]
+    fn test_agent_config_color_field_deserialization() {
+        let json = r##"{
+            "model": "openai/gpt-4o",
+            "color": "#FF5733"
+        }"##;
+
+        let agent_config: AgentConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(agent_config.color, Some("#FF5733".to_string()));
+    }
+
+    #[test]
+    fn test_agent_config_color_field_defaults_to_none() {
+        let json = r#"{
+            "model": "openai/gpt-4o"
+        }"#;
+
+        let agent_config: AgentConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(agent_config.color, None);
+    }
+
+    #[test]
+    fn test_agent_config_all_extension_fields_together() {
+        let json = r#"{
+            "model": "anthropic/claude-3-5-sonnet",
+            "variant": "claude-sonnet-4-20250514",
+            "disable": false,
+            "options": {
+                "streaming": true,
+                "timeout": 30
+            },
+            "color": "blue"
+        }"#;
+
+        let agent_config: AgentConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(agent_config.model, Some("anthropic/claude-3-5-sonnet".to_string()));
+        assert_eq!(agent_config.variant, Some("claude-sonnet-4-20250514".to_string()));
+        assert_eq!(agent_config.disable, Some(false));
+        assert!(agent_config.options.is_some());
+        assert_eq!(agent_config.color, Some("blue".to_string()));
+    }
+
+    #[test]
+    fn test_agent_config_color_theme_color_name() {
+        let json = r#"{
+            "model": "openai/gpt-4o",
+            "color": "primary"
+        }"#;
+
+        let agent_config: AgentConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(agent_config.color, Some("primary".to_string()));
     }
 }

@@ -13,7 +13,9 @@ export async function openFolderPicker(): Promise<string | null> {
         title: "Select Project Folder",
       });
       if (selected && typeof selected === "string") return selected;
-    } catch { /* fall through */ }
+    } catch (err) {
+      console.error("[rcode] openFolderPicker failed:", err);
+    }
   }
   return null;
 }

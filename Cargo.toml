@@ -20,6 +20,10 @@ members = [
     "crates/gen-types",
     "crates/privacy",
     "crates/cognicode",
+    "crates/runtime",
+    "crates/orchestrator",
+    "crates/intelligence",
+    "crates/tools/rcode-health",
 ]
 
 [workspace.package]

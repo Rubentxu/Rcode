@@ -1,9 +1,13 @@
-//! Agent loader for loading custom agents from JSON files
+//! Agent loader for loading custom agents from JSON or Markdown files
+//!
+//! Supports two formats:
+//! - JSON: `agent.json` with direct AgentDefinition schema
+//! - Markdown+YAML: `agent.md` with YAML frontmatter containing metadata
 
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-use crate::agent_definition::AgentDefinition;
+use crate::agent_definition::{AgentDefinition, AgentPermissionConfig};
 use crate::error::{RCodeError, Result};
 
 /// Loader for discovering and loading custom agents from filesystem
@@ -13,10 +17,12 @@ pub struct AgentLoader {
 
 impl AgentLoader {
     /// Create a new AgentLoader with default search paths:
-    /// - ~/.config/opencode/agents/
-    /// - ./.opencode/agents/
+    /// - ~/.config/rcode/agents/ (RCode worker agents)
+    /// - ~/.config/opencode/agents/ (OpenCode compatibility)
+    /// - ./.opencode/agents/ (project-level)
     pub fn new() -> Self {
         let search_paths = vec![
+            dirs::home_dir().map(|p| p.join(".config/rcode/agents")),
             dirs::home_dir().map(|p| p.join(".config/opencode/agents")),
             std::env::current_dir()
                 .ok()
@@ -69,12 +75,27 @@ impl AgentLoader {
             .filter_map(|e| e.ok())
         {
             let file_name = entry.file_name();
+            let path_str = file_name.to_string_lossy();
 
-            // Look for agent.json files
-            if file_name == "agent.json" {
-                match self.load_from_file(entry.path()).await {
+            // Support both agent.json and agent.md
+            if path_str == "agent.json" {
+                match self.load_from_json_file(entry.path()).await {
                     Ok(agent) => {
-                        tracing::debug!("Loaded custom agent: {}", agent.identifier);
+                        tracing::debug!("Loaded custom agent from JSON: {}", agent.identifier);
+                        agents.push(agent);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to load agent from {}: {}",
+                            entry.path().display(),
+                            e
+                        );
+                    }
+                }
+            } else if path_str == "agent.md" {
+                match self.load_from_md_file(entry.path()).await {
+                    Ok(agent) => {
+                        tracing::debug!("Loaded custom agent from Markdown: {}", agent.identifier);
                         agents.push(agent);
                     }
                     Err(e) => {
@@ -92,7 +113,7 @@ impl AgentLoader {
     }
 
     /// Load a single agent from a JSON file
-    async fn load_from_file(&self, path: &Path) -> Result<AgentDefinition> {
+    async fn load_from_json_file(&self, path: &Path) -> Result<AgentDefinition> {
         let content = tokio::fs::read_to_string(path).await.map_err(|e| {
             RCodeError::Config(format!(
                 "Failed to read agent file {}: {}",
@@ -108,6 +129,95 @@ impl AgentLoader {
                 e
             ))
         })?;
+
+        // Validate the definition
+        self.validate_definition(&definition)?;
+
+        Ok(definition)
+    }
+
+    /// Load a single agent from a Markdown file with YAML frontmatter
+    ///
+    /// The file format is:
+    /// ```yaml
+    /// ---
+    /// identifier: "agent-id"
+    /// name: "Agent Name"
+    /// description: "Description"
+    /// when_to_use: "When to use"
+    /// mode: "Subagent"
+    /// hidden: false
+    /// tools: ["tool1", "tool2"]
+    /// model: "sonnet"
+    /// max_tokens: 8192
+    /// reasoning_effort: "medium"
+    /// ---
+    ///
+    /// # Agent Name
+    ///
+    /// [Markdown body - this becomes the system_prompt]
+    /// ```
+    async fn load_from_md_file(&self, path: &Path) -> Result<AgentDefinition> {
+        let content = tokio::fs::read_to_string(path).await.map_err(|e| {
+            RCodeError::Config(format!(
+                "Failed to read agent file {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+
+        // Parse YAML frontmatter
+        let frontmatter = parse_yaml_frontmatter(&content)?;
+
+        // Helper closures for extracting values from serde_yaml::Value
+        let get_str = |key: &str| -> Option<String> {
+            frontmatter
+                .get(key)
+                .and_then(|v| v.as_str().map(String::from))
+        };
+
+        let get_bool = |key: &str| -> Option<bool> {
+            frontmatter.get(key).and_then(|v| v.as_bool())
+        };
+
+        let get_u32 = |key: &str| -> Option<u32> {
+            frontmatter.get(key).and_then(|v| v.as_i64().map(|i| i as u32))
+        };
+
+        let get_string_vec = |key: &str| -> Vec<String> {
+            frontmatter
+                .get(key)
+                .and_then(|v| v.as_sequence())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        // The system_prompt is the full markdown body after the frontmatter
+        let system_prompt = extract_markdown_body(&content);
+
+        // Build AgentDefinition from frontmatter
+        let definition = AgentDefinition {
+            identifier: get_str("identifier").ok_or_else(|| {
+                RCodeError::Config("Missing 'identifier' in agent frontmatter".into())
+            })?,
+            name: get_str("name").ok_or_else(|| {
+                RCodeError::Config("Missing 'name' in agent frontmatter".into())
+            })?,
+            description: get_str("description").unwrap_or_default(),
+            when_to_use: get_str("when_to_use").unwrap_or_default(),
+            system_prompt,
+            mode: crate::agent_definition::AgentMode::Subagent,
+            hidden: get_bool("hidden").unwrap_or(false),
+            tools: get_string_vec("tools"),
+            model: get_str("model"),
+            permission: AgentPermissionConfig::default(),
+            max_tokens: get_u32("max_tokens"),
+            reasoning_effort: get_str("reasoning_effort"),
+        };
 
         // Validate the definition
         self.validate_definition(&definition)?;
@@ -139,6 +249,55 @@ impl AgentLoader {
 
         Ok(())
     }
+}
+
+/// Parse YAML frontmatter from markdown content
+///
+/// The frontmatter is between `---` markers at the start of the file.
+fn parse_yaml_frontmatter(content: &str) -> Result<serde_yaml::Value> {
+    let content = content.trim();
+
+    // Check for frontmatter markers
+    if !content.starts_with("---") {
+        return Err(RCodeError::Config(
+            "Markdown file must start with '---' frontmatter".into(),
+        ));
+    }
+
+    // Find the closing ---
+    let after_first_dash = &content[3..];
+    let closing_marker = after_first_dash
+        .find("---")
+        .ok_or_else(|| {
+            RCodeError::Config("Frontmatter missing closing '---' marker".into())
+        })?;
+
+    let yaml_content = &after_first_dash[..closing_marker];
+
+    serde_yaml::from_str(yaml_content).map_err(|e| {
+        RCodeError::Config(format!("Failed to parse YAML frontmatter: {}", e))
+    })
+}
+
+/// Extract the markdown body (everything after the frontmatter)
+///
+/// This becomes the system_prompt in the agent definition.
+fn extract_markdown_body(content: &str) -> String {
+    let content = content.trim();
+
+    // Find the closing ---
+    let after_first_dash = match content.strip_prefix("---") {
+        Some(s) => s,
+        None => return content.to_string(),
+    };
+
+    let after_closing = match after_first_dash.find("---") {
+        Some(pos) => &after_first_dash[pos + 3..],
+        None => after_first_dash,
+    };
+
+    // Remove the leading newline if present and trim
+    after_closing.trim_start().to_string()
 }
 
 impl Default for AgentLoader {
@@ -297,17 +456,18 @@ mod tests {
     #[tokio::test]
     async fn test_add_search_path() {
         let mut loader = AgentLoader::new();
-        assert_eq!(loader.search_paths.len(), 2); // default paths
+        // Default paths: rcode, opencode, and .opencode
+        assert_eq!(loader.search_paths.len(), 3);
 
         loader.add_path(PathBuf::from("/custom/path"));
-        assert_eq!(loader.search_paths.len(), 3);
+        assert_eq!(loader.search_paths.len(), 4);
     }
 
     #[tokio::test]
-    async fn test_load_from_nonexistent_file() {
+    async fn test_load_from_nonexistent_json_file() {
         let loader = AgentLoader::new();
         let result = loader
-            .load_from_file(Path::new("/nonexistent/file.json"))
+            .load_from_json_file(Path::new("/nonexistent/file.json"))
             .await;
         assert!(result.is_err());
     }

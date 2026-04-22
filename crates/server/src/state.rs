@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use rcode_agent::hooks::HookRegistry;
 use rcode_agent::permissions::InteractivePermissionService;
-use rcode_core::{RcodeConfig, SubagentRunner};
+use rcode_core::{AgentRegistry, RcodeConfig, SubagentRunner};
 use rcode_event::EventBus;
 use rcode_privacy::service::PrivacyService;
 use rcode_providers::catalog::ModelCatalogService;
@@ -74,6 +74,8 @@ pub struct AppState {
     pub cognicode_service: Arc<std::sync::Mutex<Option<rcode_cognicode::service::CogniCodeService>>>,
     /// Hook registry for extending agent behavior at trigger points
     pub hooks: Arc<HookRegistry>,
+    /// Agent registry for worker agents (explore, implement, test, verify, research)
+    pub agent_registry: Arc<AgentRegistry>,
 }
 
 fn create_storage_path() -> std::path::PathBuf {
@@ -222,6 +224,9 @@ impl AppState {
         // Build privacy service with config (passthrough by default)
         let privacy = build_privacy_service(&config, &event_bus);
 
+        // Initialize agent registry with worker agents
+        let agent_registry = Arc::new(AgentRegistry::new());
+
         let db_path = create_storage_path();
         tracing::info!("Using database at: {:?}", db_path);
 
@@ -251,6 +256,7 @@ impl AppState {
                     project_health: Arc::new(ProjectHealthRegistry::new()),
                     cognicode_service: Arc::new(std::sync::Mutex::new(None)),
                     hooks: Arc::new(HookRegistry::new()),
+                    agent_registry,
                 };
             }
         };
@@ -277,12 +283,13 @@ impl AppState {
                 cancellation: Arc::new(CancellationRegistry::new()),
                 permission_services: Arc::new(TokioMutex::new(HashMap::new())),
                 mock_provider: Arc::new(std::sync::Mutex::new(None)),
-                    explorer_service: Arc::new(ExplorerService::new()),
-                    privacy,
-                    project_health: Arc::new(ProjectHealthRegistry::new()),
-                    cognicode_service: Arc::new(std::sync::Mutex::new(None)),
-                    hooks: Arc::new(HookRegistry::new()),
-                };
+                explorer_service: Arc::new(ExplorerService::new()),
+                privacy,
+                project_health: Arc::new(ProjectHealthRegistry::new()),
+                cognicode_service: Arc::new(std::sync::Mutex::new(None)),
+                hooks: Arc::new(HookRegistry::new()),
+                agent_registry,
+            };
         }
 
         // ---- Path 3: Second connection (message repo) fails ----
@@ -311,6 +318,7 @@ impl AppState {
                     project_health: Arc::new(ProjectHealthRegistry::new()),
                     cognicode_service: Arc::new(std::sync::Mutex::new(None)),
                     hooks: Arc::new(HookRegistry::new()),
+                    agent_registry,
                 };
             }
         };
@@ -348,6 +356,7 @@ impl AppState {
                     project_health: Arc::new(ProjectHealthRegistry::new()),
                     cognicode_service: Arc::new(std::sync::Mutex::new(None)),
                     hooks: Arc::new(HookRegistry::new()),
+                    agent_registry,
                 };
             }
         };
@@ -432,6 +441,7 @@ impl AppState {
             project_health: Arc::new(ProjectHealthRegistry::new()),
             cognicode_service,
             hooks: Arc::new(HookRegistry::new()),
+            agent_registry,
         }
     }
 }

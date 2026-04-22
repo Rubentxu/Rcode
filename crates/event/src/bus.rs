@@ -58,6 +58,15 @@ pub enum Event {
     StreamToolCallEnd { session_id: String, tool_call_id: String },
     StreamToolResult { session_id: String, tool_call_id: String, content: String, is_error: bool },
     StreamAssistantCommitted { session_id: String },
+    // Tool lifecycle events - emitted when model suggests a tool and user approves/denies
+    ToolSuggested { session_id: String, tool_call_id: String, name: String, arguments: serde_json::Value },
+    ToolApproved { session_id: String, tool_call_id: String, name: String },
+    ToolDenied { session_id: String, tool_call_id: String, name: String, reason: Option<String> },
+    // Orchestrator delegation events - unified from sandbox
+    OrchestratorDelegationStarted { session_id: String, worker_type: String, task: String },
+    OrchestratorDelegationCompleted { session_id: String, worker_type: String, success: bool },
+    OrchestratorAssertionPassed { session_id: String, test_name: String, assertion: String },
+    OrchestratorAssertionFailed { session_id: String, test_name: String, assertion: String, reason: String },
 }
 
 impl Event {
@@ -93,6 +102,13 @@ impl Event {
             Event::StreamToolCallEnd { .. } => "stream_tool_call_end",
             Event::StreamToolResult { .. } => "stream_tool_result",
             Event::StreamAssistantCommitted { .. } => "stream_assistant_committed",
+            Event::ToolSuggested { .. } => "tool_suggested",
+            Event::ToolApproved { .. } => "tool_approved",
+            Event::ToolDenied { .. } => "tool_denied",
+            Event::OrchestratorDelegationStarted { .. } => "orchestrator_delegation_started",
+            Event::OrchestratorDelegationCompleted { .. } => "orchestrator_delegation_completed",
+            Event::OrchestratorAssertionPassed { .. } => "orchestrator_assertion_passed",
+            Event::OrchestratorAssertionFailed { .. } => "orchestrator_assertion_failed",
         }
     }
     
@@ -128,6 +144,13 @@ impl Event {
             Event::StreamToolCallEnd { session_id, .. } => Some(session_id),
             Event::StreamToolResult { session_id, .. } => Some(session_id),
             Event::StreamAssistantCommitted { session_id, .. } => Some(session_id),
+            Event::ToolSuggested { session_id, .. } => Some(session_id),
+            Event::ToolApproved { session_id, .. } => Some(session_id),
+            Event::ToolDenied { session_id, .. } => Some(session_id),
+            Event::OrchestratorDelegationStarted { session_id, .. } => Some(session_id),
+            Event::OrchestratorDelegationCompleted { session_id, .. } => Some(session_id),
+            Event::OrchestratorAssertionPassed { session_id, .. } => Some(session_id),
+            Event::OrchestratorAssertionFailed { session_id, .. } => Some(session_id),
         }
     }
 }
@@ -178,7 +201,45 @@ impl EventBus {
             session_filter: Some(session_id.to_string()),
         }
     }
-    
+
+    /// Subscribe to all streaming events (TextDelta, ReasoningDelta, ToolCallStart, ToolCallArg, ToolCallEnd, ToolResult, AssistantCommitted)
+    pub fn subscribe_to_streaming(&self) -> FilteredSubscriber {
+        self.subscribe_to(vec![
+            EventType::StreamTextDelta,
+            EventType::StreamReasoningDelta,
+            EventType::StreamToolCallStart,
+            EventType::StreamToolCallArg,
+            EventType::StreamToolCallEnd,
+            EventType::StreamToolResult,
+            EventType::StreamAssistantCommitted,
+        ])
+    }
+
+    /// Subscribe to tool lifecycle events (Suggested, Approved, Denied)
+    pub fn subscribe_to_tool_lifecycle(&self) -> FilteredSubscriber {
+        self.subscribe_to(vec![
+            EventType::ToolSuggested,
+            EventType::ToolApproved,
+            EventType::ToolDenied,
+        ])
+    }
+
+    /// Subscribe to streaming events for a specific session
+    pub fn subscribe_to_streaming_for_session(&self, session_id: &str) -> StreamingSubscriber {
+        StreamingSubscriber {
+            receiver: self.sender.subscribe(),
+            session_filter: Some(session_id.to_string()),
+        }
+    }
+
+    /// Subscribe to tool lifecycle events for a specific session
+    pub fn subscribe_to_tool_lifecycle_for_session(&self, session_id: &str) -> ToolLifecycleSubscriber {
+        ToolLifecycleSubscriber {
+            receiver: self.sender.subscribe(),
+            session_filter: Some(session_id.to_string()),
+        }
+    }
+
     pub fn publish(&self, event: Event) {
         let event_type = event.event_type();
         let session_id = event.session_id().map(str::to_string);
@@ -195,6 +256,101 @@ impl EventBus {
     pub fn send(&self, event: Event) -> Result<(), SendError<Event>> {
         self.sender.send(event).map(|_| ())
     }
+
+    /// Query events matching criteria within a time window
+    pub fn query(&self, query: EventQuery) -> Vec<Event> {
+        let mut events = Vec::new();
+        let mut subscriber = self.subscribe();
+
+        // We use try_recv in a loop since we can't use async in a sync method
+        // The query collects events that match the criteria
+        loop {
+            match subscriber.try_recv() {
+                Ok(event) => {
+                    // Check event type filter
+                    if !query.event_types.is_empty() {
+                        let event_type_name = event.event_type();
+                        let matches = query.event_types.iter().any(|et| {
+                            let et_name = match et {
+                                EventType::AppStarted => "app_started",
+                                EventType::AppShutdown => "app_shutdown",
+                                EventType::SessionCreated => "session_created",
+                                EventType::SessionUpdated => "session_updated",
+                                EventType::SessionDeleted => "session_deleted",
+                                EventType::MessageAdded => "message_added",
+                                EventType::ToolExecuted => "tool_executed",
+                                EventType::ToolError => "tool_error",
+                                EventType::AgentStarted => "agent_started",
+                                EventType::AgentFinished => "agent_finished",
+                                EventType::AgentError => "agent_error",
+                                EventType::ProviderConnected => "provider_connected",
+                                EventType::ProviderDisconnected => "provider_disconnected",
+                                EventType::ProviderError => "provider_error",
+                                EventType::PluginInstalled => "plugin_installed",
+                                EventType::PluginActivated => "plugin_activated",
+                                EventType::PluginDeactivated => "plugin_deactivated",
+                                EventType::ConfigChanged => "config_changed",
+                                EventType::CompactionPerformed => "compaction_performed",
+                                EventType::StreamingProgress => "streaming_progress",
+                                EventType::StreamTextDelta => "stream_text_delta",
+                                EventType::StreamReasoningDelta => "stream_reasoning_delta",
+                                EventType::StreamToolCallStart => "stream_tool_call_start",
+                                EventType::StreamToolCallArg => "stream_tool_call_args_delta",
+                                EventType::StreamToolCallEnd => "stream_tool_call_end",
+                                EventType::StreamToolResult => "stream_tool_result",
+                                EventType::StreamAssistantCommitted => "stream_assistant_committed",
+                                EventType::ToolSuggested => "tool_suggested",
+                                EventType::ToolApproved => "tool_approved",
+                                EventType::ToolDenied => "tool_denied",
+                                EventType::PermissionRequested => "permission_requested",
+                                EventType::PermissionResolved => "permission_resolved",
+                                EventType::OrchestratorDelegationStarted => "orchestrator_delegation_started",
+                                EventType::OrchestratorDelegationCompleted => "orchestrator_delegation_completed",
+                                EventType::OrchestratorAssertionPassed => "orchestrator_assertion_passed",
+                                EventType::OrchestratorAssertionFailed => "orchestrator_assertion_failed",
+                            };
+                            event_type_name == et_name
+                        });
+                        if !matches {
+                            continue;
+                        }
+                    }
+
+                    // Check session_id filter
+                    if let Some(ref session_filter) = query.session_id
+                        && event.session_id() != Some(session_filter.as_str())
+                    {
+                        continue;
+                    }
+
+                    // Check since filter
+                    if let Some(since) = query.since {
+                        // Events don't have timestamps, so we can't filter by time
+                        // This would require modifying the Event struct to include timestamp
+                        let _ = since;
+                    }
+
+                    events.push(event);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Lagged(_)) => continue,
+                Err(TryRecvError::Closed) => break,
+            }
+        }
+
+        events
+    }
+}
+
+/// Query criteria for filtering events
+#[derive(Debug, Clone, Default)]
+pub struct EventQuery {
+    /// Filter by event types (empty means all types)
+    pub event_types: Vec<EventType>,
+    /// Filter by session_id (None means all sessions)
+    pub session_id: Option<String>,
+    /// Filter events after this timestamp (None means no time filter)
+    pub since: Option<DateTime<Utc>>,
 }
 
 pub struct EventSubscriber {
@@ -258,6 +414,28 @@ pub enum EventType {
     PluginInstalled,
     PluginActivated,
     PluginDeactivated,
+    ConfigChanged,
+    CompactionPerformed,
+    // Streaming events (granular)
+    StreamingProgress,
+    StreamTextDelta,
+    StreamReasoningDelta,
+    StreamToolCallStart,
+    StreamToolCallArg,
+    StreamToolCallEnd,
+    StreamToolResult,
+    StreamAssistantCommitted,
+    // Tool lifecycle events
+    ToolSuggested,
+    ToolApproved,
+    ToolDenied,
+    PermissionRequested,
+    PermissionResolved,
+    // Orchestrator delegation events
+    OrchestratorDelegationStarted,
+    OrchestratorDelegationCompleted,
+    OrchestratorAssertionPassed,
+    OrchestratorAssertionFailed,
 }
 
 impl EventBus {
@@ -279,7 +457,7 @@ impl FilteredSubscriber {
         loop {
             let event = self.receiver.recv().await?;
             let event_type = event.event_type();
-            
+
             if self.type_filter.iter().any(|t| {
                 let t_name = match t {
                     EventType::AppStarted => "app_started",
@@ -299,10 +477,132 @@ impl FilteredSubscriber {
                     EventType::PluginInstalled => "plugin_installed",
                     EventType::PluginActivated => "plugin_activated",
                     EventType::PluginDeactivated => "plugin_deactivated",
+                    EventType::ConfigChanged => "config_changed",
+                    EventType::CompactionPerformed => "compaction_performed",
+                    // Streaming events
+                    EventType::StreamingProgress => "streaming_progress",
+                    EventType::StreamTextDelta => "stream_text_delta",
+                    EventType::StreamReasoningDelta => "stream_reasoning_delta",
+                    EventType::StreamToolCallStart => "stream_tool_call_start",
+                    EventType::StreamToolCallArg => "stream_tool_call_args_delta",
+                    EventType::StreamToolCallEnd => "stream_tool_call_end",
+                    EventType::StreamToolResult => "stream_tool_result",
+                    EventType::StreamAssistantCommitted => "stream_assistant_committed",
+                    // Tool lifecycle events
+                    EventType::ToolSuggested => "tool_suggested",
+                    EventType::ToolApproved => "tool_approved",
+                    EventType::ToolDenied => "tool_denied",
+                    EventType::PermissionRequested => "permission_requested",
+                    EventType::PermissionResolved => "permission_resolved",
+                    // Orchestrator delegation events
+                    EventType::OrchestratorDelegationStarted => "orchestrator_delegation_started",
+                    EventType::OrchestratorDelegationCompleted => "orchestrator_delegation_completed",
+                    EventType::OrchestratorAssertionPassed => "orchestrator_assertion_passed",
+                    EventType::OrchestratorAssertionFailed => "orchestrator_assertion_failed",
                 };
                 event_type == t_name
             }) {
                 return Ok(event);
+            }
+        }
+    }
+}
+
+/// Specialized subscriber for streaming events with helper methods.
+/// Filters by session if session_filter is set.
+pub struct StreamingSubscriber {
+    receiver: broadcast::Receiver<Event>,
+    session_filter: Option<String>,
+}
+
+impl StreamingSubscriber {
+    /// Receive the next streaming event
+    pub async fn recv(&mut self) -> Result<Event, RecvError> {
+        loop {
+            let event = self.receiver.recv().await?;
+            if let Some(ref filter) = self.session_filter
+                && event.session_id() != Some(filter.as_str())
+            {
+                continue;
+            }
+            // Only accept streaming events
+            match event {
+                Event::StreamTextDelta { .. }
+                | Event::StreamReasoningDelta { .. }
+                | Event::StreamToolCallStart { .. }
+                | Event::StreamToolCallArg { .. }
+                | Event::StreamToolCallEnd { .. }
+                | Event::StreamToolResult { .. }
+                | Event::StreamAssistantCommitted { .. } => return Ok(event),
+                _ => continue,
+            }
+        }
+    }
+
+    /// Try to receive the next streaming event (non-blocking)
+    pub fn try_recv(&mut self) -> Result<Event, TryRecvError> {
+        loop {
+            let event = self.receiver.try_recv()?;
+            if let Some(ref filter) = self.session_filter
+                && event.session_id() != Some(filter.as_str())
+            {
+                continue;
+            }
+            match event {
+                Event::StreamTextDelta { .. }
+                | Event::StreamReasoningDelta { .. }
+                | Event::StreamToolCallStart { .. }
+                | Event::StreamToolCallArg { .. }
+                | Event::StreamToolCallEnd { .. }
+                | Event::StreamToolResult { .. }
+                | Event::StreamAssistantCommitted { .. } => return Ok(event),
+                _ => continue,
+            }
+        }
+    }
+}
+
+/// Specialized subscriber for tool lifecycle events with helper methods.
+/// Filters by session if session_filter is set.
+pub struct ToolLifecycleSubscriber {
+    receiver: broadcast::Receiver<Event>,
+    session_filter: Option<String>,
+}
+
+impl ToolLifecycleSubscriber {
+    /// Receive the next tool lifecycle event
+    pub async fn recv(&mut self) -> Result<Event, RecvError> {
+        loop {
+            let event = self.receiver.recv().await?;
+            if let Some(ref filter) = self.session_filter
+                && event.session_id() != Some(filter.as_str())
+            {
+                continue;
+            }
+            // Only accept tool lifecycle events
+            match event {
+                Event::ToolSuggested { .. }
+                | Event::ToolApproved { .. }
+                | Event::ToolDenied { .. } => return Ok(event),
+                _ => continue,
+            }
+        }
+    }
+
+    /// Try to receive the next tool lifecycle event (non-blocking)
+    pub fn try_recv(&mut self) -> Result<Event, TryRecvError> {
+        loop {
+            let event = self.receiver.try_recv()?;
+            if let Some(ref filter) = self.session_filter
+                && event.session_id() != Some(filter.as_str())
+            {
+                continue;
+            }
+            match event {
+                Event::ToolSuggested { .. }
+                | Event::ToolApproved { .. }
+                | Event::ToolDenied { .. } => return Ok(event),
+                _ => continue,
             }
         }
     }

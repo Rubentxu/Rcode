@@ -2166,6 +2166,7 @@ mod tests {
             project_health: Arc::new(ProjectHealthRegistry::new()),
             cognicode_service: Arc::new(std::sync::Mutex::new(None)),
             hooks: Arc::new(rcode_agent::hooks::HookRegistry::new()),
+            agent_registry: Arc::new(rcode_core::AgentRegistry::new()),
         });
 
         (state, dir)

@@ -19,6 +19,7 @@ use rcode_core::provider::StopReason;
 use super::config::OpenAiCompatConfig;
 use super::request as request;
 use super::response as response;
+use response::{OpenAIStreamParser, ParserState, StreamingEventParser};
 use crate::rate_limit::TokenBucket;
 
 /// Transport layer for OpenAI-compatible APIs.
@@ -164,10 +165,13 @@ impl OpenAiCompatTransport {
         let tx_clone = tx;
         let active_token = Arc::clone(&self.active_token);
 
+        // Create a parser instance that implements StreamingEventParser trait
+        let parser = OpenAIStreamParser::new();
+
         tokio::spawn(async move {
             let mut stream = response.bytes_stream();
             let mut buffer = String::new();
-            let mut current_tool_call: Option<response::OpenAIToolCall> = None;
+            let mut parser_state = ParserState::default();
             let mut last_finish_reason: Option<String> = None;
             let mut stream_error: Option<String> = None;
             let mut stream_done = false;
@@ -208,11 +212,13 @@ impl OpenAiCompatTransport {
                                     }
 
                                     if let Some(data) = line.strip_prefix("data: ") {
-                                        if let Some((event, finish_reason)) = response::parse_openai_sse_event(data, &mut current_tool_call) {
-                                            if let Some(fr) = finish_reason {
+                                        // Use the StreamingEventParser trait to parse events
+                                        let events = parser.parse(data, &mut parser_state);
+                                        for parsed_event in events {
+                                            if let Some(fr) = parsed_event.finish_reason {
                                                 last_finish_reason = Some(fr);
                                             }
-                                            if tx_clone.send(event).await.is_err() {
+                                            if tx_clone.send(parsed_event.event).await.is_err() {
                                                 // Clear the active token
                                                 let mut guard = active_token.lock().unwrap();
                                                 *guard = None;
@@ -240,7 +246,7 @@ impl OpenAiCompatTransport {
             }
 
             // Emit ToolCallEnd for any remaining active tool call
-            if let Some(tc) = current_tool_call.take() {
+            if let Some(tc) = parser_state.openai_tool_call.take() {
                 let _ = tx_clone.send(StreamingEvent::ToolCallEnd { id: tc.id }).await;
             }
 

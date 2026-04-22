@@ -707,7 +707,16 @@ impl AgentExecutor {
                                                 tool_call_id: id.clone(),
                                             });
                                             let args: serde_json::Value = serde_json::from_str(&active.2).unwrap_or_else(|e| {
-                                                tracing::warn!("Failed to parse tool call arguments: {}", e);
+                                                // Emit a more informative warning with the actual arguments received
+                                                tracing::warn!(
+                                                    session_id = %ctx.session_id,
+                                                    tool_call_id = %active.0,
+                                                    tool_name = %active.1,
+                                                    raw_arguments = %active.2,
+                                                    parse_error = %e,
+                                                    "Failed to parse tool call arguments as JSON, using empty object. \
+                                                     This may indicate the model sent arguments in an unexpected format."
+                                                );
                                                 serde_json::json!({})
                                             });
                                             tool_calls.push((active.0.clone(), active.1.clone(), args));
@@ -716,6 +725,12 @@ impl AgentExecutor {
                                     }
                                 }
                                 StreamingEvent::ContentBlock { content: _ } => {}
+                                StreamingEvent::ReasoningEnd => {
+                                    // ReasoningEnd is a signal event that marks the end of a reasoning block.
+                                    // It doesn't contain data - the accumulated_reasoning contains the full content.
+                                    // This event can be used by clients to know when reasoning is complete.
+                                    debug!(session_id = %ctx.session_id, "reasoning block ended");
+                                }
                                 StreamingEvent::Finish { stop_reason, usage } => {
                                     info!(session_id = %ctx.session_id, provider_stop_reason = ?stop_reason, output_tokens = usage.output_tokens, "provider stream finished");
                                     final_stop_reason = match stop_reason {
@@ -860,7 +875,7 @@ impl AgentExecutor {
         let tool_call_names: Vec<String> = tool_calls.iter().map(|(_, name, _)| name.clone()).collect();
         let mut join_set = JoinSet::new();
         let mut tool_results: Vec<Part> = Vec::new();
-        
+
         // Check permissions before executing tools
         let permission_service = self.permission_service.clone();
         let hook_registry = self.hook_registry.clone();
@@ -874,7 +889,15 @@ impl AgentExecutor {
                 user_id: ctx.user_id.clone(),
                 agent: self.agent.id().to_string(),
             };
-            
+
+            // Emit ToolSuggested event - model has proposed a tool call
+            self.publish_event(rcode_event::Event::ToolSuggested {
+                session_id: ctx.session_id.clone(),
+                tool_call_id: id.clone(),
+                name: name.clone(),
+                arguments: arguments.clone(),
+            });
+
             // Check permission if service is configured
             if let Some(ref perm_svc) = permission_service {
                 let request = PermissionRequest {
@@ -886,6 +909,13 @@ impl AgentExecutor {
                 if !allowed {
                     // Permission denied - return error result
                     info!("Permission denied for tool: {}", name);
+                    // Emit ToolDenied event
+                    self.publish_event(rcode_event::Event::ToolDenied {
+                        session_id: ctx.session_id.clone(),
+                        tool_call_id: id.clone(),
+                        name: name.clone(),
+                        reason: Some("Permission denied by permission service".to_string()),
+                    });
                     tool_results.push(Part::ToolResult {
                         tool_call_id: id,
                         content: format!("Error: Permission denied for tool '{}'", name),
@@ -899,6 +929,13 @@ impl AgentExecutor {
             if let Some(ref allowed) = self.allowed_tools {
                 if !allowed.iter().any(|t| t == &name) {
                     info!("Tool '{}' is not in allowed_tools list", name);
+                    // Emit ToolDenied event
+                    self.publish_event(rcode_event::Event::ToolDenied {
+                        session_id: ctx.session_id.clone(),
+                        tool_call_id: id.clone(),
+                        name: name.clone(),
+                        reason: Some("Tool not in allowed_tools list".to_string()),
+                    });
                     tool_results.push(Part::ToolResult {
                         tool_call_id: id,
                         content: format!("Error: Tool '{}' is not allowed for this agent", name),
@@ -907,6 +944,19 @@ impl AgentExecutor {
                     continue;
                 }
             }
+
+            // Emit ToolApproved event - tool passed all checks and is being executed
+            self.publish_event(rcode_event::Event::ToolApproved {
+                session_id: ctx.session_id.clone(),
+                tool_call_id: id.clone(),
+                name: name.clone(),
+            });
+
+            // Emit ToolExecuted event - tool is about to start execution
+            self.publish_event(rcode_event::Event::ToolExecuted {
+                session_id: ctx.session_id.clone(),
+                tool_id: name.clone(),
+            });
 
             join_set.spawn(async move {
                 let result = tools.execute(&name, arguments, &ctx).await;
@@ -958,7 +1008,7 @@ impl AgentExecutor {
                         is_error: false,
                     });
                 }
-                Ok((id, _, Err(e))) => {
+                Ok((id, name, Err(e))) => {
                     warn!("Tool {} failed: {}", id, e);
                     let err_content = format!("Error: {}", e);
                     // Hook 3: Sanitize error content before storing (errors may leak sensitive info)
@@ -971,6 +1021,13 @@ impl AgentExecutor {
                         tool_call_id: id.clone(),
                         content: sanitized_err_content.clone(),
                         is_error: true,
+                    });
+                    // Publish ToolError event - tool execution failed
+                    self.publish_event(rcode_event::Event::ToolError {
+                        session_id: ctx.session_id.clone(),
+                        tool_id: name.clone(),
+                        error: e.to_string(),
+                        duration_ms: 0,
                     });
                     // Publish stream tool result event for error case
                     self.publish_event(rcode_event::Event::StreamToolResult {

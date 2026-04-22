@@ -162,9 +162,21 @@ export async function createSessionWithModel(projectPath = '/tmp') {
     // Set localStorage and do a full page reload, then wait for app initialization.
     console.warn('[e2e] Debug inspector not available — using browser.refresh() fallback');
     await browser.execute((id) => localStorage.setItem('rcode:active-project', id), resolvedProjectId);
+    // Refresh and wait for app to fully initialize with correct project
     await browser.refresh();
     await waitForBackend();
-    await new Promise((r) => setTimeout(r, 3000));
+    // Wait for app initialization + session loading
+    await new Promise((r) => setTimeout(r, 4000));
+    // Click the sessions tab to ensure it's active and sessions are visible
+    try {
+      const sessionsTab = await $('[data-tab="sessions"]');
+      if (sessionsTab) {
+        await sessionsTab.click();
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    } catch (_) {
+      // Tab might not be available yet, continue
+    }
   }
 
   // 3. Create session with the target model
@@ -187,7 +199,18 @@ export async function createSessionWithModel(projectPath = '/tmp') {
     // Fallback: refresh page and wait for sessions to load
     await browser.refresh();
     await waitForBackend();
-    await new Promise((r) => setTimeout(r, 3000));
+    // Wait for app initialization + session loading (longer for newly created session)
+    await new Promise((r) => setTimeout(r, 5000));
+    // Click the sessions tab to ensure it's active and sessions are visible
+    try {
+      const sessionsTab = await $('[data-tab="sessions"]');
+      if (sessionsTab) {
+        await sessionsTab.click();
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    } catch (_) {
+      // Tab might not be available yet, continue
+    }
   }
 
   // 5. Navigate to the session in the UI
@@ -539,6 +562,59 @@ export async function createSessionDirect({ projectPath, modelId } = {}) {
       model_id: modelId || E2E_MODEL,
     }),
   });
+}
+
+/**
+ * Create a new session by clicking the UI's "new session" button.
+ * This ensures the session is created through the UI and appears in the session list.
+ *
+ * Returns: { sessionId, textarea }
+ */
+export async function createSessionViaUI() {
+  // Click the new session button in the workbench left rail
+  let newSessionBtn;
+  try {
+    newSessionBtn = await $('[data-component="new-session-button"]');
+    await newSessionBtn.waitForExist({ timeout: 10_000 });
+    await newSessionBtn.scrollIntoView({ block: 'center' });
+    await new Promise((r) => setTimeout(r, 200));
+    await newSessionBtn.click();
+  } catch (_) {
+    // Button might not exist or be clickable
+  }
+
+  // Wait for the app to create and navigate to the new session
+  await new Promise((r) => setTimeout(r, 2000));
+
+  // Find the textarea element
+  let textarea;
+  try {
+    textarea = await $('[data-component="textarea"]');
+    await textarea.waitForExist({ timeout: 15_000 });
+  } catch (_) {
+    // Try finding the main textarea element
+    textarea = await $('textarea');
+    await textarea.waitForExist({ timeout: 15_000 });
+  }
+
+  await textarea.scrollIntoView({ block: 'center' });
+
+  // Get the current session ID from the API (most recent session)
+  let sessionId = null;
+  try {
+    const sessions = await fetchJson(`${API_BASE}/session`);
+    if (Array.isArray(sessions) && sessions.length > 0) {
+      // Sort by updated_at descending and take the most recent
+      const sorted = [...sessions].sort((a, b) =>
+        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+      );
+      sessionId = sorted[0].id;
+    }
+  } catch (_) {
+    // API might fail
+  }
+
+  return { sessionId, textarea };
 }
 
 // ─── Prompt + wait helpers ───────────────────────────────────────────────────

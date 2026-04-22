@@ -1,123 +1,144 @@
 # Skill Registry
 
-## Overview
-Central registry of all available agent skills for the rust-code project.
+**Delegator use only.** Any agent that launches sub-agents reads this registry to resolve compact rules, then injects them directly into sub-agent prompts. Sub-agents do NOT read this registry or individual SKILL.md files.
 
-## Skill Index
+## User Skills
 
-### SDD Workflow (gentleman-programming)
+| Trigger | Skill | Path |
+|---------|-------|------|
+| /call-graph, call hierarchy, who calls, what calls, 调用图, 调用关系, 谁调用了, 调用了谁 | rust-call-graph | /home/rubentxu/.agents/skills/rust-call-graph/SKILL.md |
+| /refactor, rename symbol, move function, extract, 重构, 重命名, 提取函数, 安全重构 | rust-refactor-helper | /home/rubentxu/.agents/skills/rust-refactor-helper/SKILL.md |
+| /symbols, project structure, list structs, list traits, list functions, 符号分析, 项目结构, 列出所有, 有哪些struct | rust-symbol-analyzer | /home/rubentxu/.agents/skills/rust-symbol-analyzer/SKILL.md |
+| Rust testing, cargo test, mockall, proptest, tokio test, test organization | rust-testing | /home/rubentxu/.agents/skills/rust-testing/SKILL.md |
+| braintrust tracing, hook architecture, sub-agent correlation | braintrust-tracing | /home/rubentxu/.agents/skills/braintrust-tracing/SKILL.md |
+| UI/UX design, plan, build, create, design, implement, review, fix, improve, optimize, enhance, refactor, check UI/UX code | ui-ux-pro-max | /home/rubentxu/.agents/skills/ui-ux-pro-max/SKILL.md |
+| browser, open website, fill form, click button, take screenshot, scrape data, test web app, automate browser | agent-browser | /home/rubentxu/.config/opencode/skills/agent-browser/SKILL.md |
+| pull request, PR, open PR, create PR, prepare changes for review | branch-pr | /home/rubentxu/.config/opencode/skills/branch-pr/SKILL.md |
+| chrome devtools, performance, network traffic, web scraping, Puppeteer | chrome-devtools | /home/rubentxu/.config/opencode/skills/chrome-devtools/SKILL.md |
+| debug, debugging, bug, investigate, root cause, profiling, performance | debugging-strategies | /home/rubentxu/.config/opencode/skills/debugging-strategies/SKILL.md |
+| documentation, docs, /docs, .md files, write docs, review docs | docs-writer | /home/rubentxu/.config/opencode/skills/docs-writer/SKILL.md |
+| find skill, search skill, how do I, is there a skill, capability | find-skills | /home/rubentxu/.config/opencode/skills/find-skills/SKILL.md |
+| GitHub issue, create issue, report bug, feature request, bug report | issue-creation | /home/rubentxu/.config/opencode/skills/issue-creation/SKILL.md |
+| judgment day, adversarial review, dual review, doble review, juzgar, que lo juzguen | judgment-day | /home/rubentxu/.config/opencode/skills/judgment-day/SKILL.md |
+| playwright, web testing, form filling, screenshots, data extraction | playwright-cli | /home/rubentxu/.config/opencode/skills/playwright-cli/SKILL.md |
+| create skill, new skill, add agent instructions, document patterns | skill-creator | /home/rubentxu/.config/opencode/skills/skill-creator/SKILL.md |
 
-| Skill | Source | Purpose | Trigger Phrases |
-|-------|--------|---------|-----------------|
-| sdd-init | ~/.config/opencode/skills/ | Initialize SDD project context | sdd init, iniciar sdd, openspec init |
-| sdd-explore | ~/.config/opencode/skills/ | Explore and investigate ideas before a change | investigate, think through, clarify requirements |
-| sdd-propose | ~/.config/opencode/skills/ | Create change proposal with intent/scope/approach | create proposal, update proposal |
-| sdd-spec | ~/.config/opencode/skills/ | Write specifications with requirements and scenarios | write specs, update specs, delta specs |
-| sdd-design | ~/.config/opencode/skills/ | Create technical design with architecture decisions | write design, update design |
-| sdd-tasks | ~/.config/opencode/skills/ | Break down change into implementation tasks | create tasks, update tasks, task breakdown |
-| sdd-apply | ~/.config/opencode/skills/ | Implement tasks writing actual code | implement, apply tasks, write code |
-| sdd-verify | ~/.config/opencode/skills/ | Validate implementation matches specs/design/tasks | verify, validate implementation |
-| sdd-archive | ~/.config/opencode/skills/ | Archive completed change | archive, close change |
-| sdd-onboard | ~/.config/opencode/skills/ | Guided walkthrough of SDD workflow | onboard, walkthrough |
+## Compact Rules
 
-### Agent Teams Lite (gentleman-programming)
+Pre-digested rules per skill. Delegators copy matching blocks into sub-agent prompts as `## Project Standards (auto-resolved)`.
 
-| Skill | Source | Purpose | Trigger Phrases |
-|-------|--------|---------|-----------------|
-| branch-pr | ~/.config/opencode/skills/ | Create pull requests | create PR, branch-pr, open PR |
-| issue-creation | ~/.config/opencode/skills/ | Create GitHub issues | create issue, report bug, request feature |
-| judgment-day | ~/.config/opencode/skills/ | Parallel adversarial review | judgment day, doble review, juzgar |
+### rust-testing
+- Use `cargo test -p <crate>` for focused crate-level validation — never `cargo test --lib`
+- Run `cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings` for shared infrastructure changes
+- Design for testability: use traits, avoid mocking owned types, prefer mockall automock for complex mocking
+- Use `tokio::test` for async functions, `assert_cmd` for CLI testing, and proptest for property-based testing
+- Tests touching environment variables MUST sanitize and restore them
+- Add regression tests for every bug that escaped once
+- Never rely on developer shell environment in tests unless explicitly testing environment resolution
+- Use `cargo-nextest` for faster CI test execution
 
-### Rust Development
+### rust-refactor-helper
+- Always use `--dry-run` first to preview changes before applying
+- Use LSP `findReferences` to find ALL references before renaming symbols
+- Categorize changes by file and check for name conflicts, visibility changes, and macro-generated code
+- For extract function: identify inputs, outputs, and side effects; generate new signature before replacing
+- Verify reference completeness, name conflicts, visibility changes, macro-generated code, documentation, and test coverage
+- Check for circular dependencies before moving symbols
+- Provide impact analysis showing definition, all references, and potential issues
 
-| Skill | Source | Purpose | Trigger Phrases |
-|-------|--------|---------|-----------------|
-| rust-testing | ~/.agents/skills/ | Rust testing patterns (unit, integration, async) | cargo test, mockall, proptest, tokio test |
-| rust-call-graph | ~/.agents/skills/ | Visualize function call graphs via LSP | /call-graph, call hierarchy, who calls |
-| rust-refactor-helper | ~/.agents/skills/ | Safe refactoring with LSP analysis | /refactor, rename symbol, extract function |
-| rust-symbol-analyzer | ~/.agents/skills/ | Analyze project structure via LSP symbols | /symbols, project structure, list structs |
+### rust-symbol-analyzer
+- Use LSP `documentSymbol` for single-file analysis and `workspaceSymbol` for entire project
+- Categorize symbols by type: structs, traits, functions, enums, modules
+- Generate project structure visualization with module hierarchy
+- Provide complexity metrics: function count, lines, complexity rating per file
+- Show dependency analysis: what a file imports and what imports from it
 
-### Browser Automation
+### rust-call-graph
+- Use LSP `prepareCallHierarchy` first, then `incomingCalls` (callers) or `outgoingCalls` (callees)
+- Support `--depth N` for traversal depth and `--direction in|out|both` for call direction
+- Generate ASCII tree visualization for call hierarchies
+- Provide analysis insights: entry points, leaf functions, hot paths, and potential issues
+- Export to Mermaid format for documentation when requested
 
-| Skill | Source | Purpose | Trigger Phrases |
-|-------|--------|---------|-----------------|
-| agent-browser | ~/.config/opencode/skills/ | Browser automation CLI for AI agents | open website, fill form, click button, screenshot |
-| chrome-devtools | ~/.agents/skills/ | Puppeteer-based browser automation and debugging | automate browser, take screenshot, performance |
-| playwright-cli | ~/.agents/skills/ | Playwright browser automation for testing | navigate website, fill forms, test web app |
+### debugging-strategies
+- Apply scientific method: observe → hypothesize → experiment → analyze → repeat
+- Reproduce the problem consistently before attempting fixes
+- Isolate the problem: remove complexity until minimal reproduction case
+- Use binary search debugging: comment out half the code, narrow down section
+- Check recent changes first: most bugs are recent
+- Never make multiple changes at once — change one thing at a time
+- Use proper debugging tools (debugger, logging) instead of just print statements
+- Document findings to help future debugging efforts
 
-### General Tools
+### docs-writer
+- Use active voice and present tense; address developers as "you"
+- Follow BLUF (Bottom Line Up Front) — start with domain purpose before technical details
+- Wrap text at 80 characters except for Rust code blocks
+- Use meaningful domain names in examples (e.g., `Order`, `CustomerId`, `PaymentAmount`)
+- Verify Rust code examples compile and type signatures match actual code
+- Document all possible errors and performance considerations
+- Check bounded context scope and aggregate responsibilities align with ubiquitous language
 
-| Skill | Source | Purpose | Trigger Phrases |
-|-------|--------|---------|-----------------|
-| skill-creator | ~/.config/opencode/skills/ | Create new agent skills | create skill, add agent instructions |
-| find-skills | ~/.config/opencode/skills/ | Discover and install agent skills | find skill, is there a skill for |
-| docs-writer | ~/.agents/skills/ | Write/edit documentation | /docs, .md files, documentation |
-| debugging-strategies | ~/.agents/skills/ | Systematic debugging techniques | investigate bug, performance issue, unexpected behavior |
-| braintrust-tracing | ~/.agents/skills/ | Tracing for Claude Code sessions | (system/internal) |
-| go-testing | ~/.config/opencode/skills/ | Go testing patterns for Bubbletea TUI | go test, teatest, test coverage |
+### branch-pr
+- Every PR MUST link an approved issue — no exceptions
+- Every PR MUST have exactly one `type:*` label
+- Branch names must match: `^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)/[a-z0-9._-]+$`
+- Commit messages must follow conventional commits: `^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9\._-]+\))?!?: .+`
+- Run `shellcheck` on modified shell scripts before pushing
+- Automated checks must pass before merge is possible
 
-### UI/UX
+### issue-creation
+- Blank issues are disabled — MUST use a template (bug report or feature request)
+- Every issue gets `status:needs-review` automatically on creation
+- A maintainer MUST add `status:approved` before any PR can be opened
+- Search existing issues for duplicates before creating new ones
+- Questions go to Discussions, not issues
 
-| Skill | Source | Purpose | Trigger Phrases |
-|-------|--------|---------|-----------------|
-| ui-ux-pro-max | ~/.agents/skills/ | UI/UX design and implementation patterns | UI, UX, design, layout |
-
-## Statistics
-- Total Skills: 26
-- SDD Skills: 10
-- Agent Teams Skills: 3
-- Rust Skills: 4
-- Browser Skills: 3
-- General Tools: 6
-- Last Updated: 2026-04-18
+### agent-browser / playwright-cli
+- Use for web testing, form filling, screenshots, data extraction, and browser automation
+- Support navigating pages, clicking buttons, filling forms, taking screenshots
+- Good for: create session, send prompt, SSE/rendering flow, toast/error handling, tool-calling smoke tests
 
 ## Project Conventions
-- AGENTS.md: Engram persistent memory protocol + RCode agent contract
-- Language: User speaks Spanish, code in English
-- Testing: `cargo test -p <crate>` (never bare `cargo test --lib`)
-- SDD methodology with Agent Teams orchestration
-- SDD persistence mode: engram
-- Strict TDD Mode: enabled
-- .gitignore: `*` (ignores everything by default) — use `git add -f` for new files
 
-## Stack Summary
-- **Backend**: Rust (edition 2024), Axum 0.7, Tokio 1.45, SQLite (rusqlite)
-- **Frontend**: SolidJS 1.9, Vite 6, Tailwind 3.4, TypeScript 5 (strict)
-- **Desktop**: Tauri v2
-- **Testing Backend**: cargo test, cargo tarpaulin, cargo clippy (-D warnings)
-- **Testing Frontend**: vitest 4.1.3, @solidjs/testing-library, Playwright 1.54.0
-- **E2E Tauri**: WebdriverIO + tauri-driver
-- **Type check**: tsc --noEmit, cargo check
+| File | Path | Notes |
+|------|------|-------|
+| AGENTS.md | /home/rubentxu/Proyectos/rust/rust-code/AGENTS.md | RCode agent contract with validation matrix |
 
-## Validation Gates (ordered by scope)
-1. `cargo test -p <crate>` — targeted crate tests
-2. `cargo test --workspace` — full workspace regression
-3. `cargo clippy --workspace --all-targets -- -D warnings` — lint gate
-4. `cd web && npx vitest run` — frontend unit tests
-5. `cd web && tsc --noEmit` — type check
-6. `cd web && npx playwright test` — web E2E
-7. `cd web/e2e/tauri-driver && npm test` — Tauri native E2E
+## RCode-Specific Validation Rules (from AGENTS.md)
 
-## Scan Directories
+### Product Invariants (Never Break)
+- Tool-calling must work end to end for supported providers
+- Streaming and non-streaming paths must remain semantically distinct
+- Session messages must preserve structured parts: `text`, `reasoning`, `tool_call`, `tool_result`
+- Web client and Tauri desktop flow must work against the same backend API contract
+- Provider-specific behavior must NOT leak into unrelated providers
 
-| Directory | Skills Found |
-|-----------|-------------|
-| ~/.config/opencode/skills/ | 16 (sdd-init, sdd-explore, sdd-propose, sdd-spec, sdd-design, sdd-tasks, sdd-apply, sdd-verify, sdd-archive, sdd-onboard, branch-pr, issue-creation, judgment-day, skill-creator, skill-registry, go-testing) |
-| ~/.agents/skills/ | 12 (rust-testing, rust-call-graph, rust-refactor-helper, rust-symbol-analyzer, agent-browser, chrome-devtools, playwright-cli, ui-ux-pro-max, braintrust-tracing, debugging-strategies, docs-writer, find-skills) |
-| ~/.claude/skills/ | 4 (judgment-day, sdd-onboard, skill-creator, go-testing) |
-| ~/.opencode/skills/ | 0 |
-| .claude/skills/ (project) | Not found |
-| .agent/skills/ (project) | Not found |
+### Architecture Invariants
+- `LlmProvider` is the stable application port
+- Provider implementations are adapters, not the domain contract
+- Shared OpenAI-compatible behavior lives in `crates/providers/src/openai_compat/`
+- Concrete providers (OpenAI, MiniMax, OpenRouter, ZAI) must prefer composition over inheritance-like delegation
+- History serialization must preserve provider wire-format expectations
 
-## Project Convention Files
-| File | Content |
-|------|---------|
-| AGENTS.md | Agent contract, validation matrix, production-readiness checklist |
-| web/package.json | Frontend deps (SolidJS, Vite, Tailwind, vitest, playwright, tauri) |
-| Cargo.toml | Workspace definition (19 crate members) |
-| web/vitest.config.ts | Vitest config (jsdom, globals, src/**/*.test.{ts,tsx}) |
-| web/playwright.config.ts | Playwright config (baseURL :1420, VITE_MOCK_MODE, e2e/*.spec.ts) |
-| web/tsconfig.json | TS strict mode, ESNext, solid-js JSX |
+### Validation Matrix (Required Proof)
+1. **Unit/crate-level**: `cargo test -p <crate>` for focused changes
+2. **Workspace regression**: `cargo test --workspace` + `cargo clippy --workspace --all-targets -- -D warnings`
+3. **Web e2e**: `cd web && npx playwright test` for UI/API changes
+4. **Tauri desktop e2e**: Required when touching embedded backend, `get_backend_url`, Tauri commands, or desktop-only behavior
 
-## Notes
-Auto-generated registry. Duplicates (same skill name across directories) are resolved by project-level > user-level priority. No project-level skill directories found.
+### Production-Readiness Checklist
+- crate-level tests are green
+- workspace tests are green if shared code changed
+- clippy is green with warnings denied
+- web e2e smoke tests pass
+- desktop/Tauri smoke path passes when desktop wiring is touched
+- bugfixes have regression tests
+- no hidden dependence on local shell env in tests
+
+### What NOT to Do
+- Do NOT flatten structured tool history into plain text
+- Do NOT mark a refactor complete just because compile passes
+- Do NOT rely only on mocked tests for streaming or tool-calling changes
+- Do NOT leave environment-sensitive tests unsanitized
+- Do NOT archive or declare production-ready if relevant gates are still red

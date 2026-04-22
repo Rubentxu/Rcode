@@ -249,6 +249,11 @@ pub async fn load_config(
         result.agent = Some(mode_map.clone());
     }
 
+    // ── Resolve {file:} prompt references ─────────────────────────────────
+    // After all configs are merged, resolve any {file:/path/to/file} references
+    // in agent prompts. This allows prompts to reference external files.
+    PromptResolver::resolve_config_prompts(&mut result);
+
     Ok(result)
 }
 
@@ -284,6 +289,154 @@ pub fn parse_model_id(model: &str) -> (String, String) {
         } else {
             ("anthropic".to_string(), model.to_string())
         }
+    }
+}
+
+/// PromptResolver resolves {file:/absolute/path} references in prompt strings.
+///
+/// This allows prompts to reference external files whose contents are substituted
+/// at config load time, enabling reuse of prompt templates across agent definitions.
+#[derive(Debug, Default)]
+pub struct PromptResolver {
+    cache: std::collections::HashMap<String, String>,
+}
+
+impl PromptResolver {
+    /// Create a new PromptResolver with an empty cache.
+    pub fn new() -> Self {
+        Self {
+            cache: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Find all {file:/path/to/file} references in a prompt string.
+    /// Returns a vector of (start_index, end_index, file_path) for each reference found.
+    fn find_file_refs<'a>(&self, prompt: &'a str) -> Vec<(usize, usize, &'a str)> {
+        let mut refs = Vec::new();
+        let marker = "{file:";
+        let mut search_start = 0;
+
+        while let Some(start) = prompt[search_start..].find(marker) {
+            let abs_start = search_start + start;
+            let after_marker = abs_start + marker.len();
+
+            if let Some(end) = prompt[after_marker..].find('}') {
+                let abs_end = after_marker + end + 1; // +1 for "}"
+                let file_path = &prompt[after_marker..after_marker + end];
+                refs.push((abs_start, abs_end, file_path));
+                search_start = abs_end;
+            } else {
+                break;
+            }
+        }
+
+        refs
+    }
+
+    /// Resolve {file:/absolute/path} references in a prompt string.
+    ///
+    /// - If the prompt contains no {file:...} references, returns the prompt unchanged.
+    /// - If the prompt contains {file:/path/to/file} references, reads each file and
+    ///   replaces the reference with the file's contents.
+    /// - Files are cached after first read to avoid repeated I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a referenced file does not exist or cannot be read.
+    pub fn resolve_prompt(&mut self, prompt: &str) -> Result<String> {
+        if !prompt.contains("{file:") {
+            return Ok(prompt.to_string());
+        }
+
+        let refs = self.find_file_refs(prompt);
+        if refs.is_empty() {
+            return Ok(prompt.to_string());
+        }
+
+        // Collect all file paths first to avoid borrow conflicts
+        let file_paths: Vec<&str> = refs.iter().map(|(_, _, fp)| *fp).collect();
+
+        // Pre-load all file contents (checking cache and reading from disk)
+        let mut contents: Vec<String> = Vec::with_capacity(file_paths.len());
+        for file_path in &file_paths {
+            let content = if let Some(cached) = self.cache.get(*file_path) {
+                cached.clone()
+            } else {
+                let path = Path::new(file_path);
+                if !path.exists() {
+                    return Err(anyhow::anyhow!(
+                        "Prompt references file '{}' but it does not exist",
+                        file_path
+                    ));
+                }
+                let file_contents = std::fs::read_to_string(path).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to read file '{}' referenced in prompt: {}",
+                        file_path,
+                        e
+                    )
+                })?;
+                self.cache.insert(file_path.to_string(), file_contents.clone());
+                file_contents
+            };
+            contents.push(content);
+        }
+
+        let contents_len = contents.len();
+
+        // Process references in reverse order to preserve indices
+        let mut result = prompt.to_string();
+        for (i, (start, end, _)) in refs.into_iter().rev().enumerate() {
+            let content_idx = contents_len - 1 - i;
+            result = result[..start].to_string() + &contents[content_idx] + &result[end..];
+        }
+
+        Ok(result)
+    }
+
+    /// Resolve prompt references for an agent's prompt field if it contains {file:} references.
+    ///
+    /// Returns `Ok(None)` if the agent has no prompt or the prompt has no references.
+    /// Returns `Ok(Some(resolved_prompt))` if references were resolved.
+    pub fn resolve_prompt_for_agent(&mut self, agent: &super::AgentConfig) -> Result<Option<String>> {
+        let prompt = match &agent.prompt {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        if !prompt.contains("{file:") {
+            return Ok(None);
+        }
+
+        let resolved = self.resolve_prompt(prompt)?;
+        Ok(Some(resolved))
+    }
+
+    /// Resolve all {file:} references in agent prompts within an RcodeConfig.
+    ///
+    /// This modifies the config in place, replacing prompt fields that contain
+    /// {file:/path/to/file} references with the resolved file contents.
+    ///
+    /// Errors are logged and skipped - individual prompt resolution failures
+    /// do not cause the entire operation to fail.
+    pub fn resolve_config_prompts(config: &mut super::RcodeConfig) {
+        let mut resolver = PromptResolver::new();
+
+        if let Some(ref mut agent_map) = config.agent {
+            for (_name, agent) in agent_map.iter_mut() {
+                if let Ok(Some(resolved)) = resolver.resolve_prompt_for_agent(agent) {
+                    tracing::debug!(
+                        "Resolved {{file:}} references in prompt for agent"
+                    );
+                    agent.prompt = Some(resolved);
+                }
+            }
+        }
+    }
+
+    /// Clear the cache (useful for testing).
+    pub fn clear_cache(&mut self) {
+        self.cache.clear();
     }
 }
 
@@ -1049,5 +1202,207 @@ mod tests {
 
         let level2 = level1.get("level2").unwrap();
         assert!(level2.get("models").is_none());
+    }
+
+    // =============================================================================
+    // PromptResolver tests
+    // =============================================================================
+
+    #[test]
+    fn test_prompt_resolver_no_references() {
+        let mut resolver = PromptResolver::new();
+        let prompt = "This is a simple prompt without any file references.";
+        let result = resolver.resolve_prompt(prompt).unwrap();
+        assert_eq!(result, prompt);
+    }
+
+    #[test]
+    fn test_prompt_resolver_single_file_reference() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("prompt_template.txt");
+        std::fs::write(&file_path, "Hello from file!").unwrap();
+
+        let mut resolver = PromptResolver::new();
+        let prompt = format!("Before {{file:{}}}", file_path.display());
+        let result = resolver.resolve_prompt(&prompt).unwrap();
+        assert_eq!(result, "Before Hello from file!");
+    }
+
+    #[test]
+    fn test_prompt_resolver_multiple_file_references() {
+        let temp = tempfile::tempdir().unwrap();
+        let file1 = temp.path().join("part1.txt");
+        let file2 = temp.path().join("part2.txt");
+        std::fs::write(&file1, "PART1").unwrap();
+        std::fs::write(&file2, "PART2").unwrap();
+
+        let mut resolver = PromptResolver::new();
+        let prompt = format!("{{file:{}}} + {{file:{}}}", file1.display(), file2.display());
+        let result = resolver.resolve_prompt(&prompt).unwrap();
+        assert_eq!(result, "PART1 + PART2");
+    }
+
+    #[test]
+    fn test_prompt_resolver_file_not_found() {
+        let mut resolver = PromptResolver::new();
+        let prompt = "{file:/nonexistent/path/to/file.txt}";
+        let result = resolver.resolve_prompt(prompt);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn test_prompt_resolver_caches_file_contents() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("cached.txt");
+        std::fs::write(&file_path, "Cached content").unwrap();
+
+        let mut resolver = PromptResolver::new();
+
+        // First resolution
+        let prompt1 = format!("{{file:{}}}", file_path.display());
+        let result1 = resolver.resolve_prompt(&prompt1).unwrap();
+        assert_eq!(result1, "Cached content");
+
+        // Verify cache has entry
+        let cache_key = file_path.to_string_lossy();
+        assert!(resolver.cache.contains_key(cache_key.as_ref()));
+
+        // Modify the file
+        std::fs::write(&file_path, "Modified content").unwrap();
+
+        // Second resolution should still return cached content
+        let prompt2 = format!("{{file:{}}}", file_path.display());
+        let result2 = resolver.resolve_prompt(&prompt2).unwrap();
+        assert_eq!(result2, "Cached content");
+    }
+
+    #[test]
+    fn test_prompt_resolver_clear_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("cached.txt");
+        std::fs::write(&file_path, "Original content").unwrap();
+
+        let mut resolver = PromptResolver::new();
+
+        // First resolution
+        let prompt1 = format!("{{file:{}}}", file_path.display());
+        resolver.resolve_prompt(&prompt1).unwrap();
+
+        // Clear cache
+        resolver.clear_cache();
+        assert!(resolver.cache.is_empty());
+
+        // Modify file
+        std::fs::write(&file_path, "New content").unwrap();
+
+        // Resolution should read new content since cache is cleared
+        let prompt2 = format!("{{file:{}}}", file_path.display());
+        let result = resolver.resolve_prompt(&prompt2).unwrap();
+        assert_eq!(result, "New content");
+    }
+
+    #[test]
+    fn test_prompt_resolver_find_file_refs() {
+        let resolver = PromptResolver::new();
+        let prompt = "Start {file:/path/to/file1.txt} middle {file:/path/to/file2.txt} end";
+        let refs = resolver.find_file_refs(prompt);
+
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].2, "/path/to/file1.txt");
+        assert_eq!(refs[1].2, "/path/to/file2.txt");
+    }
+
+    #[test]
+    fn test_prompt_resolver_find_file_refs_none() {
+        let resolver = PromptResolver::new();
+        let prompt = "No file references here";
+        let refs = resolver.find_file_refs(prompt);
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_prompt_resolver_with_surrounding_text() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("template.txt");
+        std::fs::write(&file_path, "FILE CONTENT").unwrap();
+
+        let mut resolver = PromptResolver::new();
+        let prompt = format!("Prefix {{file:{}}} Suffix", file_path.display());
+        let result = resolver.resolve_prompt(&prompt).unwrap();
+        assert_eq!(result, "Prefix FILE CONTENT Suffix");
+    }
+
+    #[test]
+    fn test_resolve_prompt_for_agent_no_prompt() {
+        let mut resolver = PromptResolver::new();
+        let agent = super::super::AgentConfig::default();
+        let result = resolver.resolve_prompt_for_agent(&agent).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_prompt_for_agent_no_references() {
+        let mut resolver = PromptResolver::new();
+        let agent = super::super::AgentConfig {
+            prompt: Some("Simple prompt".to_string()),
+            ..Default::default()
+        };
+        let result = resolver.resolve_prompt_for_agent(&agent).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_prompt_for_agent_with_reference() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("agent_prompt.txt");
+        std::fs::write(&file_path, "Loaded prompt content").unwrap();
+
+        let mut resolver = PromptResolver::new();
+        let agent = super::super::AgentConfig {
+            prompt: Some(format!("System: {{file:{}}}", file_path.display())),
+            ..Default::default()
+        };
+        let result = resolver.resolve_prompt_for_agent(&agent).unwrap().unwrap();
+        assert_eq!(result, "System: Loaded prompt content");
+    }
+
+    #[test]
+    fn test_resolve_config_prompts_in_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("shared_prompt.txt");
+        std::fs::write(&file_path, "Shared prompt content").unwrap();
+
+        let prompt_with_ref = format!("{{file:{}}}", file_path.display());
+
+        let mut config = super::super::RcodeConfig::default();
+        let mut agents = std::collections::HashMap::new();
+        agents.insert(
+            "test-agent".to_string(),
+            super::super::AgentConfig {
+                prompt: Some(prompt_with_ref.clone()),
+                ..Default::default()
+            },
+        );
+        agents.insert(
+            "another-agent".to_string(),
+            super::super::AgentConfig {
+                prompt: Some("No references here".to_string()),
+                ..Default::default()
+            },
+        );
+        config.agent = Some(agents);
+
+        PromptResolver::resolve_config_prompts(&mut config);
+
+        let resolved_agents = config.agent.unwrap();
+        assert_eq!(
+            resolved_agents.get("test-agent").unwrap().prompt.as_ref().unwrap(),
+            "Shared prompt content"
+        );
+        assert_eq!(
+            resolved_agents.get("another-agent").unwrap().prompt.as_ref().unwrap(),
+            "No references here"
+        );
     }
 }

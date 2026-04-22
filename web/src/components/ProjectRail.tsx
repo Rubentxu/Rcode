@@ -433,11 +433,15 @@ function AddProjectDialog(props: AddProjectDialogProps) {
   const [name, setName] = createSignal(props.initialName || "");
   const [isCreating, setIsCreating] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  const [nameManuallyEdited, setNameManuallyEdited] = createSignal(false);
+
+  const deriveProjectName = (inputPath: string) => inputPath.split(/[\\/]/).filter(Boolean).pop() || "";
 
   createEffect(() => {
     if (props.isOpen) {
       if (props.initialPath !== undefined) setPath(props.initialPath);
       if (props.initialName !== undefined) setName(props.initialName);
+      setNameManuallyEdited(false);
     }
   });
 
@@ -451,8 +455,15 @@ function AddProjectDialog(props: AddProjectDialogProps) {
       props.onProjectCreated();
       props.onClose();
       setPath(""); setName("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create project");
+    } catch (err: any) {
+      // 409 means the project already exists — treat it as success since the goal is to have the project open
+      if (err?.status === 409 || (err instanceof Error && err.message.includes("409"))) {
+        props.onProjectCreated();
+        props.onClose();
+        setPath(""); setName("");
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to create project");
+      }
     } finally {
       setIsCreating(false);
     }
@@ -463,9 +474,8 @@ function AddProjectDialog(props: AddProjectDialogProps) {
     if (selected) {
       setPath(selected);
       // Auto-populate name from basename if name is empty
-      if (!name().trim()) {
-        const basename = selected.split(/[\\/]/).pop() || "";
-        setName(basename);
+      if (!nameManuallyEdited()) {
+        setName(deriveProjectName(selected));
       }
     }
   };
@@ -497,15 +507,15 @@ function AddProjectDialog(props: AddProjectDialogProps) {
                 <input
                   id="project-path-input"
                   type="text"
-                  value={path()}
-                  onInput={(e) => {
-                    setPath(e.currentTarget.value);
-                    // Auto-populate name from basename if name is empty
-                    if (!name().trim()) {
-                      const basename = e.currentTarget.value.split(/[\\/]/).pop() || "";
-                      if (basename) setName(basename);
-                    }
-                  }}
+                   value={path()}
+                   onInput={(e) => {
+                     const nextPath = e.currentTarget.value;
+                     setPath(nextPath);
+                     // Auto-populate name from basename until the user edits the name manually.
+                     if (!nameManuallyEdited()) {
+                       setName(deriveProjectName(nextPath));
+                     }
+                   }}
                   placeholder="/path/to/your/project"
                   class="flex-1 bg-surface-container-low text-on-surface px-3 py-2 rounded-lg text-sm transition-colors focus:outline-none"
                   style={{ border: "1px solid var(--outline-variant)" }}
@@ -529,7 +539,10 @@ function AddProjectDialog(props: AddProjectDialogProps) {
                 id="project-name-input"
                 type="text"
                 value={name()}
-                onInput={(e) => setName(e.currentTarget.value)}
+                onInput={(e) => {
+                  setNameManuallyEdited(true);
+                  setName(e.currentTarget.value);
+                }}
                 placeholder="My Project"
                 class="w-full bg-surface-container-low text-on-surface px-3 py-2 rounded-lg text-sm transition-colors focus:outline-none"
                 style={{ border: "1px solid var(--outline-variant)" }}
@@ -657,8 +670,17 @@ export default function ProjectRail() {
   // Listen for add-project event dispatched from App (WelcomeScreen/RecentProjectsView CTAs)
   onMount(() => {
     const handler = () => handleAddProject();
+    const debugHandler = () => {
+      pendingProjectPath = "";
+      pendingProjectName = "";
+      setShowAddDialog(true);
+    };
     window.addEventListener("rcode:open-add-project", handler);
-    onCleanup(() => window.removeEventListener("rcode:open-add-project", handler));
+    window.addEventListener("rcode:debug-open-add-project-modal", debugHandler);
+    onCleanup(() => {
+      window.removeEventListener("rcode:open-add-project", handler);
+      window.removeEventListener("rcode:debug-open-add-project-modal", debugHandler);
+    });
   });
 
   const handleProjectCreated = () => {

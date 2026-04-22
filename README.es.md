@@ -253,12 +253,15 @@ El registro de herramientas por defecto de RCode incluye aproximadamente 20 herr
 | `applypatch` | Aplicar parches a archivos |
 | `session_navigation` | Navegar y consultar el historial de sesiones |
 
-Integraciones de herramientas opcionales (disponibles cuando están configuradas):
+Estas herramientas están siempre disponibles en el runtime por defecto.
+
+Además, el sistema puede registrar familias adicionales de herramientas
+cuando su servicio o integración de soporte está disponible:
 
 | Integración | Herramientas |
 |-------------|--------------|
-| **CogniCode** | 21 herramientas de inteligencia de código: `cognicode_build_graph`, `cognicode_call_hierarchy`, `cognicode_trace_path`, `cognicode_entry_points`, `cognicode_leaf_functions`, `cognicode_hot_paths`, `cognicode_export_mermaid`, `cognicode_impact_analysis`, `cognicode_complexity`, `cognicode_architecture_check`, `cognicode_semantic_search`, `cognicode_get_symbols`, `cognicode_get_outline`, `cognicode_find_usages`, `cognicode_go_to_definition`, `cognicode_hover`, `cognicode_find_references`, `cognicode_safe_refactor`, `cognicode_validate_syntax`, y más |
-| **MCP** | Herramientas dinámicas de servidores Model Context Protocol |
+| **CogniCode** | Herramientas semánticas de inteligencia de código que se registran cuando el servicio CogniCode arranca correctamente. Complementan las herramientas core de lectura/escritura/edición, no las sustituyen. Ejemplos: `cognicode_build_graph`, `cognicode_call_hierarchy`, `cognicode_find_usages`, `cognicode_go_to_definition`, `cognicode_safe_refactor` y otras herramientas de análisis/navegación. |
+| **MCP** | Herramientas dinámicas registradas en runtime desde servidores Model Context Protocol configurados. |
 
 ## Pruebas
 

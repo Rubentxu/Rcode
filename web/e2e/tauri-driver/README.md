@@ -97,9 +97,30 @@ export ANTHROPIC_MODEL=MiniMax-M2.7-highspeed
 | `tool-calling.spec.mjs` | 1 | 1 |
 | `comprehensive.spec.mjs` | 14 | 19 |
 | `session-ux.spec.mjs` | pending local run | 6 |
-| **Total** | **15 + session-ux** | **26** |
+| `orchestrator-features.spec.mjs` | pending | 15 |
+| **Total** | **15 + others** | **41** |
 
 The 5 failing tests in `comprehensive.spec.mjs` are in the Settings navigation
 area (timing/selector issues) and the Abort test (prompt timing). These are
 pre-existing issues unrelated to the session-ux change. Run the session-ux spec
 directly to validate the new coverage in isolation.
+
+## Orchestrator Features Spec
+
+The `orchestrator-features.spec.mjs` validates ReflexiveOrchestrator features:
+
+1. **Worker Agents** — verify explore, implement, test, verify, research agents are registered
+2. **Orchestrator Initialization** — session creates with runtime and registry
+3. **Delegation** — child sessions created via delegation mechanism
+4. **Session Status** — correct status transitions (created → idle → running)
+5. **Tool Calls** — tool calls recorded in session messages
+6. **Multiple Sessions** — multiple concurrent sessions coexist
+7. **Message Persistence** — session messages persisted correctly
+8. **Project Switching** — sessions list updates when switching projects
+9. **Session Deletion** — sessions can be deleted
+10. **Agent Tools** — agent info includes supported tools
+11. **Entropy Evaluation** — high tool diversity triggers delegation
+12. **Error Handling** — tool errors recorded correctly
+13. **GREEN Zone** — simple prompts execute without delegation
+14. **Tool Tracking** — tool usage tracked for Thompson Sampling
+15. **Contextual Responses** — agent provides contextually relevant responses

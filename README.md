@@ -253,12 +253,15 @@ RCode's default tool registry includes approximately 20 built-in tools:
 | `applypatch` | Apply patches to files |
 | `session_navigation` | Navigate and query session history |
 
-Optional tool integrations (available when configured):
+These tools are always available in the default runtime.
+
+Additional tool families can be registered at runtime when their backing
+service or integration is available:
 
 | Integration | Tools |
 |--------------|-------|
-| **CogniCode** | 21 code intelligence tools: `cognicode_build_graph`, `cognicode_call_hierarchy`, `cognicode_trace_path`, `cognicode_entry_points`, `cognicode_leaf_functions`, `cognicode_hot_paths`, `cognicode_export_mermaid`, `cognicode_impact_analysis`, `cognicode_complexity`, `cognicode_architecture_check`, `cognicode_semantic_search`, `cognicode_get_symbols`, `cognicode_get_outline`, `cognicode_find_usages`, `cognicode_go_to_definition`, `cognicode_hover`, `cognicode_find_references`, `cognicode_safe_refactor`, `cognicode_validate_syntax`, and more |
-| **MCP** | Dynamic tools from Model Context Protocol servers |
+| **CogniCode** | Semantic code-intelligence tools registered when the CogniCode service starts successfully. These complement the core filesystem-editing tools instead of replacing them. Examples include `cognicode_build_graph`, `cognicode_call_hierarchy`, `cognicode_find_usages`, `cognicode_go_to_definition`, `cognicode_safe_refactor`, and related analysis/navigation tools. |
+| **MCP** | Dynamic tools registered from configured Model Context Protocol servers at runtime. |
 
 ## Testing
 

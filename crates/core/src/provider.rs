@@ -145,6 +145,9 @@ pub enum StreamingEvent {
     Reasoning {
         delta: String,
     },
+    /// Signals the end of a reasoning block.
+    /// Emitted when reasoning active state transitions to false.
+    ReasoningEnd,
     ToolCallStart {
         id: String,
         name: String,
