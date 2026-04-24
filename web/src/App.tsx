@@ -612,6 +612,8 @@ export default function App() {
           }}
           onRetry={handleRetry}
           currentModel={globalStore.currentModel()}
+          onModelChange={globalStore.setModel}
+          onTerminalToggle={() => globalStore.toggleTerminal()}
         />
       );
     }

@@ -8,43 +8,49 @@ interface ReasoningStreamPanelProps {
 /**
  * Collapsible reasoning panel for live reasoning display during streaming.
  * Replaced by ReasoningBlock on commit.
+ *
+ * UI/UX: Enhanced with clearer visual hierarchy as a "process layer" element.
  */
 export const ReasoningStreamPanel: Component<ReasoningStreamPanelProps> = (props) => {
   const [collapsed, setCollapsed] = createSignal(props.defaultCollapsed ?? true);
-  
+
   const handleToggle = () => {
     setCollapsed(!collapsed());
   };
-  
+
   return (
-    <div 
+    <div
       data-component="reasoning-stream-panel"
-      class="border-l border-secondary/50 px-3 py-2"
+      class="reasoning-block"
     >
-      <button 
+      <button
         data-component="reasoning-toggle"
-        class="flex items-center gap-2 cursor-pointer w-full"
+        class="reasoning-block-header w-full"
         onClick={handleToggle}
         type="button"
+        aria-expanded={!collapsed()}
       >
-        <span class="material-symbols-outlined text-secondary text-sm" style="font-variation-settings: 'FILL' 1;">memory</span>
-        <span class="text-[11px] font-mono uppercase tracking-widest text-secondary/70">Reasoning</span>
-        <span class="material-symbols-outlined text-outline text-xs ml-auto">
-          {collapsed() ? "expand_more" : "expand_less"}
-        </span>
+        <span class="material-symbols-outlined text-secondary" style="font-size: 14px; font-variation-settings: 'FILL' 1;">psychology</span>
+        <span class="reasoning-block-label">Reasoning</span>
+        <Show when={collapsed()} fallback={
+          <span class="material-symbols-outlined text-outline text-sm ml-auto">
+            expand_less
+          </span>
+        }>
+          <span class="reasoning-block-preview">
+            Click to expand...
+          </span>
+          <span class="material-symbols-outlined text-outline text-sm ml-auto">
+            expand_more
+          </span>
+        </Show>
       </button>
-      
+
       <Show when={!collapsed()}>
-        <div data-component="reasoning-content" class="font-mono text-sm text-on-surface-variant/80 space-y-1 mt-2">
+        <div data-component="reasoning-content" class="reasoning-content font-mono text-sm text-on-surface-variant/80 space-y-1">
           <pre class="whitespace-pre-wrap">{props.content}</pre>
         </div>
       </Show>
-      
-      {collapsed() && (
-        <div class="text-xs text-outline font-mono truncate">
-          Click to expand...
-        </div>
-      )}
     </div>
   );
 };

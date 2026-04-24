@@ -6,26 +6,48 @@ interface ReasoningBlockProps {
 }
 
 /**
- * Renders a reasoning block with Material Design 3 styling.
+ * Renders a reasoning block with enhanced visual hierarchy.
  * Shows agent reasoning with monospace font and secondary color accents.
- * 
+ *
  * T1.1: Uses <Show when={isExpanded()}> instead of CSS hiding to prevent
  * unified() pipeline from running on collapsed reasoning blocks.
+ *
+ * UI/UX: Now has clearer visual separation as a "process layer" element.
  */
 export const ReasoningBlock: Component<ReasoningBlockProps> = (props) => {
   const [isExpanded, setIsExpanded] = createSignal(false);
 
   return (
-    <div data-part="reasoning" class="border-l border-secondary/50 px-3 py-2">
+    <div data-part="reasoning" class="reasoning-block">
       <div
-        class="flex items-center gap-2 cursor-pointer"
+        class="reasoning-block-header"
         onClick={() => setIsExpanded(!isExpanded())}
+        role="button"
+        aria-expanded={isExpanded()}
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setIsExpanded(!isExpanded());
+          }
+        }}
       >
-        <span class="material-symbols-outlined text-secondary text-sm" style="font-variation-settings: 'FILL' 1;">memory</span>
-        <span class="text-[11px] font-mono uppercase tracking-widest text-secondary/70">Reasoning</span>
-        <span class="material-symbols-outlined text-outline text-xs ml-auto">
-          {isExpanded() ? "expand_less" : "expand_more"}
-        </span>
+        <span class="material-symbols-outlined text-secondary" style="font-size: 14px; font-variation-settings: 'FILL' 1;">psychology</span>
+        <span class="reasoning-block-label">Reasoning</span>
+        <Show when={isExpanded()} fallback={
+          <span class="reasoning-block-preview text-xs text-outline font-mono truncate">
+            Click to expand...
+          </span>
+        }>
+          <span class="material-symbols-outlined text-outline text-sm ml-auto">
+            expand_less
+          </span>
+        </Show>
+        {!isExpanded() && (
+          <span class="material-symbols-outlined text-outline text-sm ml-auto">
+            expand_more
+          </span>
+        )}
       </div>
 
       {/*
@@ -33,16 +55,10 @@ export const ReasoningBlock: Component<ReasoningBlockProps> = (props) => {
         when collapsed, so unified() pipeline never runs on hidden reasoning blocks.
       */}
       <Show when={isExpanded()}>
-        <div class="font-mono text-sm text-on-surface-variant/80 space-y-1">
+        <div class="reasoning-content font-mono text-sm text-on-surface-variant/80 space-y-1">
           <MarkdownRenderer content={props.content} />
         </div>
       </Show>
-
-      {!isExpanded() && (
-        <div class="text-xs text-outline font-mono truncate">
-          Click to expand...
-        </div>
-      )}
     </div>
   );
 };
