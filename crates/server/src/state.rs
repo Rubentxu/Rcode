@@ -104,8 +104,11 @@ fn create_tools_with_runner(
 
     // Inject the runner into TaskTool
     let task_tool =
-        rcode_tools::task::TaskTool::with_session_service(session_service).with_runner(runner);
+        rcode_tools::task::TaskTool::with_session_service(session_service).with_runner(Arc::clone(&runner));
     tools.set_task_tool(task_tool);
+
+    // Inject the same runner into DelegateTool for real async agent spawning
+    tools.set_delegate_tool(runner);
 
     tools
 }

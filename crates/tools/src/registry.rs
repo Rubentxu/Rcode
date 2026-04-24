@@ -23,9 +23,17 @@ pub struct ToolRegistryService {
     command_registry: RwLock<Option<Arc<super::command_registry::CommandRegistry>>>,
     mcp_registry: RwLock<Option<Arc<rcode_mcp::McpServerRegistry>>>,
     truncation_config: Option<super::truncate::TruncationConfig>,
+    /// Shared store for DelegateTool + DelegationReadTool; retained so
+    /// set_delegate_tool() can replace only DelegateTool while keeping the
+    /// same store reference in DelegationReadTool.
+    delegate_store: super::delegate::DelegationStore,
 }
 
 impl ToolRegistryService {
+    fn new_store() -> super::delegate::DelegationStore {
+        Arc::new(TokioRwLock::new(std::collections::HashMap::new()))
+    }
+
     pub fn new() -> Self {
         let registry = Self {
             tools: RwLock::new(HashMap::new()),
@@ -34,6 +42,7 @@ impl ToolRegistryService {
             command_registry: RwLock::new(None),
             mcp_registry: RwLock::new(None),
             truncation_config: None,
+            delegate_store: Self::new_store(),
         };
         registry.register_defaults(None);
         registry
@@ -48,6 +57,7 @@ impl ToolRegistryService {
             command_registry: RwLock::new(None),
             mcp_registry: RwLock::new(None),
             truncation_config: None,
+            delegate_store: Self::new_store(),
         };
         registry.register_defaults(Some(session_service));
         registry
@@ -61,11 +71,12 @@ impl ToolRegistryService {
             command_registry: RwLock::new(None),
             mcp_registry: RwLock::new(None),
             truncation_config: None,
+            delegate_store: Self::new_store(),
         };
         registry.register_defaults(None);
         registry
     }
-    
+
     /// Create a registry with permission configuration for TaskTool
     pub fn with_permission_config(permission_config: PermissionConfig) -> Self {
         let registry = Self {
@@ -75,6 +86,7 @@ impl ToolRegistryService {
             command_registry: RwLock::new(None),
             mcp_registry: RwLock::new(None),
             truncation_config: None,
+            delegate_store: Self::new_store(),
         };
         registry.register_defaults(None);
         registry
@@ -96,6 +108,7 @@ impl ToolRegistryService {
             command_registry: RwLock::new(None),
             mcp_registry: RwLock::new(None),
             truncation_config: None,
+            delegate_store: Self::new_store(),
         });
         registry.register_defaults(Some(session_service));
         registry.register(Arc::new(super::batch::BatchTool::new(Arc::clone(&registry))));
@@ -139,7 +152,7 @@ impl ToolRegistryService {
         }
 
         // Register delegate tools with shared store
-        let delegate_store = Arc::new(TokioRwLock::new(std::collections::HashMap::new()));
+        let delegate_store = Arc::clone(&self.delegate_store);
         self.register(Arc::new(super::delegate::DelegateTool::with_store(delegate_store.clone())));
         self.register(Arc::new(super::delegate::DelegationReadTool::new(delegate_store)));
     }
@@ -227,10 +240,24 @@ impl ToolRegistryService {
 
     /// Replace the TaskTool with a custom implementation
     /// 
+    /// Replace the TaskTool with a runner-enabled version.
+    ///
     /// This allows the server composition root to inject a TaskTool
     /// that has the SubagentRunner configured.
     pub fn set_task_tool(&self, task_tool: super::task::TaskTool) {
         let new_tool: Arc<dyn Tool> = Arc::new(task_tool);
+        self.register(new_tool);
+    }
+
+    /// Replace DelegateTool with a runner-enabled version.
+    ///
+    /// Uses the same `delegate_store` already held by `DelegationReadTool` so
+    /// both tools continue to share state after the replacement.
+    pub fn set_delegate_tool(&self, runner: Arc<dyn rcode_core::SubagentRunner>) {
+        let new_tool = Arc::new(super::delegate::DelegateTool::with_store_and_runner(
+            Arc::clone(&self.delegate_store),
+            runner,
+        ));
         self.register(new_tool);
     }
 
