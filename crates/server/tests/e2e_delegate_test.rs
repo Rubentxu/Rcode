@@ -99,7 +99,7 @@ async fn test_delegate_tool_fires_and_worker_completes() {
     let messages = msgs_body["messages"].as_array().expect("messages array missing");
 
     let has_tool_call = messages.iter().any(|m| {
-        m["parts"].as_array().map_or(false, |parts| {
+        m["parts"].as_array().is_some_and(|parts| {
             parts.iter().any(|p| p["type"] == "tool_call" && p["name"] == "delegate")
         })
     });
@@ -113,7 +113,7 @@ async fn test_delegate_tool_fires_and_worker_completes() {
     // Assertion 3: parent session messages contain a ToolResult part
     // -----------------------------------------------------------------------
     let has_tool_result = messages.iter().any(|m| {
-        m["parts"].as_array().map_or(false, |parts| {
+        m["parts"].as_array().is_some_and(|parts| {
             parts.iter().any(|p| p["type"] == "tool_result")
         })
     });
@@ -170,7 +170,7 @@ async fn test_delegation_read_returns_completed_result() {
     // Find the tool_call part to get the delegation id (same as tool call id)
     let delegation_id = messages
         .iter()
-        .flat_map(|m| m["parts"].as_array().unwrap_or(&vec![]).iter().cloned().collect::<Vec<_>>())
+        .flat_map(|m| m["parts"].as_array().unwrap_or(&vec![]).to_vec())
         .find(|p| p["type"] == "tool_call" && p["name"] == "delegate")
         .and_then(|p| p["id"].as_str().map(|s| s.to_string()));
 

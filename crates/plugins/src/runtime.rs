@@ -4,6 +4,7 @@
 //! that plugins can use to manage other plugins.
 
 use std::sync::Arc;
+use parking_lot::Mutex;
 use tracing::{info, error};
 
 use super::{PluginManager, PluginSpec, Result};
@@ -11,20 +12,44 @@ use super::{PluginManager, PluginSpec, Result};
 /// Runtime API available to plugins for managing other plugins
 pub struct PluginRuntime {
     manager: Arc<PluginManager>,
+    /// Specs queued via `plugins_add` — drained on the next `install` cycle
+    pending_specs: Mutex<Vec<PluginSpec>>,
 }
 
 impl PluginRuntime {
     /// Create a new PluginRuntime
     pub fn new(manager: Arc<PluginManager>) -> Self {
-        Self { manager }
+        Self {
+            manager,
+            pending_specs: Mutex::new(Vec::new()),
+        }
     }
 
-    /// Add a plugin spec to the installation queue
-    /// Note: This just registers the spec, actual installation happens via install()
+    /// Add a plugin spec to the pending installation queue.
+    ///
+    /// The spec will be installed on the next call to `drain_pending()` or
+    /// when the caller decides to flush the queue.
     pub fn plugins_add(&self, spec: PluginSpec) -> Result<()> {
-        info!("PluginRuntime: plugins_add called for {}", spec.id);
-        // In a real implementation, this might queue the plugin for later installation
+        info!("PluginRuntime: queuing plugin '{}' for installation", spec.id);
+        self.pending_specs.lock().push(spec);
         Ok(())
+    }
+
+    /// Drain all pending specs and install them.
+    ///
+    /// Returns the IDs of every spec that was attempted (regardless of outcome).
+    pub fn drain_pending(&self) -> Vec<PluginSpec> {
+        let specs: Vec<PluginSpec> = std::mem::take(&mut *self.pending_specs.lock());
+        for spec in &specs {
+            let manager = self.manager.clone();
+            let spec_clone = spec.clone();
+            tokio::runtime::Handle::current().spawn(async move {
+                if let Err(e) = manager.install(spec_clone).await {
+                    error!("Plugin installation failed during drain: {}", e);
+                }
+            });
+        }
+        specs
     }
 
     /// Install a plugin from a spec
@@ -81,12 +106,19 @@ impl PluginRuntime {
     pub fn plugins_list_all(&self) -> Vec<String> {
         self.manager.list_plugins()
     }
+
+    /// Returns the number of specs currently in the pending queue
+    pub fn pending_count(&self) -> usize {
+        self.pending_specs.lock().len()
+    }
 }
 
 impl Clone for PluginRuntime {
     fn clone(&self) -> Self {
         Self {
             manager: self.manager.clone(),
+            // Clone does NOT share the pending queue — each clone starts empty
+            pending_specs: Mutex::new(Vec::new()),
         }
     }
 }

@@ -6,6 +6,7 @@ use tracing::{info, warn, debug};
 
 use super::{Plugin, PluginError, PluginMetadata, Result};
 use super::manifest::PluginManifest;
+use super::types::{CommandDefinition, RouteDefinition};
 
 /// Loader for plugins from local directories
 pub struct LocalPluginLoader {
@@ -85,31 +86,74 @@ impl LocalPluginLoader {
 /// Type alias for the plugin factory function
 type PluginFactory = Box<dyn Fn() -> Result<Arc<dyn Plugin>> + Send + Sync>;
 
+/// Wrapper that keeps the dynamic library alive alongside the plugin.
+///
+/// When a plugin is loaded from a shared library (`dlopen`/`LoadLibrary`), the
+/// vtable pointers inside the `Arc<dyn Plugin>` point into the library's text
+/// segment. If the `Library` handle is dropped, those pointers become dangling
+/// and any call through the trait object is UB. This wrapper co-owns both the
+/// plugin and the library so they are dropped together.
+struct LibraryBoundPlugin {
+    inner: Arc<dyn Plugin>,
+    /// Kept alive purely for its `Drop` impl — must outlive `inner`.
+    _lib: Arc<libloading::Library>,
+}
+
+impl LibraryBoundPlugin {
+    fn new(inner: Arc<dyn Plugin>, lib: libloading::Library) -> Self {
+        Self {
+            inner,
+            _lib: Arc::new(lib),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Plugin for LibraryBoundPlugin {
+    fn id(&self) -> &str { self.inner.id() }
+    fn name(&self) -> &str { self.inner.name() }
+    fn version(&self) -> &str { self.inner.version() }
+    fn description(&self) -> Option<&str> { self.inner.description() }
+    async fn on_load(&self) -> rcode_core::error::Result<()> { self.inner.on_load().await }
+    async fn on_unload(&self) -> rcode_core::error::Result<()> { self.inner.on_unload().await }
+    fn commands(&self) -> Vec<CommandDefinition> { self.inner.commands() }
+    fn routes(&self) -> Vec<RouteDefinition> { self.inner.routes() }
+}
+
 /// Generic plugin library loader using dynamic library loading
 pub struct PluginLibraryLoader;
 
 impl PluginLibraryLoader {
-    /// Load a plugin from a shared library file
+    /// Load a plugin from a shared library file.
+    ///
+    /// The returned `Arc<dyn Plugin>` keeps the `Library` alive so that
+    /// vtable pointers remain valid for the entire lifetime of the plugin.
     pub async fn load_from_file(path: &Path) -> Result<Arc<dyn Plugin>> {
         let path_str = path.to_string_lossy().to_string();
         
+        // SAFETY: We immediately wrap the Library in LibraryBoundPlugin so
+        // its lifetime is tied to the returned Arc — no dangling vtables.
         let library = unsafe {
             libloading::Library::new(&path_str)
                 .map_err(|e| PluginError::LoadFailed(format!("Failed to load library {}: {}", path_str, e)))?
         };
         
-        // Get the plugin factory symbol
-        let factory: libloading::Symbol<PluginFactory> = unsafe {
-            library.get(b"rcode_plugin_create")
-                .map_err(|e| PluginError::SymbolNotFound(format!("Failed to get factory symbol: {}", e)))?
+        // Get the plugin factory symbol — borrow from `library` before we move it.
+        let plugin = {
+            let factory: libloading::Symbol<PluginFactory> = unsafe {
+                library.get(b"rcode_plugin_create")
+                    .map_err(|e| PluginError::SymbolNotFound(format!("Failed to get factory symbol: {}", e)))?
+            };
+            
+            // Call the factory to create the plugin instance
+            factory()
+                .map_err(|e| PluginError::InitFailed(format!("Factory call failed: {}", e)))?
         };
-        
-        // Call the factory to create the plugin instance
-        let plugin = factory()
-            .map_err(|e| PluginError::InitFailed(format!("Factory call failed: {}", e)))?;
         
         info!("Loaded plugin from: {}", path_str);
         
-        Ok(plugin)
+        // Wrap the plugin so the Library stays alive
+        Ok(Arc::new(LibraryBoundPlugin::new(plugin, library)))
     }
 }
+

@@ -6,6 +6,8 @@ use parking_lot::RwLock;
 use tracing::{info, warn, error, debug};
 
 use super::{Plugin, PluginCapabilities, PluginError, PluginEntry, PluginSpec, PluginSource, PluginState, Result, RouteDefinition};
+use super::loader::LocalPluginLoader;
+use super::types::{CommandHandler, CommandOutput, RouteHandler, RouteRequest, RouteResponse};
 
 /// Manager for all loaded plugins with full lifecycle support
 pub struct PluginManager {
@@ -15,6 +17,10 @@ pub struct PluginManager {
     active_plugins: RwLock<HashSet<String>>,
     /// Cache of installed plugin paths (plugin_id -> cached_path)
     install_cache: RwLock<HashMap<String, std::path::PathBuf>>,
+    /// Registered command handlers: command_name -> handler
+    command_handlers: RwLock<HashMap<String, Arc<dyn CommandHandler>>>,
+    /// Registered route handlers: (method, path) -> handler
+    route_handlers: RwLock<HashMap<(String, String), Arc<dyn RouteHandler>>>,
 }
 
 impl PluginManager {
@@ -24,6 +30,8 @@ impl PluginManager {
             plugins: RwLock::new(HashMap::new()),
             active_plugins: RwLock::new(HashSet::new()),
             install_cache: RwLock::new(HashMap::new()),
+            command_handlers: RwLock::new(HashMap::new()),
+            route_handlers: RwLock::new(HashMap::new()),
         }
     }
 
@@ -77,9 +85,36 @@ impl PluginManager {
             cache.insert(id.clone(), resolved_path.clone());
         }
 
-        // Load the plugin from the resolved path
-        // Note: The actual loading would use the loader, but we just track the path here
-        // For now, we mark it as installed in the cache
+        // Load the plugin from the resolved path and register it
+        match &spec.source {
+            PluginSource::File(path) => {
+                // Use the directory of the resolved path as the plugin directory
+                let plugin_dir = if path.is_dir() {
+                    path.clone()
+                } else {
+                    path.parent().map(|p| p.to_path_buf()).unwrap_or(resolved_path.clone())
+                };
+                let loader = LocalPluginLoader::new(vec![]);
+                match loader.load_from_dir(&plugin_dir).await {
+                    Ok(plugin) => {
+                        self.load_plugin(plugin).await?;
+                    }
+                    Err(e) => {
+                        // Remove from cache since load failed
+                        self.install_cache.write().remove(&id);
+                        return Err(PluginError::LoadFailed(format!(
+                            "Failed to load plugin {} from {:?}: {}", id, plugin_dir, e
+                        )));
+                    }
+                }
+            }
+            PluginSource::Npm(_package_name) => {
+                // npm plugins are not yet supported; path is a placeholder
+                // This remains a stub intentionally — container/K8s runtime only
+                debug!("npm plugin {} registered in cache (loading not yet supported)", id);
+            }
+        }
+
         info!("Installed plugin: {} -> {:?}", id, resolved_path);
         Ok(())
     }
@@ -345,6 +380,63 @@ impl PluginManager {
         }
 
         routes
+    }
+
+    /// Register a command handler for a given command name.
+    pub fn register_command_handler(&self, name: impl Into<String>, handler: Arc<dyn CommandHandler>) {
+        self.command_handlers.write().insert(name.into(), handler);
+    }
+
+    /// Register a route handler for a given HTTP method + path pair.
+    pub fn register_route_handler(
+        &self,
+        method: impl Into<String>,
+        path: impl Into<String>,
+        handler: Arc<dyn RouteHandler>,
+    ) {
+        self.route_handlers
+            .write()
+            .insert((method.into(), path.into()), handler);
+    }
+
+    /// Dispatch a command by name.
+    ///
+    /// Returns `PluginError::NotFound` when no handler is registered for the command.
+    pub async fn dispatch_command(
+        &self,
+        command: &str,
+        args: serde_json::Value,
+    ) -> Result<CommandOutput> {
+        let handler = self
+            .command_handlers
+            .read()
+            .get(command)
+            .cloned()
+            .ok_or_else(|| PluginError::NotFound(format!("command '{}'", command)))?;
+
+        handler.handle(args).await.map_err(|e| {
+            PluginError::ExecutionFailed(format!("Command '{}' failed: {}", command, e))
+        })
+    }
+
+    /// Dispatch an HTTP-style route request.
+    ///
+    /// Returns `PluginError::NotFound` when no handler is registered for the
+    /// `(method, path)` pair.
+    pub async fn dispatch_route(&self, request: RouteRequest) -> Result<RouteResponse> {
+        let key = (request.method.clone(), request.path.clone());
+        let handler = self
+            .route_handlers
+            .read()
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| {
+                PluginError::NotFound(format!("route '{} {}'", request.method, request.path))
+            })?;
+
+        handler.handle(request).await.map_err(|e| {
+            PluginError::ExecutionFailed(format!("Route handler failed: {}", e))
+        })
     }
 }
 

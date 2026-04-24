@@ -49,6 +49,9 @@ pub enum PluginError {
     #[error("Duplicate plugin: {0}")]
     DuplicatePlugin(String),
 
+    #[error("Plugin execution failed: {0}")]
+    ExecutionFailed(String),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

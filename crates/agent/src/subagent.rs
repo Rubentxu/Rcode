@@ -180,7 +180,7 @@ impl Default for SubagentManager {
 mod tests {
     use super::*;
     use rcode_core::agent::Agent;
-    use rcode_core::{AgentContext, AgentResult};
+    use rcode_core::{AgentContext, AgentResult, AgentStopReason, Message, Part};
 
     struct MockAgent {
         id: String,
@@ -198,8 +198,17 @@ mod tests {
         fn name(&self) -> &str { "Mock Agent" }
         fn description(&self) -> &str { "A mock agent for testing" }
         
-        async fn run(&self, _ctx: &mut AgentContext) -> Result<AgentResult> {
-            todo!()
+        async fn run(&self, ctx: &mut AgentContext) -> Result<AgentResult> {
+            let message = Message::assistant(
+                ctx.session_id.clone(),
+                vec![Part::Text { content: format!("Mock agent '{}' completed", self.id) }],
+            );
+            Ok(AgentResult {
+                message,
+                should_continue: false,
+                stop_reason: AgentStopReason::EndOfTurn,
+                usage: None,
+            })
         }
         
         fn system_prompt(&self) -> String {

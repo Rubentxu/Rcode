@@ -173,24 +173,34 @@ impl SubagentRunner for ServerSubagentRunner {
             executor = executor.with_intelligence_xml_provider(xml_provider);
         }
 
+        // Create an isolated child session with its own UUID
+        let child_session = self.session_service
+            .create_child(parent_session_id, agent_id.to_string(), effective_model.clone())
+            .map_err(|e| {
+                Box::new(RCodeError::Session(format!(
+                    "Failed to create child session for subagent '{}': {}", agent_id, e
+                ))) as Box<dyn std::error::Error + Send + Sync>
+            })?;
+        let child_session_id = child_session.id.0.clone();
+
         // Create context for the subagent
         let cwd = std::env::current_dir().unwrap_or_else(|_| session.project_path.clone());
         
         // Create the initial user message
-        let user_message = Message::user(parent_session_id.to_string(), vec![Part::Text {
+        let user_message = Message::user(child_session_id.clone(), vec![Part::Text {
             content: prompt.to_string(),
         }]);
         
         // Persist the user message to the child session BEFORE running the executor
-        self.session_service.add_message(parent_session_id, user_message.clone());
+        self.session_service.add_message(&child_session_id, user_message.clone());
         
         let messages = vec![user_message];
 
         let mut ctx = AgentContext {
-            session_id: parent_session_id.to_string(),
+            session_id: child_session_id.clone(),
             project_path: session.project_path.clone(),
             cwd,
-            user_id: None, // Session doesn't track user_id
+            user_id: None,
             model_id: effective_model,
             messages,
         };
@@ -201,21 +211,17 @@ impl SubagentRunner for ServerSubagentRunner {
         })?;
 
         // Persist all messages from ctx.messages to the child session
-        // This includes the user message (already added), tool calls, tool results, and final assistant response
         for msg in &ctx.messages {
-            // Skip the first message if it's the same user message we already added
-            // (to avoid duplicates - though add_message is idempotent for different messages)
             if msg.role == Role::User && msg.parts.iter().any(|p| matches!(p, Part::Text { content } if content == prompt)) {
-                // Already added this user message, skip
                 continue;
             }
-            self.session_service.add_message(parent_session_id, msg.clone());
+            self.session_service.add_message(&child_session_id, msg.clone());
         }
         
-        // Also persist the final assistant message if it's different from what we already saved
+        // Also persist the final assistant message if not already saved
         let final_message = &result.message;
         if !ctx.messages.iter().any(|m| m.id == final_message.id) {
-            self.session_service.add_message(parent_session_id, final_message.clone());
+            self.session_service.add_message(&child_session_id, final_message.clone());
         }
 
         // Extract assistant text from the result
@@ -223,7 +229,7 @@ impl SubagentRunner for ServerSubagentRunner {
         
         Ok(SubagentResult {
             response_text,
-            child_session_id: parent_session_id.to_string(),
+            child_session_id,
         })
     }
 }
