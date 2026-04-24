@@ -545,7 +545,11 @@ pub async fn submit_prompt(
         .ok_or_else(|| ServerError::not_found())?;
     
     // Get agent name from session
-    let agent_name = &session.agent_id;
+    // Get agent name from session, allow per-request override via req.agent_id
+    let agent_name: String = req.agent_id.as_deref()
+        .filter(|id| !id.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| session.agent_id.clone());
     debug!(session_id = %id, request_id = %request_id, agent_name = %agent_name, session_model = %session.model_id, "session found, about to sanitize prompt");
 
     // Privacy: sanitize prompt BEFORE acquiring config lock to avoid
@@ -566,17 +570,17 @@ pub async fn submit_prompt(
     // on the same thread is a guaranteed deadlock).
     let model_id = req.model_id
         .clone()
-        .or_else(|| config.model_for_agent(agent_name).map(|s| s.to_string()))
+        .or_else(|| config.model_for_agent(&agent_name).map(|s| s.to_string()))
         .unwrap_or_else(|| session.model_id.clone());
     debug!(session_id = %id, request_id = %request_id, model_id = %model_id, "resolved model_id, about to check fast-path");
 
     let max_tokens_override: Option<u32> = config.agent.as_ref()
-        .and_then(|agents| agents.get(agent_name))
+        .and_then(|agents| agents.get(&agent_name))
         .and_then(|ac| ac.max_tokens);
     let reasoning_effort_override: Option<String> = config.agent.as_ref()
-        .and_then(|agents| agents.get(agent_name))
+        .and_then(|agents| agents.get(&agent_name))
         .and_then(|ac| ac.reasoning_effort.clone());
-    let allowed_tools = config.tools_for_agent(agent_name);
+    let allowed_tools = config.tools_for_agent(&agent_name);
     let auto_compact = config.auto_compact;
     let compact_threshold_messages = config.compact_threshold_messages;
     let compact_keep_messages = config.compact_keep_messages;
@@ -1109,6 +1113,9 @@ pub struct PromptRequest {
     pub prompt: String,
     #[serde(default)]
     pub model_id: Option<String>,
+    /// Optional agent override — if set, uses this agent instead of the session's default agent.
+    #[serde(default)]
+    pub agent_id: Option<String>,
     /// Optional file attachments sent alongside the prompt.
     /// Each attachment is decoded from base64 and stored as a Part::Attachment.
     #[serde(default)]

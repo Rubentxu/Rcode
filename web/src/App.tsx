@@ -298,7 +298,11 @@ export default function App() {
       const response = await fetch(`${await getApiBase()}/session/${sessionId}/prompt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, attachments }),
+        body: JSON.stringify({
+          prompt,
+          attachments,
+          ...(globalStore.currentAgent() ? { agent_id: globalStore.currentAgent() } : {}),
+        }),
       });
       
       if (response.ok) {
