@@ -26,6 +26,8 @@ use rcode_core::{
 };
 use rcode_agent::{AgentExecutor, DefaultAgent};
 use rcode_providers::ProviderFactory;
+use rcode_orchestrator::ReflexiveOrchestrator;
+use rcode_runtime::InProcessRuntime;
 use tracing::{debug, error, info, warn, Instrument};
 
 /// Adapter to wrap rcode_providers::LlmProvider and expose it as rcode_core::LlmProvider
@@ -882,7 +884,15 @@ pub async fn submit_prompt(
     };
 
     // Create the agent from OpenCode-compatible agent config when available.
-    let agent: Arc<dyn rcode_core::Agent> = if let Some(agent_cfg) = config_snapshot
+    // Special case: "orchestrator" uses ReflexiveOrchestrator (OBSERVE→DECIDE→DELEGATE).
+    let agent: Arc<dyn rcode_core::Agent> = if agent_name == "orchestrator" {
+        let runtime: Arc<dyn rcode_runtime::AgentRuntime> = Arc::new(InProcessRuntime::new());
+        Arc::new(ReflexiveOrchestrator::new(
+            Arc::clone(&state.event_bus),
+            runtime,
+            Arc::clone(&state.agent_registry),
+        ))
+    } else if let Some(agent_cfg) = config_snapshot
         .agent
         .as_ref()
         .and_then(|agents| agents.get(agent_name.as_str()))

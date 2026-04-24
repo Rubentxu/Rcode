@@ -471,4 +471,75 @@ mod tests {
             .await;
         assert!(result.is_err());
     }
+
+    /// Verify that a well-formed agent.md file is parsed correctly.
+    #[tokio::test]
+    async fn test_load_from_valid_md_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let agent_dir = temp_dir.path().join("explore");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+
+        let md_content = r#"---
+identifier: "explore"
+name: "Explore Agent"
+description: "Investigates the codebase"
+when_to_use: "When you need to explore"
+mode: "Subagent"
+hidden: false
+tools:
+  - "read"
+  - "glob"
+model: "sonnet"
+---
+
+# Explore Agent
+
+You are an expert code investigator.
+"#;
+        std::fs::write(agent_dir.join("agent.md"), md_content).unwrap();
+
+        let loader = AgentLoader::with_paths(vec![temp_dir.path().to_path_buf()]);
+        let agents = loader.load_agents().await.unwrap();
+
+        assert_eq!(agents.len(), 1, "expected 1 agent, got {}", agents.len());
+        let agent = &agents[0];
+        assert_eq!(agent.identifier, "explore");
+        assert_eq!(agent.name, "Explore Agent");
+        assert!(agent.system_prompt.contains("expert code investigator"));
+        assert_eq!(agent.tools, vec!["read", "glob"]);
+        assert_eq!(agent.model.as_deref(), Some("sonnet"));
+    }
+
+    /// Smoke test: load the 5 real worker agents from ~/.config/rcode/agents/.
+    ///
+    /// This test is marked `#[ignore]` so it does not run in CI (the agents
+    /// directory may not exist in CI). Run locally with:
+    ///   cargo test -p rcode-core -- test_load_real_worker_agents --ignored
+    #[tokio::test]
+    #[ignore = "requires ~/.config/rcode/agents/ to exist on this machine"]
+    async fn test_load_real_worker_agents() {
+        let home = dirs::home_dir().expect("home dir must exist");
+        let agents_path = home.join(".config/rcode/agents");
+
+        if !agents_path.exists() {
+            println!("SKIP: {} does not exist", agents_path.display());
+            return;
+        }
+
+        let loader = AgentLoader::with_paths(vec![agents_path]);
+        let agents = loader.load_agents().await.expect("load_agents should succeed");
+
+        let ids: Vec<&str> = agents.iter().map(|a| a.identifier.as_str()).collect();
+        println!("Loaded agents: {:?}", ids);
+
+        for expected in &["explore", "implement", "test", "verify", "research"] {
+            assert!(
+                ids.contains(expected),
+                "expected worker agent '{}' to be loaded, got: {:?}",
+                expected,
+                ids
+            );
+        }
+        assert_eq!(agents.len(), 5, "expected exactly 5 worker agents, got {}", agents.len());
+    }
 }
