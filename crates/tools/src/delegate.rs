@@ -520,4 +520,174 @@ mod tests {
         assert_eq!(cloned.id, record.id);
         assert_eq!(cloned.agent_type, record.agent_type);
     }
+
+    // ── Nivel 3: Concurrencia ────────────────────────────────────────────────
+
+    /// Nivel 3-A: N delegaciones concurrentes comparten el mismo store y todas completan
+    #[tokio::test]
+    async fn test_concurrent_delegations_all_complete() {
+        const N: usize = 20;
+        let store = Arc::new(RwLock::new(HashMap::new()));
+        let runner = MockRunner::ok("concurrent result");
+
+        // Todas las instancias comparten store y runner
+        let mut handles = Vec::with_capacity(N);
+        let ctx = make_context();
+
+        for i in 0..N {
+            let s = Arc::clone(&store);
+            let r = Arc::clone(&runner);
+            let tool = DelegateTool::with_store_and_runner(s, r);
+            let c = ctx.clone();
+            handles.push(tokio::spawn(async move {
+                let args = serde_json::json!({
+                    "prompt": format!("task {}", i),
+                    "agent": "explore",
+                });
+                tool.execute(args, &c).await.unwrap()
+                    .metadata.unwrap()["delegation_id"]
+                    .as_str().unwrap().to_string()
+            }));
+        }
+
+        let ids: Vec<String> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|r| r.expect("task panicked"))
+            .collect();
+
+        // Todos los IDs deben ser únicos
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), N, "IDs should all be unique");
+
+        // Esperar que todas completen (max 10 s)
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let s = store.read().await;
+            let completed = ids.iter()
+                .filter(|id| matches!(s.get(*id).map(|r| &r.status), Some(DelegationStatus::Completed)))
+                .count();
+            if completed == N { break; }
+            if tokio::time::Instant::now() >= deadline {
+                let s = store.read().await;
+                let still_pending = ids.iter()
+                    .filter(|id| !matches!(s.get(*id).map(|r| &r.status), Some(DelegationStatus::Completed)))
+                    .count();
+                panic!("{} delegations did not complete in time", still_pending);
+            }
+        }
+
+        // Verificar que el store tiene exactamente N entradas
+        assert_eq!(store.read().await.len(), N);
+    }
+
+    /// Nivel 3-B: escrituras concurrentes al store no corrompen los datos
+    #[tokio::test]
+    async fn test_concurrent_writes_store_integrity() {
+        const N: usize = 50;
+        let store = Arc::new(RwLock::new(HashMap::new()));
+        let runner = MockRunner::ok("integrity check");
+        let ctx = make_context();
+
+        // Lanzar N delegaciones concurrentes
+        let futs: Vec<_> = (0..N).map(|i| {
+            let s = Arc::clone(&store);
+            let r = Arc::clone(&runner);
+            let c = ctx.clone();
+            let tool = DelegateTool::with_store_and_runner(s, r);
+            async move {
+                let args = serde_json::json!({
+                    "prompt": format!("integrity task {}", i),
+                    "agent": "test",
+                });
+                tool.execute(args, &c).await.unwrap()
+            }
+        }).collect();
+
+        let results = futures::future::join_all(futs).await;
+
+        // Todos los execute deben haber tenido éxito
+        assert_eq!(results.len(), N);
+
+        // Esperar que todas completen
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let s = store.read().await;
+            let done = s.values()
+                .filter(|r| matches!(r.status, DelegationStatus::Completed | DelegationStatus::Failed))
+                .count();
+            if done == N { break; }
+            if tokio::time::Instant::now() >= deadline {
+                panic!("not all delegations completed: {}/{}", done, N);
+            }
+        }
+
+        // Verificar integridad: ningún registro debe tener ID vacío o status inválido
+        let s = store.read().await;
+        assert_eq!(s.len(), N, "store should have exactly {} entries", N);
+        for record in s.values() {
+            assert!(!record.id.is_empty(), "record id must not be empty");
+            assert!(
+                matches!(record.status, DelegationStatus::Completed | DelegationStatus::Failed),
+                "unexpected status {:?}", record.status
+            );
+        }
+    }
+
+    /// Nivel 3-C: leer mientras se escribe concurrentemente no causa deadlock ni panic
+    #[tokio::test]
+    async fn test_concurrent_read_write_no_deadlock() {
+        const WRITERS: usize = 10;
+        const READERS: usize = 10;
+
+        let store = Arc::new(RwLock::new(HashMap::new()));
+        let runner: Arc<dyn SubagentRunner> = MockRunner::ok("read-write result");
+        let ctx = make_context();
+
+        // Pre-poblar una entrada para que los readers tengan algo que leer
+        let seed_tool = DelegateTool::with_store_and_runner(Arc::clone(&store), Arc::clone(&runner));
+        let seed = seed_tool
+            .execute(serde_json::json!({"prompt": "seed", "agent": "explore"}), &ctx)
+            .await
+            .unwrap();
+        let seed_id = seed.metadata.unwrap()["delegation_id"]
+            .as_str().unwrap().to_string();
+
+        // Lanzar readers y writers en paralelo
+        let read_store = Arc::clone(&store);
+        let readers: Vec<_> = (0..READERS).map(|_| {
+            let s = Arc::clone(&read_store);
+            let id = seed_id.clone();
+            tokio::spawn(async move {
+                for _ in 0..10 {
+                    let _ = s.read().await.get(&id).map(|r| r.status.clone());
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            })
+        }).collect();
+
+        let writers: Vec<_> = (0..WRITERS).map(|i| {
+            let s = Arc::clone(&store);
+            let r = Arc::clone(&runner);
+            let c = ctx.clone();
+            tokio::spawn(async move {
+                let tool = DelegateTool::with_store_and_runner(s, r);
+                let args = serde_json::json!({
+                    "prompt": format!("concurrent write {}", i),
+                    "agent": "implement",
+                });
+                tool.execute(args, &c).await.unwrap()
+            })
+        }).collect();
+
+        // Esperar todos sin timeout rígido — si hay deadlock el test falla por timeout del harness
+        for r in readers { r.await.expect("reader panicked"); }
+        for w in writers { w.await.expect("writer panicked"); }
+
+        // El store debe tener seed + WRITERS entradas
+        let count = store.read().await.len();
+        assert_eq!(count, 1 + WRITERS, "expected {} entries, got {}", 1 + WRITERS, count);
+    }
 }

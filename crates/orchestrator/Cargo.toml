@@ -1,0 +1,28 @@
+[package]
+name = "rcode-orchestrator"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio.workspace = true
+async-trait = "0.1"
+tracing.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+# Internal dependencies
+rcode-core = { path = "../core" }
+rcode-runtime = { path = "../runtime" }
+rcode-event = { path = "../event" }
+rcode-intelligence = { path = "../intelligence" }
+rcode-agent = { path = "../agent" }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tokio = { workspace = true, features = ["full"] }
+rcode-tools = { path = "../tools" }
+
+[profile.test]
+opt-level = 0
+debug = false
