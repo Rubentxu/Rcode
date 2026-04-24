@@ -261,6 +261,11 @@ impl ToolRegistryService {
         self.register(new_tool);
     }
 
+    /// Return a clone of the shared delegation store (for testing / inspection).
+    pub fn delegation_store(&self) -> super::delegate::DelegationStore {
+        Arc::clone(&self.delegate_store)
+    }
+
     /// Set the truncation configuration for tool output truncation.
     /// 
     /// When configured, tool outputs exceeding the limit will be truncated

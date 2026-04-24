@@ -30,7 +30,7 @@ use rcode_core::{
 
 // ─── Status & Records ────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DelegationStatus {
     Pending,
     Running,

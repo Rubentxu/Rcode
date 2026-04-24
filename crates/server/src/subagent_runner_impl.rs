@@ -31,6 +31,8 @@ pub struct ServerSubagentRunner {
     tools: Arc<ToolRegistryService>,
     agent_registry: Option<Arc<AgentRegistry>>,
     cognicode_service: Option<Arc<std::sync::Mutex<Option<rcode_cognicode::service::CogniCodeService>>>>,
+    /// Optional mock provider — overrides ProviderFactory in tests
+    mock_provider: Option<Arc<dyn rcode_providers::LlmProvider>>,
 }
 
 impl ServerSubagentRunner {
@@ -39,6 +41,9 @@ impl ServerSubagentRunner {
     /// Uses the agent_registry from AppState which is pre-populated with worker agents
     /// from ~/.config/rcode/agents/ directory.
     pub fn new(state: &Arc<AppState>) -> Self {
+        // Inherit the mock provider from AppState so tests work end-to-end
+        let mock_provider = state.mock_provider.lock().ok()
+            .and_then(|g| g.clone());
         Self {
             session_service: Arc::clone(&state.session_service),
             event_bus: Arc::clone(&state.event_bus),
@@ -46,6 +51,7 @@ impl ServerSubagentRunner {
             tools: Arc::clone(&state.tools),
             agent_registry: Some(Arc::clone(&state.agent_registry)),
             cognicode_service: Some(Arc::clone(&state.cognicode_service)),
+            mock_provider,
         }
     }
 
@@ -63,6 +69,7 @@ impl ServerSubagentRunner {
             tools,
             agent_registry: None,
             cognicode_service: None,
+            mock_provider: None,
         }
     }
 
@@ -81,6 +88,7 @@ impl ServerSubagentRunner {
             tools,
             agent_registry: Some(agent_registry),
             cognicode_service: None,
+            mock_provider: None,
         }
     }
 }
@@ -105,22 +113,27 @@ impl SubagentRunner for ServerSubagentRunner {
         // Resolve model from config
         // Use a block to ensure config_guard is dropped before the async part
         let (provider, effective_model) = {
-            let config_guard = self.config.lock().map_err(|e| {
-                Box::new(RCodeError::Config(format!("Config lock error: {}", e))) as Box<dyn std::error::Error + Send + Sync>
-            })?;
+            // If a mock provider is injected (test mode), use it directly
+            if let Some(ref mock) = self.mock_provider {
+                (Arc::clone(mock) as Arc<dyn rcode_providers::LlmProvider>, "mock-model".to_string())
+            } else {
+                let config_guard = self.config.lock().map_err(|e| {
+                    Box::new(RCodeError::Config(format!("Config lock error: {}", e))) as Box<dyn std::error::Error + Send + Sync>
+                })?;
 
-            // Use model_for_agent(agent_id) or fall back to effective_small_model()
-            let model_id = config_guard
-                .model_for_agent(agent_id)
-                .map(|s| s.to_string())
-                .or_else(|| config_guard.effective_small_model().map(|s| s.to_string()))
-                .unwrap_or_else(|| "claude-sonnet-4-5".to_string());
+                // Use model_for_agent(agent_id) or fall back to effective_small_model()
+                let model_id = config_guard
+                    .model_for_agent(agent_id)
+                    .map(|s| s.to_string())
+                    .or_else(|| config_guard.effective_small_model().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "claude-sonnet-4-5".to_string());
 
-            // Build provider
-            ProviderFactory::build(&model_id, Some(&*config_guard))
-                .map_err(|e| {
-                    Box::new(RCodeError::Provider(format!("Failed to build provider: {}", e))) as Box<dyn std::error::Error + Send + Sync>
-                })?
+                // Build provider
+                ProviderFactory::build(&model_id, Some(&*config_guard))
+                    .map_err(|e| {
+                        Box::new(RCodeError::Provider(format!("Failed to build provider: {}", e))) as Box<dyn std::error::Error + Send + Sync>
+                    })?
+            }
         }; // config_guard is dropped here, before any async operations
 
         // Create agent - try to load from registry first, fall back to DefaultAgent

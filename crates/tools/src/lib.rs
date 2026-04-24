@@ -61,4 +61,4 @@ pub use plan::PlanTool;
 pub use command_discovery::CommandDiscovery;
 pub use command_registry::CommandRegistry;
 pub use slash_command_tool::SlashCommandTool;
-pub use delegate::{DelegateTool, DelegationReadTool, DelegationRecord};
+pub use delegate::{DelegateTool, DelegationReadTool, DelegationRecord, DelegationStatus};
