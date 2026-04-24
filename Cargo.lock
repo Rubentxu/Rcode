@@ -2886,6 +2886,7 @@ dependencies = [
  "rcode-event",
  "rcode-intelligence",
  "rcode-runtime",
+ "rcode-tools",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
