@@ -51,6 +51,10 @@ impl Agent for DynamicAgent {
         self.definition.hidden
     }
 
+    fn definition(&self) -> Option<&AgentDefinition> {
+        Some(&self.definition)
+    }
+
     async fn run(&self, ctx: &mut AgentContext) -> Result<AgentResult> {
         // Dynamic agents delegate to the executor
         // The actual execution logic is handled by AgentExecutor

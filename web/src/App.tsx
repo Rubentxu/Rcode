@@ -613,6 +613,8 @@ export default function App() {
           onRetry={handleRetry}
           currentModel={globalStore.currentModel()}
           onModelChange={globalStore.setModel}
+          currentAgent={globalStore.currentAgent()}
+          onAgentChange={globalStore.setAgent}
           onTerminalToggle={() => globalStore.toggleTerminal()}
         />
       );

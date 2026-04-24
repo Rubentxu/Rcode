@@ -9,6 +9,7 @@
 
 pub mod agent;
 pub mod agent_definition;
+pub mod runtime_types;
 pub mod agent_loader;
 pub mod agent_registry;
 pub mod auth;
@@ -52,6 +53,7 @@ pub use message::*;
 pub use permission::*;
 pub use project::*;
 pub use provider::*;
+pub use runtime_types::*;
 pub use session::*;
 pub use skill::*;
 pub use subagent_runner::{SubagentRunner, SubagentResult};

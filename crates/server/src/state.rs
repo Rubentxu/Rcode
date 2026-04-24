@@ -382,6 +382,15 @@ impl AppState {
             tracing::info!("Loaded {} sessions from storage", loaded.len());
         });
 
+        // Spawn async task to load worker agents from disk (~/.config/rcode/agents/, etc.)
+        let agent_registry_clone = agent_registry.clone();
+        tokio::spawn(async move {
+            match agent_registry_clone.load_all().await {
+                Ok(()) => tracing::info!("Worker agents loaded from disk"),
+                Err(e) => tracing::warn!("Failed to load worker agents: {}", e),
+            }
+        });
+
         // Create tools with the runner injected
         let tools =
             create_tools_with_runner(session_service.clone(), &config);

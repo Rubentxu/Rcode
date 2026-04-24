@@ -58,6 +58,8 @@ interface SessionViewProps {
   onRetry: (assistantMessageId: string, userPrompt: string) => void;
   currentModel?: string;
   onModelChange?: (modelId: string) => void;
+  currentAgent?: string | null;
+  onAgentChange?: (agentId: string | null) => void;
   onTerminalToggle?: () => void;
 }
 
@@ -649,6 +651,8 @@ export default function SessionView(props: SessionViewProps) {
         context={commandContext}
         currentModel={props.currentModel}
         onModelChange={props.onModelChange}
+        currentAgent={props.currentAgent}
+        onAgentChange={props.onAgentChange}
         onTerminalToggle={props.onTerminalToggle}
       />
     </div>

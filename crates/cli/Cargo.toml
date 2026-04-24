@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 rcode-core = { path = "../core" }
+rcode-runtime = { path = "../runtime" }
 rcode-session = { path = "../session" }
 rcode-storage = { path = "../storage" }
 rcode-event = { path = "../event" }
@@ -26,6 +27,7 @@ rcode-observability.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+base64 = "0.22"
 clap = { version = "4.5", features = ["derive"] }
 thiserror.workspace = true
 anyhow.workspace = true

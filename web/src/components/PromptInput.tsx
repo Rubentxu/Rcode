@@ -31,6 +31,7 @@ import {
   getPartialMentionAtCursor,
 } from "../mentions/index";
 import CommandPalette from "./CommandPalette";
+import ChatContextFooter from "./chat-workspace/ChatContextFooter";
 import { type PendingAttachment } from "../api/types";
 import { showToast } from "./Toast";
 import { useProviderModels } from "../hooks/useProviderModels";
@@ -55,6 +56,8 @@ interface PromptInputProps {
   context: CommandContext;
   currentModel?: string;
   onModelChange?: (modelId: string) => void;
+  currentAgent?: string | null;
+  onAgentChange?: (agentId: string | null) => void;
   onTerminalToggle?: () => void;
 }
 
@@ -604,18 +607,23 @@ export default function PromptInput(props: PromptInputProps) {
                 aria-label="Send message"
                 data-component="prompt-submit"
                 disabled={props.disabled || !inputValue().trim()}
-                onClick={handleSubmit}
-                class="bg-primary-container text-on-primary-container px-4 py-1.5 rounded-lg font-bold text-sm flex items-center gap-1 hover:opacity-90 active:scale-95 transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <span>Send</span>
-                <span class="material-symbols-outlined text-sm">send</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+                 onClick={handleSubmit}
+                 class="bg-primary-container text-on-primary-container px-4 py-1.5 rounded-lg font-bold text-sm flex items-center gap-1 hover:opacity-90 active:scale-95 transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+               >
+                 <span>Send</span>
+                 <span class="material-symbols-outlined text-sm">send</span>
+               </button>
+             </div>
+           </div>
+           <ChatContextFooter
+             currentAgent={props.currentAgent}
+             onAgentChange={props.onAgentChange}
+             modelLabel={currentModelLabel()}
+           />
+         </div>
+       </div>
+     </div>
+   );
 }
 
 // ─── Mention autocomplete dropdown ─────────────────────────────────────────

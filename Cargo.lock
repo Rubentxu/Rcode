@@ -2031,17 +2031,6 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.27.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2eb04e9c688eff1c89d72b407f168cf79bb9e867a9d3323ed6c01519eb9cc053"
-dependencies = [
- "bitflags 2.11.0",
- "cfg-if",
- "libc",
-]
-
-[[package]]
-name = "nix"
 version = "0.31.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d6d0705320c1e6ba1d912b5e37cf18071b6c2e9b7fa8215a1e8a7651966f5d3"
@@ -2365,16 +2354,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
-name = "os_pipe"
-version = "1.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
-dependencies = [
- "libc",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2537,7 +2516,7 @@ checksum = "2e842efad9119158434d193c6682e2ebee4b44d6ad801d7b349623b3f57cdf55"
 dependencies = [
  "futures",
  "indexmap 2.13.0",
- "nix 0.31.2",
+ "nix",
  "tokio",
  "tracing",
  "windows",
@@ -2723,6 +2702,7 @@ name = "rcode-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
  "dirs",
  "futures-util",
@@ -2732,6 +2712,7 @@ dependencies = [
  "rcode-event",
  "rcode-observability",
  "rcode-providers",
+ "rcode-runtime",
  "rcode-server",
  "rcode-session",
  "rcode-storage",
@@ -2985,8 +2966,7 @@ name = "rcode-runtime"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "nix 0.27.1",
- "os_pipe",
+ "base64",
  "rcode-agent",
  "rcode-core",
  "serde",

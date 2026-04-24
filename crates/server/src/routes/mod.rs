@@ -1804,6 +1804,7 @@ pub async fn explorer_tree(
 // ========== Outline Endpoint ==========
 
 /// Timeout for LSP document_symbols requests in seconds
+#[allow(dead_code)]
 const OUTLINE_TIMEOUT_SECS: u64 = 5;
 
 /// Query parameters for outline endpoint
@@ -2115,6 +2116,20 @@ pub async fn get_outline(
         message_count,
         token_estimate: Some(_token_estimate),
     }))
+}
+
+/// Response for GET /agents — lists all registered worker agents.
+#[derive(Debug, Serialize)]
+pub struct ListAgentsResponse {
+    pub agents: Vec<rcode_core::AgentInfo>,
+}
+
+/// GET /agents — list all available worker agents.
+pub async fn list_agents(
+    State(state): State<Arc<AppState>>,
+) -> Json<ListAgentsResponse> {
+    let agents = state.agent_registry.list();
+    Json(ListAgentsResponse { agents })
 }
 
 #[cfg(test)]

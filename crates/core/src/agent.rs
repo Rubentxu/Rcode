@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{error::Result, message::Message};
+use crate::{agent_definition::AgentDefinition, error::Result, message::Message};
 
 #[async_trait]
 pub trait Agent: Send + Sync {
@@ -23,6 +23,12 @@ pub trait Agent: Send + Sync {
     /// Returns whether this agent should be hidden from the agent list
     fn is_hidden(&self) -> bool {
         false
+    }
+
+    /// Returns the underlying `AgentDefinition`, if this agent was created from one.
+    /// Built-in agents return `None`; `DynamicAgent` returns `Some`.
+    fn definition(&self) -> Option<&AgentDefinition> {
+        None
     }
 }
 

@@ -134,6 +134,8 @@ pub async fn create_app(state: Arc<AppState>) -> Router {
         .route("/explorer/tree", get(routes::explorer_tree))
         // Outline route
         .route("/outline", get(routes::get_outline))
+        // Agent routes
+        .route("/agents", get(routes::list_agents))
         // Privacy routes
         .merge(routes::privacy::routes())
         .with_state(state)

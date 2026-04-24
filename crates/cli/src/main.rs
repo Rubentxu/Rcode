@@ -3,7 +3,7 @@
 mod commands;
 
 use clap::{Parser, Subcommand};
-use commands::{Run, Serve, Tui, Acp};
+use commands::{Run, Serve, Tui, Acp, AgentWorker};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -32,6 +32,8 @@ enum Commands {
     Serve(Serve),
     Tui(Tui),
     Acp(Acp),
+    /// Internal IPC entry point for ProcessRuntime worker execution.
+    AgentWorker(AgentWorker),
 }
 
 #[tokio::main]
@@ -44,6 +46,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Serve(serve)) => serve.execute(cli.config.as_ref(), cli.no_config).await,
         Some(Commands::Tui(tui)) => tui.execute(cli.config.as_ref(), cli.no_config).await,
         Some(Commands::Acp(acp)) => acp.execute(cli.config.as_ref(), cli.no_config).await,
+        Some(Commands::AgentWorker(w)) => w.execute().await,
         None => {
             let tui = Tui::default();
             tui.execute(cli.config.as_ref(), cli.no_config).await
