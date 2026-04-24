@@ -1,0 +1,23 @@
+[package]
+name = "rcode-intelligence"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio.workspace = true
+async-trait = "0.1"
+tracing.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+parking_lot = "0.12"
+
+# Statistics and sampling
+rand = "0.8"
+statrs = "0.16"
+
+# Internal dependencies
+rcode-core = { path = "../core" }
+
+[dev-dependencies]
+tokio-test = "0.4"
